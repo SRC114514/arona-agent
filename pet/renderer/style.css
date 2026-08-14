@@ -20,42 +20,24 @@ body:active {
   height: 100%;
 }
 
-#vid, .emo {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  pointer-events: none;
-}
-
-/* 瞳孔跟随 overlay：叠在视频上、不挡拖动 */
-#eye {
+/* Spine 骨骼动画基底：z1 常驻、永不隐藏（情绪 PNG 溶解覆盖其上） */
+#spine {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
+  z-index: 1;
 }
 
-/* 静态层序：视频垫底 < 瞳孔 overlay < 情绪 slot；过渡期间由 JS 动态调整 */
-#vid { z-index: 1; }
-#eye { z-index: 2; }
-.emo { z-index: 3; }
-
-/* clip 微动画盖布：播放时永远最顶（盖住 vid/eye/emo）；溶解阶段由 JS 动态调整 */
-#clip {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  pointer-events: none;
-  z-index: 6;
-  display: none;
-}
-
-/* 情绪 slot 默认隐藏；切换统一走 renderer.js 的 transitionTo（单向溶解，无残影） */
+/* 情绪 PNG：静态 z3；过渡期间由 renderer.js 动态提到 z4 作顶层淡出 */
 .emo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 3;
   display: none;
 }

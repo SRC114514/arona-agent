@@ -65,7 +65,13 @@ function createWindow() {
   const pos = loadPosition();
   if (pos) win.setPosition(pos.x, pos.y);
 
-  win.loadFile(path.join(__dirname, "renderer", "index.html"));
+  // PET_PAGE=spinetest → 加载 Spine 调试页（默认仍 index.html，零风险）
+  const page = process.env.PET_PAGE === "spinetest" ? "spinetest.html" : "index.html";
+  win.loadFile(path.join(__dirname, "renderer", page));
+  if (process.env.PET_PAGE) {
+    // 调试页：附带 devtools 便于人工查看 console / 网络加载
+    win.webContents.openDevTools({ mode: "detach" });
+  }
   win.webContents.on("did-finish-load", () => send({ type: "ready" }));
   startCursorTracking();
 }

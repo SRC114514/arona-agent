@@ -18,9 +18,7 @@
   ],
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
-    "bake:eye": "node pet/tools/bake_eye_track.mjs",
-    "bake:idle": "node pet/tools/bake_idle_sync.mjs"
+    "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.1",

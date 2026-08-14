@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ARONA Spine 调试页</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+    #spine { position: absolute; inset: 0; width: 100%; height: 100%; }
+    /* 情绪 PNG 半透叠校验层（?overlay=smile 时开启）：目测 Spine 构图与 PNG 是否对齐 */
+    #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.5; pointer-events: none; display: none; }
+    #hud {
+      position: absolute; left: 4px; top: 4px; max-width: 300px;
+      background: rgba(0,0,0,.55); color: #8fd3ff;
+      font: 10px/1.5 Menlo, monospace; padding: 4px 6px; white-space: pre-wrap;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="spine"></canvas>
+  <img id="overlay" draggable="false" alt="">
+  <div id="hud">加载中…</div>
+  <script src="../vendor/spine/spine-webgl.js"></script>
+  <script src="spinetest.js"></script>
+</body>
+</html>
