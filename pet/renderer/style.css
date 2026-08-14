@@ -1,0 +1,61 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+}
+
+body:active {
+  cursor: grabbing;
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#vid, .emo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* 瞳孔跟随 overlay：叠在视频上、不挡拖动 */
+#eye {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 静态层序：视频垫底 < 瞳孔 overlay < 情绪 slot；过渡期间由 JS 动态调整 */
+#vid { z-index: 1; }
+#eye { z-index: 2; }
+.emo { z-index: 3; }
+
+/* clip 微动画盖布：播放时永远最顶（盖住 vid/eye/emo）；溶解阶段由 JS 动态调整 */
+#clip {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 6;
+  display: none;
+}
+
+/* 情绪 slot 默认隐藏；切换统一走 renderer.js 的 transitionTo（单向溶解，无残影） */
+.emo {
+  display: none;
+}

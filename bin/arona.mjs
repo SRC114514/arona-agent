@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+// ARONA CLI entry point. Node 22's --experimental-strip-types refuses to load
+// .ts files inside node_modules/, so we use `tsx` (shipped as a regular dep) as
+// a child-process runner. `tsx` is a self-contained .ts loader that handles
+// ESM, CJS, and node_modules code paths.
+import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const root = join(__dirname, '..');
+const args = process.argv.slice(2);
+
+const isSetup = args[0] === 'setup';
+const target = isSetup ? 'src/setup.ts' : 'src/index.ts';
+const passArgs = isSetup ? args.slice(1) : args;
+
+// tsx ships a CLI binary alongside the package. We prefer the local install.
+const tsxBin = process.platform === 'win32'
+  ? join(root, 'node_modules', '.bin', 'tsx.cmd')
+  : join(root, 'node_modules', '.bin', 'tsx');
+
+if (!existsSync(tsxBin)) {
+  // 此文件无法 import TS，内联判定语言（仅环境变量）
+  const isEn = /^en/i.test(process.env.LANG ?? "");
+  console.error(
+    isEn
+      ? `Error: tsx not found at ${tsxBin}.\nRun \`npm install\` in ${root} (or run \`arona setup\` to install dependencies).`
+      : `错误：未找到 tsx（${tsxBin}）。\n请在 ${root} 运行 \`npm install\`（或运行 \`arona setup\` 安装依赖）。`,
+  );
+  process.exit(1);
+}
+
+const child = spawn(tsxBin, [join(root, target), ...passArgs], {
+  stdio: 'inherit',
+  cwd: root,
+});
+child.on('exit', (code) => process.exit(code ?? 0));
