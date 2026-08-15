@@ -70,6 +70,8 @@ interface Settings {
   model?: string;
   thinkingLevel?: string;
   language?: LanguageSetting;
+  // 主 Agent（arona | plana）：桌宠形象 + 人格，由 agent_registry.ts 读写
+  mainAgent?: string;
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
   ttsAuto?: boolean;

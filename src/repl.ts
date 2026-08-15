@@ -191,6 +191,10 @@ export class Repl {
       resumeSession: (path: string) => {
         this.resumeSession(path);
       },
+      saveCurrentSession: () => {
+        // /change-main-agent 重建会话前落盘当前对话（resume 覆盖原文件 / 新会话仅有效对话）
+        this.saveCurrentSessionIfNeeded();
+      },
       // 交互式命令（如 /resume）接管输入期间，暂停斜杠菜单监听器
       pauseMenuListener: () => {
         if (this.menuKeyListener) {

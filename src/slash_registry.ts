@@ -31,6 +31,7 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
   { name: "stt", description: t("开关语音转文字（长按右 Cmd ≥2秒录音）", "Toggle speech-to-text (hold right Cmd ≥2s to record)") },
   { name: "skill", description: t("调用技能（/skill <名称>）", "Invoke a skill (/skill <name>)") },
   { name: "mcp", description: t("管理 MCP 服务器和工具", "Manage MCP servers and tools") },
+  { name: "change-main-agent", description: t("切换主 Agent（桌宠形象 + 人格）：/change-main-agent <arona|plana>", "Switch main agent (pet + persona): /change-main-agent <arona|plana>") },
   { name: "undo", description: t("撤销上一个回合的全部文件改动（本地快照）", "Undo the previous turn's file changes (local snapshot)") },
   { name: "redo", description: t("重做已撤销的改动", "Redo undone changes") },
 ];

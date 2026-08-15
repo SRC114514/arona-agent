@@ -1,7 +1,8 @@
 // ARONA 桌宠渲染层：Spine 骨骼基底 + 情绪预设（track4 数字预设动画，瞬时切换）+ 手动拖动 + 摇动彩蛋（摸头）
+// 角色参数化：当前 Agent 配置（agents.cjs，经 ?agent= + pet:get-agent-config）决定
+//   情绪映射（emotions）、闭眼预设集合（closedEyePresets）、禁跟随集合（noGazePresets）。
 // 情绪模型：track4 非循环数字预设"残留末帧"持有，脸+光环瞬时切换（游戏原生语义，无过渡）；
 //   track0 始终 Idle_01 循环 → 情绪期间身体继续呼吸摇摆，只有脸+光环切换。
-//   情绪 = 数字预设 attachment 集（嘴/眼/眉/光环/装饰），映射表见 EMOTION_PRESET（单一事实源 emotions.cjs）。
 // 摸头（头部摇动 ≥3 次换向触发）：Pat_01_A + Pat_01_M 静态姿势对 + Head_Rot 跟随光标，窗口锁死不动。
 // 空闲注视：瞳孔跟随光标（spine_layer.js 内部实现），头部不歪。
 // 眨眼：Eye_Close_01 独立轨道（track5，预设之上），2~6s 均匀随机，15% 概率双眨；闭眼预设期间禁止。
@@ -9,16 +10,12 @@ const spineCanvas = document.getElementById("spine");
 
 const IS_IDLE_DEBUG = new URLSearchParams(location.search).has("idledebug");
 
-// ---- 情绪预设映射（单一事实源：emotions.cjs 值 = 预设动画名；closedEye 在此补充）----
-// 数字预设 = 游戏原生情绪（Phase A 普查：34 个数字预设 00~32+99 均为纯脸部骨 attachment 集）。
+// ---- 情绪预设映射（单一事实源：agents.cjs 当前 Agent 的 emotions 值 = 预设动画名；closedEye 集合见下）----
 // closedEye：该预设 key 了 L/R_Eye_Cover_01/02（闭眼）→ 情绪期间禁止眨眼
 // （Eye_Close_01 播完末帧会把 cover 置 null，闭眼预设上眨眼会闪出"睁眼"）。
-const CLOSED_EYE_PRESETS = new Set([
-  "03", "10", "11", "12", "13", "14", "18", "23", "24", "26", "27", "28", "29", "30", "32", "99",
-]);
-// 睁眼预设默认保留瞳孔跟随；以下预设禁跟随：jealous(07) 自带固定斜视（跟随会覆盖）、
-// angry(05) 眼神固定不跟光标、doubt(27) 闭眼本就关闭（显式列出以便理解）。
-const NO_GAZE_PRESETS = new Set(["05", "07", "27"]);
+// noGaze：睁眼预设默认保留瞳孔跟随；以下预设禁跟随（如 jealous 自带固定斜视，跟随会覆盖）。
+let closedEyePresets = new Set();
+let noGazePresets = new Set();
 let EMOTION_PRESET = {};
 
 // 当前稳定态情绪名（"spine" 基底时为 null）；同名重复路由跳过（幂等）
@@ -194,13 +191,16 @@ function onMouseUp() {
 }
 
 async function init() {
-  // 情绪预设映射：emotions.cjs（与 main 进程白名单同源）值 = 预设动画名
-  const emotions = await window.petAPI.getEmotions();
-  for (const [name, anim] of Object.entries(emotions)) {
+  // 情绪预设映射：agents.cjs（与 main 进程白名单同源）值 = 预设动画名；
+  // closedEye/noGaze 集合同样来自当前 Agent 配置
+  const cfg = await window.petAPI.getAgentConfig();
+  closedEyePresets = new Set(cfg.closedEyePresets || []);
+  noGazePresets = new Set(cfg.noGazePresets || []);
+  for (const [name, anim] of Object.entries(cfg.emotions || {})) {
     EMOTION_PRESET[name] = {
       anim,
-      closedEye: CLOSED_EYE_PRESETS.has(anim),
-      gaze: !CLOSED_EYE_PRESETS.has(anim) && !NO_GAZE_PRESETS.has(anim),
+      closedEye: closedEyePresets.has(anim),
+      gaze: !closedEyePresets.has(anim) && !noGazePresets.has(anim),
     };
   }
 

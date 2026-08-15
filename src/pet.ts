@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { join } from "path";
 import chalk from "chalk";
 import { PET_DIR } from "./config.ts";
+import { getMainAgent, type AgentId } from "./agent_registry.ts";
 import { t } from "./locale.ts";
 
 const PREFIX = "###PET###";
@@ -20,6 +21,10 @@ class PetBridge {
   private intentionalStop = false;
   private restartCount = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  // 当前桌宠角色（ARONA_AGENT env 传给 pet/main.cjs）；默认跟随 settings.json mainAgent
+  private agentId: AgentId = getMainAgent();
+  // 待切换角色：stop() 后等待旧进程 close 再以新角色拉起（避免双窗口闪现）
+  private pendingAgent: AgentId | null = null;
 
   async start(): Promise<void> {
     // Headless 环境降级（Linux 无显示服务器时直接跳过）
@@ -41,8 +46,9 @@ class PetBridge {
     this.intentionalStop = false;
 
     try {
-      // 剔除 ELECTRON_RUN_AS_NODE，否则 Electron 会退化为纯 Node 运行
-      const env = { ...process.env };
+      // 剔除 ELECTRON_RUN_AS_NODE，否则 Electron 会退化为纯 Node 运行；
+      // 注入 ARONA_AGENT 让桌宠主进程选择角色（agents.cjs）
+      const env = { ...process.env, ARONA_AGENT: this.agentId };
       delete env.ELECTRON_RUN_AS_NODE;
       // --no-sandbox：部分环境（权限受限的终端/容器）无法初始化 Chromium sandbox；
       // 桌宠只加载本地文件，关闭 sandbox 风险可接受
@@ -78,7 +84,14 @@ class PetBridge {
 
     this.proc.on("close", () => {
       this.proc = null;
-      if (!this.intentionalStop) this.scheduleRestart();
+      if (this.pendingAgent) {
+        // 切换角色：旧进程已退出，以新角色重新拉起（stop 时 intentionalStop=true 不会走退避重启）
+        const agent = this.pendingAgent;
+        this.pendingAgent = null;
+        void this.start();
+      } else if (!this.intentionalStop) {
+        this.scheduleRestart();
+      }
     });
   }
 
@@ -127,6 +140,21 @@ class PetBridge {
 
   reset(): void {
     this.send({ type: "reset" });
+  }
+
+  /**
+   * 切换桌宠形象（pet/main.cjs 按 ARONA_AGENT env 选择 agents.cjs 配置）。
+   * 运行中：先 stop（intentional，不触发退避重启），旧进程 close 后再以新角色拉起，避免双窗口闪现。
+   * 未运行：直接记住角色，下次 start() 生效。
+   */
+  restartWithAgent(id: AgentId): void {
+    this.agentId = id;
+    if (!this.isRunning) {
+      void this.start();
+      return;
+    }
+    this.pendingAgent = id;
+    this.stop();
   }
 
   stop(): void {

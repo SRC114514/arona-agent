@@ -1,5 +1,6 @@
 // ARONA 桌宠 Spine 渲染层（spine_layer.js，纯 <script> UMD，无构建）
-// 职责：加载 arona_spr 骨架并常驻渲染（track0 = Idle_01 全身循环，基底永不隐藏），
+// 职责：加载当前 Agent（agents.cjs，经 ?agent= + pet:get-agent-config）骨架并常驻渲染
+//       （track0 = Idle_01 全身循环，基底永不隐藏），
 //       提供摸头头部跟随 / 空闲注视 / 眨眼 / 情绪预设四个骨骼接口。
 // 层模型：情绪 = track4 上的数字预设动画（非循环、残留末帧持有），脸+光环瞬时切换；
 //        track0 始终保持 Idle_01 循环 → 情绪期间身体继续呼吸摇摆。无 DOM 层、无溶解过渡。
@@ -8,16 +9,11 @@
 (function () {
   "use strict";
 
-  const SPINE_BASE = "../../assets/blue-archive/arona/spine/";
-  const ANIM = {
-    idle: "Idle_01",           // 3.333s 全身循环。setup pose 是瘫开的折叠姿势，绝不能裸显
-    blink: "Eye_Close_01",     // 0.133s 闭眼（只 key 眼部 cover + 眉毛 translate，可安全叠加）
-    // 摸头用静态姿势对（用户反馈 Dev_Pat_01_M 的 0.667s 循环"机械地左右摆动"）：
-    pat: "Pat_01_A",           // 单帧 pose：闭眼 cover + 嘴（attachment 版）
-    patPose: "Pat_01_M",       // 单帧 pose：眉毛 translate（M 版）
-    look: "Look_01_M",         // 注视姿态（单帧 pose，含嘴部微动）
-    lookEnd: "LookEnd_01_M",   // 0.133s 回中
-  };
+  // 当前角色 id（main.cjs loadFile 注入 ?agent=；缺省 arona）。实际配置经 IPC 从主进程取，
+  // agents.cjs 是 pet 侧唯一事实源，此处只用于兜底日志/调试。
+  const AGENT_ID = new URLSearchParams(location.search).get("agent") || "arona";
+  let agent = null; // init() 时从 pet:get-agent-config 获取（含 anims/bones/spineBase 等）
+
   const TRACK = { main: 0, look: 2, patPose: 3, emotion: 4, blink: 5 };
   // track 布局说明：
   //   0 main    Idle_01 循环常驻 / Pat_01_A（摸头）
@@ -64,6 +60,9 @@
   let currentPreset = null;     // track4 当前情绪预设动画名（null = 无情绪）
   let presetClosedEye = false;  // 当前预设是否闭眼（闭眼预设期间禁止眨眼，防 cover 被眨眼末帧置 null 造成睁眼闪）
   let presetGaze = true;        // 当前预设是否保留瞳孔跟随（闭眼 / 禁跟随预设为 false）
+  // 调试用身体冻结：非 null 时每帧把 track0 Idle_01 的 trackTime 钉在固定相位（gallery 截图用，
+  // 保证不同批次截图身体姿势完全一致、可直接像素对比；桌宠正常运行不设置，零影响）
+  let pinBodyT = null;
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -167,6 +166,11 @@
     const dt = clamp((now - lastT) / 1000, 0, 0.1); // 防标签页休眠跳变
     lastT = now;
     state.update(dt);
+    if (pinBodyT !== null) {
+      // 冻结身体相位：update 推进后再钉回，保证 apply 时 track0 姿势确定
+      const e = state.getCurrent(TRACK.main);
+      if (e) e.trackTime = pinBodyT;
+    }
     state.apply(skeleton);
     applyManualBones();
     skeleton.updateWorldTransform();
@@ -191,6 +195,9 @@
   }
 
   async function init(targetCanvas) {
+    // 先取当前 Agent 配置（agents.cjs 单一事实源，经主进程 IPC 注入）
+    agent = await window.petAPI.getAgentConfig();
+    if (!agent) throw new Error("pet:get-agent-config 未返回配置");
     canvas = targetCanvas;
     gl = canvas.getContext("webgl", {
       alpha: true,
@@ -198,7 +205,7 @@
       antialias: true,
     });
     if (!gl) throw new Error("WebGL 不可用");
-    assetManager = new spine.webgl.AssetManager(gl, SPINE_BASE);
+    assetManager = new spine.webgl.AssetManager(gl, agent.spineBase);
     // 纹理上传时预乘（UNPACK_PREMULTIPLY_ALPHA_WEBGL），与 drawSkeleton(skeleton, true) 的
     // premultiplied 混合配套。注意：本 vendored 3.8 构建的 GLTexture 只有 (context, image, useMipMaps)
     // 三个参数、无 premultiply 开关——必须在上传前手动设 pixelStorei，否则边缘 RGB 不预乘
@@ -209,29 +216,29 @@
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       return tex;
     };
-    assetManager.loadBinary("arona_spr.skel");
-    assetManager.loadTextureAtlas("arona_spr.atlas.txt");
+    assetManager.loadBinary(agent.skelFile);
+    assetManager.loadTextureAtlas(agent.atlasFile);
     const ok = await waitLoad(assetManager);
     if (!ok) throw new Error("Spine 资源加载失败: " + JSON.stringify(assetManager.errors));
 
-    const atlas = assetManager.get("arona_spr.atlas.txt");
+    const atlas = assetManager.get(agent.atlasFile);
     const atlasLoader = new spine.AtlasAttachmentLoader(atlas);
     const skelData = new spine.SkeletonBinary(atlasLoader).readSkeletonData(
-      assetManager.get("arona_spr.skel")
+      assetManager.get(agent.skelFile)
     );
     skeleton = new spine.Skeleton(skelData);
     skeleton.setToSetupPose();
     skeleton.updateWorldTransform();
 
-    headBone = skeleton.findBone("Head_Rot");
+    headBone = skeleton.findBone(agent.bones.head);
     headRestRot = headBone ? headBone.data.rotation : 0;
-    eyeL = skeleton.findBone("L_Eye_01");
-    eyeR = skeleton.findBone("R_Eye_01");
+    eyeL = skeleton.findBone(agent.bones.eyeL);
+    eyeR = skeleton.findBone(agent.bones.eyeR);
 
     const stateData = new spine.AnimationStateData(skelData);
     stateData.defaultMix = DEFAULT_MIX;
     state = new spine.AnimationState(stateData);
-    state.setAnimation(TRACK.main, ANIM.idle, true);
+    state.setAnimation(TRACK.main, agent.anims.idle, true);
 
     renderer = new spine.webgl.SceneRenderer(canvas, gl, true);
     resize();
@@ -261,9 +268,9 @@
     setGaze(on) {
       gazeEnabled = !!on;
       if (on) {
-        state.setAnimation(TRACK.look, ANIM.look, false);
+        state.setAnimation(TRACK.look, agent.anims.look, false);
       } else {
-        const entry = state.setAnimation(TRACK.look, ANIM.lookEnd, false);
+        const entry = state.setAnimation(TRACK.look, agent.anims.lookEnd, false);
         entry.listener = { complete: () => state.clearTrack(TRACK.look) };
       }
     },
@@ -277,8 +284,8 @@
       patting = true;
       gazeEnabled = false;
       state.clearTrack(TRACK.look);
-      state.setAnimation(TRACK.main, ANIM.pat, false);
-      state.setAnimation(TRACK.patPose, ANIM.patPose, false);
+      state.setAnimation(TRACK.main, agent.anims.pat, false);
+      state.setAnimation(TRACK.patPose, agent.anims.patPose, false);
     },
     // 结束摸头：crossfade 回 Idle_01，恢复空闲注视（按当前预设的 gaze 标志），头部随平滑系数回正
     endPat() {
@@ -286,8 +293,8 @@
       patting = false;
       gazeEnabled = presetGaze;
       state.clearTrack(TRACK.patPose);
-      if (gazeEnabled) state.setAnimation(TRACK.look, ANIM.look, false);
-      state.setAnimation(TRACK.main, ANIM.idle, true);
+      if (gazeEnabled) state.setAnimation(TRACK.look, agent.anims.look, false);
+      state.setAnimation(TRACK.main, agent.anims.idle, true);
     },
 
     // 眨眼（track5 一次性，预设之上）。忙时返回 false：摸头中 / 闭眼情绪预设中。
@@ -297,7 +304,7 @@
     blink() {
       if (patting) return false;
       if (currentPreset && presetClosedEye) return false;
-      const entry = state.setAnimation(TRACK.blink, ANIM.blink, false);
+      const entry = state.setAnimation(TRACK.blink, agent.anims.blink, false);
       entry.listener = { complete: () => state.clearTrack(TRACK.blink) };
       return true;
     },
@@ -349,6 +356,16 @@
       const s = skeleton.findSlot(name);
       return s && s.attachment ? s.attachment.name : null;
     },
+    // 调试内省：全骨架附件签名（slot=attachment 列表）。比像素更硬的证据——
+    // 情绪预设间签名应互不相同（B5 普查）；签名不同而截图相同 = capturePage 拿到过期纹理
+    getAttachmentSignature() {
+      if (!skeleton) return null;
+      const parts = [];
+      for (const s of skeleton.slots) {
+        if (s.attachment) parts.push(s.data.name + "=" + s.attachment.name);
+      }
+      return parts.join("|");
+    },
     // 调试内省：骨骼父子链 + 世界旋转（定位局部坐标系与屏幕坐标系的偏转）
     getBoneDebug(name) {
       if (!skeleton) return null;
@@ -369,6 +386,13 @@
         data: { x: +b.data.x.toFixed(1), y: +b.data.y.toFixed(1) },
         chain,
       };
+    },
+    // 调试用：冻结 track0 身体相位（gallery 批量截图对比用；null 恢复动画）
+    pinBody(t) {
+      pinBodyT = t === undefined ? 0 : t;
+    },
+    unpinBody() {
+      pinBodyT = null;
     },
   };
 })();

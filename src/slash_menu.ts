@@ -12,7 +12,8 @@
  *   从而造成菜单堆积。相对移动天然抗滚动。
  * - 每行用 \r\n 分隔，确保每行回到第 1 列；画完后上移 lineCount 行回到提示行，
  *   再调 rl.prompt(true) 让 readline 重新渲染提示行并校正光标列。
- * - Enter 补全时整体替换 rl.line（旧实现用 rl.write 追加，导致 /re/resume 重复）。
+ * - Enter 补全时整体替换 rl.line（旧实现用 rl.write 追加，导致 /re/resume 重复）；
+ *   若已敲完命令名、正在补参数（首 token = 完整名/别名），则保留原行只关菜单。
  */
 
 import chalk from "chalk";
@@ -176,6 +177,10 @@ export class SlashMenu {
    *
    * 注意：不能调 rl.prompt(true)——它的 clearScreenDown 会干扰，且会让
    * readline 认为 return 前已重绘，可能跳过 emit "line"。
+   *
+   * 参数保护：若输入行第一个 token 已经是所选命令的完整名/别名（用户已
+   * 敲完命令名、正在补参数，如 `/change-main-agent plana`），则只关菜单、
+   * 保留已输入内容——否则会把参数整个吞掉（只留下 "/<name> "）。
    */
   confirm(rl: Interface): void {
     if (!this.visible) return;
@@ -187,11 +192,14 @@ export class SlashMenu {
     this.selected = 0;
     this.scrollTop = 0;
     this.drawnLineCount = 0;
-    if (spec) {
-      const replacement = spec.interactive ? `/${spec.name}` : `/${spec.name} `;
-      (rl as any).line = replacement;
-      (rl as any).cursor = replacement.length;
-    }
+    if (!spec) return;
+    const currentLine: string = (rl as any).line ?? "";
+    const currentToken = currentLine.startsWith("/") ? currentLine.slice(1).split(/\s/)[0] : "";
+    const names = [spec.name, ...(spec.aliases ?? [])];
+    if (names.includes(currentToken)) return; // 参数输入中，保留原行
+    const replacement = spec.interactive ? `/${spec.name}` : `/${spec.name} `;
+    (rl as any).line = replacement;
+    (rl as any).cursor = replacement.length;
   }
 
   /** Esc / 外部关闭。保留已输入内容。 */

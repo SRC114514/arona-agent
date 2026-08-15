@@ -10,7 +10,12 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const PET = path.join(__dirname, "..");
-const { EMOTIONS } = require(path.join(PET, "emotions.cjs"));
+const { AGENTS } = require(path.join(PET, "agents.cjs"));
+
+// 测试角色：ARONA_AGENT 环境变量（缺省 arona）。时间线/断言按 Arona 定标，
+// plana 仅保证加载/渲染链路可用（slot 期望值未普查，勿在此断言 plana 表情细节）。
+const AGENT_ID = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
+const AGENT = AGENTS[AGENT_ID];
 
 let win;
 
@@ -151,7 +156,7 @@ app.whenReady().then(() => {
       nodeIntegration: false,
     },
   });
-  ipcMain.handle("pet:get-emotions", () => EMOTIONS);
+  ipcMain.handle("pet:get-agent-config", () => ({ id: AGENT_ID, ...AGENT }));
   ipcMain.on("pet:drag", () => {});
   ipcMain.on("pet:dragend", () => {});
   ipcMain.on("pet:shake", () => {});
@@ -159,7 +164,7 @@ app.whenReady().then(() => {
   // （合成事件走 document.dispatchEvent，不受影响）
   win.webContents.on("console-message", (e, a, b) => console.log("[R]", (a && typeof a === "object" ? a.message : b)));
   win.webContents.on("did-finish-load", () => win.setIgnoreMouseEvents(true));
-  win.loadFile(path.join(PET, "renderer", "index.html"), { search: "idledebug" });
+  win.loadFile(path.join(PET, "renderer", "index.html"), { search: "idledebug&agent=" + AGENT_ID });
   win.webContents.on("did-finish-load", async () => {
     // 等 Spine 基底就绪后再起时间线
     const tReady = Date.now();

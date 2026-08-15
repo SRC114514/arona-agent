@@ -10,6 +10,8 @@ import * as mcp from "./mcp.ts";
 import * as skills from "./skills.ts";
 import { setShowThinking, getShowThinking, setShowToolDetails, getShowToolDetails } from "./renderer.ts";
 import { SLASH_COMMANDS, resolveSlashCommand } from "./slash_registry.ts";
+import { getMainAgent, isValidAgentId, setMainAgent } from "./agent_registry.ts";
+import { pet } from "./pet.ts";
 import type { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
 
@@ -19,6 +21,9 @@ export interface CommandContext {
   exit: () => void;
   newSession: () => Promise<void>;
   resumeSession: (path: string) => void;
+  // 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话时才另存）。
+  // 与 Repl 退出时的保存语义一致；/change-main-agent 在重建会话前调用，避免对话丢失。
+  saveCurrentSession: () => void;
   // 走完整 Agent 回合生命周期（undo/isProcessing/pet.reset/abort），但不展开 @文件 / !命令。
   // /skill 调用技能时使用，避免技能内容里的 @ / ! 被当作输入展开。
   runAgentTurn: (text: string) => Promise<void>;
@@ -56,6 +61,7 @@ ${chalk.bold("扩展")}
   /mcp             列出 MCP 服务器和工具
 
 ${chalk.bold("其他")}
+  /change-main-agent  切换主 Agent（桌宠形象 + 人格）：/change-main-agent <arona|plana>
   /undo            撤销上一个回合的全部文件改动（本地快照，无需 git）
   /redo            重做已撤销的改动
   /help            显示本帮助
@@ -87,6 +93,7 @@ ${chalk.bold("Extensions")}
   /mcp             List MCP servers and tools
 
 ${chalk.bold("Other")}
+  /change-main-agent  Switch the main agent (pet + persona): /change-main-agent <arona|plana>
   /undo            Undo the previous turn's file changes (local snapshot, no git)
   /redo            Redo undone changes
   /help            Show this help
@@ -195,6 +202,10 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
 
     case "mcp":
       await handleMcp(args);
+      return true;
+
+    case "change-main-agent":
+      await handleChangeMainAgent(args, ctx);
       return true;
 
     default:
@@ -435,6 +446,48 @@ async function handleSkill(args: string, ctx: CommandContext) {
   // 但不展开 @文件 / !命令，避免技能 markdown 中的 @ / ! 被误解析。
   console.log(chalk.green(t(`已调用技能：${skillName}`, `Invoked skill: ${skillName}`)));
   await ctx.runAgentTurn(t(`[技能：${skillName}]`, `[skill: ${skillName}]`) + `\n\n${content}`);
+}
+
+/**
+ * /change-main-agent：切换主 Agent（桌宠形象 + 人格）。
+ * 流程：写 settings.json 的 mainAgent → 桌宠带 ARONA_AGENT env 重启 →
+ * 保存当前会话（若有效对话）→ 重建 session（新人设生效）。
+ */
+async function handleChangeMainAgent(args: string, ctx: CommandContext) {
+  // 兼容用法提示里的尖括号占位写法：/change-main-agent <plana> 可直接粘贴
+  let id = args.trim().toLowerCase();
+  if (id.startsWith("<") && id.endsWith(">")) id = id.slice(1, -1).trim();
+  if (!id) {
+    console.log(chalk.cyan(t(
+      `当前主 Agent：${getMainAgent()}。用法：/change-main-agent <arona|plana>。`,
+      `Current main agent: ${getMainAgent()}. Usage: /change-main-agent <arona|plana>.`,
+    )));
+    return;
+  }
+  if (!isValidAgentId(id)) {
+    console.log(chalk.red(t(
+      `未知 Agent："${id}"。可用：arona、plana。`,
+      `Unknown agent: "${id}". Available: arona, plana.`,
+    )));
+    return;
+  }
+  if (id === getMainAgent()) {
+    console.log(chalk.cyan(t(`当前主 Agent 已是 ${id}。`, `Main agent is already ${id}.`)));
+    return;
+  }
+
+  // 1. 持久化（settings.json mainAgent 字段）
+  setMainAgent(id);
+  // 2. 桌宠换形象（pet/main.cjs 按 ARONA_AGENT env 选 agents.cjs 配置；旧进程退出后自动拉起）
+  pet.restartWithAgent(id);
+  // 3. 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
+  ctx.saveCurrentSession();
+  // 4. 重建 session → buildSystemPrompt 依 getMainAgent() 选新人格模板
+  await ctx.newSession();
+  console.log(chalk.green(t(
+    `已切换主 Agent 为 ${id}（桌宠形象 + 人格已切换，新会话已开始）。`,
+    `Switched main agent to ${id} (pet + persona switched, new session started).`,
+  )));
 }
 
 async function handleMcp(args: string) {

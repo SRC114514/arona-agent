@@ -4,7 +4,11 @@ const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { EMOTIONS } = require("./emotions.cjs");
+const { AGENTS } = require("./agents.cjs");
+
+// 当前桌宠角色：ARONA_AGENT 环境变量（src/pet.ts 注入），非法/缺省回退 arona
+const AGENT_ID = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
+const AGENT = AGENTS[AGENT_ID];
 
 const PREFIX = "###PET###";
 const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
@@ -67,7 +71,8 @@ function createWindow() {
 
   // PET_PAGE=spinetest → 加载 Spine 调试页（默认仍 index.html，零风险）
   const page = process.env.PET_PAGE === "spinetest" ? "spinetest.html" : "index.html";
-  win.loadFile(path.join(__dirname, "renderer", page));
+  // ?agent=<id>：渲染层（spine_layer.js/renderer.js）据此读取对应角色配置
+  win.loadFile(path.join(__dirname, "renderer", page), { search: "agent=" + AGENT_ID });
   if (process.env.PET_PAGE) {
     // 调试页：附带 devtools 便于人工查看 console / 网络加载
     win.webContents.openDevTools({ mode: "detach" });
@@ -193,7 +198,7 @@ ipcMain.on("pet:dragend", () => {
 
 ipcMain.on("pet:shake", () => send({ type: "shake" }));
 
-ipcMain.handle("pet:get-emotions", () => EMOTIONS);
+ipcMain.handle("pet:get-agent-config", () => ({ id: AGENT_ID, ...AGENT }));
 
 // ---- stdin 协议 ----
 let buffer = "";
@@ -202,7 +207,7 @@ function handleMessage(msg) {
   if (!win) return;
   switch (msg.type) {
     case "set_emotion":
-      if (EMOTIONS[msg.name]) {
+      if (AGENT.emotions[msg.name]) {
         win.webContents.send("pet:emotion", msg.name);
       } else {
         send({ type: "error", message: `unknown emotion: ${msg.name}` });
