@@ -1,7 +1,8 @@
 // ARONA 桌宠 Spine 渲染层（spine_layer.js，纯 <script> UMD，无构建）
 // 职责：加载 arona_spr 骨架并常驻渲染（track0 = Idle_01 全身循环，基底永不隐藏），
-//       提供摸头头部跟随 / 空闲注视 / 眨眼 / 情绪介导姿态四个骨骼接口。
-// 层模型：spine canvas 是 z1 基底，情绪 PNG 溶解覆盖其上（DOM 溶解由 renderer.js 负责）。
+//       提供摸头头部跟随 / 空闲注视 / 眨眼 / 情绪预设四个骨骼接口。
+// 层模型：情绪 = track4 上的数字预设动画（非循环、残留末帧持有），脸+光环瞬时切换；
+//        track0 始终保持 Idle_01 循环 → 情绪期间身体继续呼吸摇摆。无 DOM 层、无溶解过渡。
 // 手动骨骼覆盖时机（spike 实证）：必须在 state.apply 之后、updateWorldTransform 之前，
 // 否则会被 apply 的 setup 重置（slot 颜色同理，但本模块不覆盖 slot）。
 (function () {
@@ -17,7 +18,14 @@
     look: "Look_01_M",         // 注视姿态（单帧 pose，含嘴部微动）
     lookEnd: "LookEnd_01_M",   // 0.133s 回中
   };
-  const TRACK = { main: 0, blink: 1, look: 2, patPose: 3 };
+  const TRACK = { main: 0, look: 2, patPose: 3, emotion: 4, blink: 5 };
+  // track 布局说明：
+  //   0 main    Idle_01 循环常驻 / Pat_01_A（摸头）
+  //   1 （腾空） 原 blink 已上移到 5（数字预设占 4，预设的 attachment key 会覆盖低 track 的眨眼）
+  //   2 look    Look_01_M / LookEnd_01_M（空闲注视）
+  //   3 patPose Pat_01_M（摸头眉毛）
+  //   4 emotion 数字情绪预设（非循环，残留末帧持有；高 track attachment 恒覆盖低 track）
+  //   5 blink   Eye_Close_01（在预设之上，短暂盖住预设眼部；closedEye 预设期间禁止）
   const DEFAULT_MIX = 0.2;     // track 内 crossfade 时长
 
   // 摸头/注视参数（初值，可调）
@@ -53,6 +61,9 @@
   let patting = false;
   let gazeEnabled = false;
   let headRotSmoothed = 0;
+  let currentPreset = null;     // track4 当前情绪预设动画名（null = 无情绪）
+  let presetClosedEye = false;  // 当前预设是否闭眼（闭眼预设期间禁止眨眼，防 cover 被眨眼末帧置 null 造成睁眼闪）
+  let presetGaze = true;        // 当前预设是否保留瞳孔跟随（闭眼 / 禁跟随预设为 false）
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -244,7 +255,7 @@
       cursorPos = { x, y };
     },
 
-    // 空闲注视开关（仅基底稳定态开启；情绪 PNG 盖上时关闭）
+    // 空闲注视开关（仅基底稳定态开启；情绪预设显示时关闭）
     // 注视姿态（Look_01_M 单帧 pose）由非循环 track 的"残留末帧"特性天然持有；
     // 回中动画播完显式 clearTrack（同上：防残留 track 干扰其它叠加层）
     setGaze(on) {
@@ -260,6 +271,7 @@
     // 摸头（摇动触发）：track0 crossfade 到 Pat_01_A（闭眼嘴）+ track3 Pat_01_M（眉毛）两个静态 pose，
     // Head_Rot 跟随光标大致方向（applyManualBones 内，仅 patting 时）。
     // 摸头期间清掉注视 pose（track2），闭眼 cover 不被注视位移干扰。
+    // 决策点：摸头期间 track4 情绪预设保留不动（"情绪脸+摸头身体"，无 PNG 遮盖冲突，Phase C 目视验收）。
     startPat() {
       if (patting) return;
       patting = true;
@@ -268,66 +280,63 @@
       state.setAnimation(TRACK.main, ANIM.pat, false);
       state.setAnimation(TRACK.patPose, ANIM.patPose, false);
     },
-    // 结束摸头：crossfade 回 Idle_01，恢复空闲注视，头部随平滑系数回正
+    // 结束摸头：crossfade 回 Idle_01，恢复空闲注视（按当前预设的 gaze 标志），头部随平滑系数回正
     endPat() {
       if (!patting) return;
       patting = false;
-      gazeEnabled = true;
+      gazeEnabled = presetGaze;
       state.clearTrack(TRACK.patPose);
-      state.setAnimation(TRACK.look, ANIM.look, false);
+      if (gazeEnabled) state.setAnimation(TRACK.look, ANIM.look, false);
       state.setAnimation(TRACK.main, ANIM.idle, true);
     },
 
-    // 眨眼（track1 一次性）。忙时返回 false：摸头中 / 主轨非 Idle（情绪介导姿态中）。
+    // 眨眼（track5 一次性，预设之上）。忙时返回 false：摸头中 / 闭眼情绪预设中。
     // 注意：本 vendored 3.8.95+ 运行时非循环 track 不会自动清空（trackEnd=MAX_VALUE），
-    // 且残留 track 会持续 apply 末帧（会覆盖 Pat 的闭眼 cover）→ 必须在 complete 里显式 clearTrack。
+    // 且残留 track 会持续 apply 末帧 → 必须在 complete 里显式 clearTrack（track5 不清理会
+    // 把睁眼预设的眼睛盖成闭眼末帧）。
     blink() {
       if (patting) return false;
-      const t = state.getCurrent(TRACK.main);
-      if (t && t.animation.name !== ANIM.idle) return false;
+      if (currentPreset && presetClosedEye) return false;
       const entry = state.setAnimation(TRACK.blink, ANIM.blink, false);
       entry.listener = { complete: () => state.clearTrack(TRACK.blink) };
       return true;
     },
 
-    // 情绪介导姿态（Step 6）：情绪 PNG 溶解盖上的同时 track0 crossfade 到 enter 姿态；
-    // enter 一律非循环（0s pose 由非循环 track 残留末帧天然持有；tired 的 Eye_Close_01 播一次闭眼后持睁眼末帧）；
-    // exit 姿态播完由 listener.complete 接回 Idle（同 blink 的 clearTrack 必要性，此处直接替换为 Idle loop）。
-    setEmotionPose(enter, exit) {
-      if (patting) return;
-      if (enter) {
-        state.setAnimation(TRACK.main, enter, false);
-      } else if (exit) {
-        state.setAnimation(TRACK.main, exit, false);
-        const t = state.getCurrent(TRACK.main);
-        if (t) {
-          t.listener = {
-            complete: () => {
-              if (!patting) state.setAnimation(TRACK.main, ANIM.idle, true);
-            },
-          };
-        }
-      }
+    // ---- 情绪预设（track4）----
+    // 数字预设 = 游戏原生情绪（脸+光环 attachment 集），非循环、残留末帧永久持有，
+    // 与 Idle_01 低 track 无竞争（Idle 无 attachment timeline）。瞬时切换，无过渡。
+    // closedEye：闭眼预设期间禁止眨眼；gaze：是否保留瞳孔跟随（renderer 从 EMOTION_PRESET 传入）。
+    setEmotionPreset(name, closedEye, gaze) {
+      if (patting) return; // 摸头中不接受情绪切换（与旧 setEmotionPose 语义一致）
+      currentPreset = name;
+      presetClosedEye = !!closedEye;
+      presetGaze = gaze !== false;
+      state.setAnimation(TRACK.emotion, name, false);
     },
-    // 情绪退出后回到 Idle（无 exit 姿态时直接调用）
-    clearEmotionPose() {
-      if (!patting) state.setAnimation(TRACK.main, ANIM.idle, true);
-    },
-
-    // 主轨是否在 Idle（renderer 判断眨眼/注视可开）
-    isIdleMain() {
-      const t = state.getCurrent(TRACK.main);
-      return !t || t.animation.name === ANIM.idle;
+    // 摘除情绪预设（回基底脸）。
+    // ⚠️ R2 陷阱（后续维护者勿踩）：严禁用 clearTrack 摘除——本运行时 clearTrack 直接摘
+    // entry、无 mix-out，被预设 key 过的 slot 会残留预设 attachment 不还原。
+    // 必须用 setEmptyAnimation 触发 mix-out 过程的 SETUP 重置（slot 回 setup attachment），
+    // empty entry 播完再 clearTrack 防空壳残留。
+    clearEmotionPreset() {
+      currentPreset = null;
+      presetClosedEye = false;
+      presetGaze = true;
+      const entry = state.setEmptyAnimation(TRACK.emotion, 0.1);
+      entry.listener = { complete: () => state.clearTrack(TRACK.emotion) };
     },
 
     // 状态内省（visual_test.cjs 断言用）；init 完成前 state 为 null，返回空态不抛错
     getState() {
-      if (!state) return { track0: null, track1: null, patting: false, gaze: false, headRot: 0, eyeOff: { x: 0, y: 0 } };
+      if (!state) return { track0: null, track4: null, track5: null, preset: null, patting: false, gaze: false, headRot: 0, eyeOff: { x: 0, y: 0 } };
       const t0 = state.getCurrent(TRACK.main);
-      const t1 = state.getCurrent(TRACK.blink);
+      const t4 = state.getCurrent(TRACK.emotion);
+      const t5 = state.getCurrent(TRACK.blink);
       return {
         track0: t0 ? t0.animation.name : null,
-        track1: t1 ? t1.animation.name : null,
+        track4: t4 ? t4.animation.name : null,
+        track5: t5 ? t5.animation.name : null,
+        preset: currentPreset,
         patting,
         gaze: gazeEnabled,
         headRot: +headRotSmoothed.toFixed(1),

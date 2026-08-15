@@ -1,10 +1,11 @@
 // 视觉复现 harness：复刻桌宠真实运行时（同 spine_layer.js/renderer.js），合成光标 + 情绪指令时间线 + 定时截屏
 // 用法：env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron --no-sandbox pet/tools/visual_test.cjs
-// 产物：/tmp/petcap_<标签>_<ms>.png（capturePage）+ stdout 打印每帧 renderer 内部状态（CAP 行）
-// 检查点：过渡中间帧角色区无桌面透出（无残影）、无黑帧；结束后 getAnimations()===0
-// 介导验收：saying/doubt 的 track0 切到 Look_01_A/M（CAP 行 spine.track0）；回基底走 LookEnd 后接 Idle_01
-// 摸头验收：合成头部摇动手势 → track0=Dev_Pat_01_M、patting=true、headRot 跟随光标；离开头部区域回 Idle
-// 眨眼验收：?idledebug 缩短间隔，轮询 spine.track1 非空截获闭眼中间帧
+// 产物：/tmp/petcap_<标签>_<ms>.png（capturePage）+ stdout 打印每帧 renderer 内部状态（CAP 行）与断言结果（CHECK 行）
+// 断言模型（情绪 = track4 数字预设）：
+//   - 每情绪：track4 = 预设名 + 特征 slot attachment（光环族/嘴型/Eye_Cover）符合期望
+//   - 情绪→reset：track4 摘除后 halo 回 halo_normal_00、Mouse_01 回 setup（验 V6 清理路径）
+//   - 眨眼：track5 截获；闭眼预设期间 SpineLayer.blink() 返回 false（互斥断言）
+//   - 摸头：合成摇动手势 → track0=Pat_01_A、patting=true；离开头部回 Idle（不变）
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -14,40 +15,64 @@ const { EMOTIONS } = require(path.join(PET, "emotions.cjs"));
 let win;
 
 // 指令时间线：t 秒时向渲染层发送情绪/重置指令；offs 覆盖默认截屏偏移
+// expect：落定后（+400ms）执行的断言（track4/slot attachment 期望值）
 const TIMELINE = [
-  // —— 回归：原 5 步纯溶解 + 中断语义 ——
-  { t: 2.0, type: "emotion", name: "enjoy", tag: "v2e" },   // spine → emotion（enjoy 带 Pat_01_A 介导姿态）
-  { t: 3.0, type: "emotion", name: "smile", tag: "e2e" },   // emotion → emotion
-  { t: 4.0, type: "reset", tag: "e2v" },                    // emotion → spine
-  { t: 5.0, type: "emotion", name: "love", tag: "irqA" },   // 中断：5.1s 反向回播
-  { t: 5.1, type: "reset", tag: "irqB" },
-  // —— 介导过渡：saying enter=Look_01_A / exit=LookEnd_01_A；doubt enter=Look_01_M / exit=LookEnd_01_M ——
-  { t: 7.0, type: "emotion", name: "saying", tag: "medSay", offs: [100, 300, 700] },
-  { t: 8.2, type: "reset", tag: "medSayBack", offs: [100, 300, 700] },
-  { t: 9.6, type: "emotion", name: "doubt", tag: "medDoubt", offs: [100, 300, 700] },
-  { t: 10.8, type: "reset", tag: "doubtBack", offs: [100, 300, 700] },
-  // —— 介导中途改写目标：12.2 进 saying，+150ms 改 smile，落定后 cur 应为 smile ——
-  { t: 12.2, type: "emotion", name: "saying", tag: "medIrqA", offs: [100] },
-  { t: 12.35, type: "emotion", name: "smile", tag: "medIrqB", offs: [400, 900] },
+  // —— 情绪进/出 + 瞬时切换（原溶解/中断语义已退役）——
+  { t: 2.0, type: "emotion", name: "enjoy", tag: "enjoy",
+    expect: { track4: "13", coverL: "L_Eye_Cover_01", halo: "halo_normal_00", mouse: "Mouse_01", gaze: false } },
+  { t: 3.0, type: "emotion", name: "smile", tag: "smile",
+    expect: { track4: "99", coverL: "L_Eye_Cover_01", halo: "halo_normal_00", mouse: "Mouse_01", gaze: false } },
+  { t: 4.0, type: "reset", tag: "enjoyBack",
+    expect: { track4: null, coverL: null, halo: "halo_normal_00", mouse: "Mouse_01", gaze: true } },
+  { t: 5.0, type: "emotion", name: "love", tag: "love",
+    expect: { track4: "11", coverL: "L_Eye_Cover_01", halo: "halo_love_00", gaze: false } },
+  { t: 5.4, type: "reset", tag: "loveBack",
+    expect: { track4: null, halo: "halo_normal_00", coverL: null, gaze: true } },
+  // —— 禁跟随预设：angry(05)/jealous(07) 睁眼但 gaze=false ——
+  { t: 5.9, type: "emotion", name: "angry", tag: "angry",
+    expect: { track4: "05", halo: "halo_angry", mouse: "Mouse_06", gaze: false } },
+  { t: 6.4, type: "reset", tag: "angryBack",
+    expect: { track4: null, halo: "halo_normal_00", gaze: true } },
+  // —— 说话/疑惑（旧介导断言改为 track4 预设 + 特征 slot）——
+  { t: 7.0, type: "emotion", name: "saying", tag: "saying", offs: [100, 300, 700],
+    expect: { track4: "20", mouse: "Mouse_02", halo: "halo_normal_00", gaze: true } },
+  { t: 8.2, type: "reset", tag: "sayingBack", offs: [100, 300, 700],
+    expect: { track4: null, mouse: "Mouse_01", gaze: true } },
+  { t: 9.6, type: "emotion", name: "doubt", tag: "doubt", offs: [100, 300, 700],
+    expect: { track4: "27", coverL: "L_Eye_Cover_02", halo: "halo_depressed2_00", shadow: "Face_Shadow_01", mouse: "Mouse_11", gaze: false } },
+  { t: 10.2, type: "reset", tag: "doubtBack", offs: [100, 300, 700],
+    expect: { track4: null, halo: "halo_normal_00", shadow: null, coverL: null, gaze: true } },
+  { t: 10.8, type: "emotion", name: "jealous", tag: "jealous", offs: [100, 300],
+    expect: { track4: "07", halo: "halo_depressed2_00", shadow: "Face_Shadow_01", gaze: false } },
+  { t: 11.4, type: "reset", tag: "jealousBack",
+    expect: { track4: null, halo: "halo_normal_00", shadow: null, gaze: true } },
+  // —— 中途改写目标：12.2 进 saying，+150ms 改 smile，落定后 preset 应为 smile ——
+  { t: 12.2, type: "emotion", name: "saying", tag: "midIrqA", offs: [100] },
+  { t: 12.35, type: "emotion", name: "smile", tag: "midIrqB", offs: [400, 900],
+    expect: { track4: "99", mouse: "Mouse_01", gaze: false } },
   // —— 回 spine 稳定态，给眨眼/摸头留出窗口 ——
-  { t: 14.0, type: "reset", tag: "finalBack" },
+  { t: 14.0, type: "reset", tag: "finalBack",
+    expect: { track4: null, halo: "halo_normal_00", mouse: "Mouse_01", gaze: true } },
   // —— 摸头：合成摇动手势（头部区域）→ 锁窗 + Pat + 头部跟随；16.9 光标离开头部 → 结束摸头 ——
   { t: 16.0, type: "pat", tag: "pat", offs: [200, 600] },
   { t: 16.9, type: "patExit", tag: "patExit", offs: [200, 600] },
 ];
-// 每条指令后 +50/+150/+400ms 截屏（过渡中 / 过渡尾 / 落定后）；介导步骤用 offs 覆盖
+// 每条指令后 +50/+150/+400ms 截屏；带 offs 的步骤用覆盖
 const CAP_OFFSETS = [50, 150, 400];
 
 // 空闲验收超时（眨眼截获等待上限）
 const IDLE_WATCH_TIMEOUT_MS = 45000;
 
 const CAP_JS = `JSON.stringify({
-  cur: sideTarget(cur),
-  inflight: inflight ? { to: inflight.target, dir: inflight.direction, committed: inflight.committed } : null,
   spine: window.SpineLayer.getState(),
-  anims: document.getAnimations().length,
-  emoA: getComputedStyle(document.getElementById("emoA")).display,
-  emoB: getComputedStyle(document.getElementById("emoB")).display
+  slots: {
+    halo: window.SpineLayer.getSlotAttachment("halo_normal_00"),
+    mouse: window.SpineLayer.getSlotAttachment("Mouse_01"),
+    coverL: window.SpineLayer.getSlotAttachment("L_Eye_Cover_01"),
+    shadow: window.SpineLayer.getSlotAttachment("Face_Shadow_01"),
+    sweat: window.SpineLayer.getSlotAttachment("Sweat_01"),
+  },
+  anims: document.getAnimations().length
 })`;
 
 async function capNow(tag, ms) {
@@ -65,6 +90,37 @@ async function capNow(tag, ms) {
 
 function cap(tag, ms) {
   setTimeout(() => void capNow(tag, ms), ms);
+}
+
+// 落定断言：读 getState + slot attachment，对照 expect 逐项输出 CHECK
+function check(tag, ms, expect) {
+  setTimeout(async () => {
+    if (!win || win.isDestroyed()) return;
+    try {
+      const st = JSON.parse(await win.webContents.executeJavaScript(
+        `JSON.stringify({ spine: window.SpineLayer.getState(), slots: {
+          halo: window.SpineLayer.getSlotAttachment("halo_normal_00"),
+          mouse: window.SpineLayer.getSlotAttachment("Mouse_01"),
+          coverL: window.SpineLayer.getSlotAttachment("L_Eye_Cover_01"),
+          shadow: window.SpineLayer.getSlotAttachment("Face_Shadow_01"),
+          sweat: window.SpineLayer.getSlotAttachment("Sweat_01") } })`
+      ));
+      const fails = [];
+      if (expect.track4 !== undefined && st.spine.track4 !== expect.track4)
+        fails.push(`track4=${st.spine.track4} != ${expect.track4}`);
+      if (expect.preset !== undefined && st.spine.preset !== expect.preset)
+        fails.push(`preset=${st.spine.preset} != ${expect.preset}`);
+      if (expect.gaze !== undefined && st.spine.gaze !== expect.gaze)
+        fails.push(`gaze=${st.spine.gaze} != ${expect.gaze}`);
+      for (const k of ["halo", "mouse", "coverL", "shadow", "sweat"]) {
+        if (expect[k] !== undefined && st.slots[k] !== expect[k])
+          fails.push(`${k}=${st.slots[k]} != ${expect[k]}`);
+      }
+      console.log("CHECK", tag, fails.length ? "FAIL " + fails.join("; ") : "OK");
+    } catch (e) {
+      console.log("CHECK", tag, "ERR", e.message);
+    }
+  }, ms);
 }
 
 // 摸头手势合成：mousedown 于头部中心 → 左右交替 mousemove（≥3 次换向）→ 光标固定偏右
@@ -139,26 +195,43 @@ app.whenReady().then(() => {
           // 头部区域（窗口比例 26%-78% x，6%-29% y）中心
           await synthPat(160, 90, 25);
         } else if (step.type === "patExit") {
-          // 光标离开头部区域（任意方向 16px 缓冲）→ 结束摸头，窗口仍锁定
+          // 光标离开头部区域（90px 缓冲外）→ 结束摸头，窗口仍锁定
           await win.webContents.executeJavaScript(
             `document.dispatchEvent(new MouseEvent("mousemove", { clientX: 300, clientY: 400, screenX: 300, screenY: 400, bubbles: true }))`
           );
         }
       }, step.t * 1000);
       for (const off of step.offs || CAP_OFFSETS) cap(step.tag, step.t * 1000 + off);
+      if (step.expect) check(step.tag, step.t * 1000 + 400, step.expect);
     }
 
-    // 眨眼截获：轮询 spine.track1 === "Eye_Close_01"（idledebug 下 1~2s 一次），命中即截闭眼中间帧。
-    // 注意：只截获不退出——时间线后面的介导/摸头步骤还要跑，收尾由 FINAL 定时器负责。
+    // 眨眼互斥断言：
+    //   t=2.6s（enjoy=13 闭眼预设中）blink() 必须返回 false
+    //   t=7.6s（saying=02 睁眼预设中）blink() 必须返回 true
+    // 注意：只截获不退出——时间线后面的步骤还要跑，收尾由 FINAL 定时器负责。
     let gotBlink = false;
+    setTimeout(async () => {
+      try {
+        const r = await win.webContents.executeJavaScript("window.SpineLayer.blink()");
+        console.log("CHECK blinkClosed(enjoy) ", r === false ? "OK" : "FAIL got " + r);
+      } catch (e) { console.log("CHECK blinkClosed ERR", e.message); }
+    }, 2600);
+    setTimeout(async () => {
+      try {
+        const r = await win.webContents.executeJavaScript("window.SpineLayer.blink()");
+        console.log("CHECK blinkOpen(saying) ", r === true ? "OK" : "FAIL got " + r);
+      } catch (e) { console.log("CHECK blinkOpen ERR", e.message); }
+    }, 7600);
+
+    // 眨眼截获：轮询 spine.track5 === "Eye_Close_01"（idledebug 下 1~2s 一次，睁眼窗口期可中），命中即截闭眼中间帧。
     const idleTimer = setInterval(async () => {
       if (!win || win.isDestroyed()) return;
       try {
         const st = JSON.parse(await win.webContents.executeJavaScript(
-          `JSON.stringify({ t1: window.SpineLayer.getState().track1, cur: sideTarget(cur) })`
+          `JSON.stringify({ t5: window.SpineLayer.getState().track5 })`
         ));
         const elapsed = Date.now() - t0;
-        if (!gotBlink && st.t1 === "Eye_Close_01" && st.cur === "spine") {
+        if (!gotBlink && st.t5 === "Eye_Close_01") {
           gotBlink = true;
           console.log("IDLE blink caught at", elapsed, "ms");
           await capNow("idleBlink", elapsed);
@@ -167,10 +240,12 @@ app.whenReady().then(() => {
         }
       } catch {}
     }, 40);
-    // 收尾：时间线全部跑完（patExit 落定后）打印动画泄漏检查并退出
+    // 收尾：时间线全部跑完（patExit 落定后）打印收尾状态并退出
     setTimeout(async () => {
-      const anims = await win.webContents.executeJavaScript("document.getAnimations().length");
-      console.log("FINAL anims:", anims);
+      try {
+        const dbg = await win.webContents.executeJavaScript(CAP_JS);
+        console.log("FINAL", dbg);
+      } catch {}
       clearInterval(timer);
       app.quit();
     }, 19500);

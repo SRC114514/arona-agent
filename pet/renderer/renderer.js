@@ -1,222 +1,50 @@
-// ARONA 桌宠渲染层：Spine 骨骼动画基底 + 情绪 PNG 单向溶解过渡 + 手动拖动 + 摇动彩蛋（摸头）
-// 过渡模型：目标层垫底 opacity=1 常亮，当前层在顶部 opacity 1→0 单向淡出（WAAPI）。
-// 任意时刻至少一层完全不透明（角色区合成 alpha 恒为 1），透明窗口下桌面不会透出 → 无残影。
-// 基底是活的 Spine（Idle_01 常驻、永不隐藏）：情绪 PNG 溶解消失后露出的是动画而非定帧。
-// 摸头（头部摇动 ≥3 次换向触发）：Spine Dev_Pat_01_M 循环 + Head_Rot ±15° 跟随光标，窗口锁死不动。
-// 空闲注视：基底稳定态 Head_Rot ±5° 慢速跟随光标（spine_layer.js 内部实现）。
-// 眨眼：Eye_Close_01 独立轨道（track1），2~6s 均匀随机，15% 概率双眨。
-const slots = [document.getElementById("emoA"), document.getElementById("emoB")];
+// ARONA 桌宠渲染层：Spine 骨骼基底 + 情绪预设（track4 数字预设动画，瞬时切换）+ 手动拖动 + 摇动彩蛋（摸头）
+// 情绪模型：track4 非循环数字预设"残留末帧"持有，脸+光环瞬时切换（游戏原生语义，无过渡）；
+//   track0 始终 Idle_01 循环 → 情绪期间身体继续呼吸摇摆，只有脸+光环切换。
+//   情绪 = 数字预设 attachment 集（嘴/眼/眉/光环/装饰），映射表见 EMOTION_PRESET（单一事实源 emotions.cjs）。
+// 摸头（头部摇动 ≥3 次换向触发）：Pat_01_A + Pat_01_M 静态姿势对 + Head_Rot 跟随光标，窗口锁死不动。
+// 空闲注视：瞳孔跟随光标（spine_layer.js 内部实现），头部不歪。
+// 眨眼：Eye_Close_01 独立轨道（track5，预设之上），2~6s 均匀随机，15% 概率双眨；闭眼预设期间禁止。
 const spineCanvas = document.getElementById("spine");
 
-const ARONA_BASE = "../../assets/blue-archive/arona/";
 const IS_IDLE_DEBUG = new URLSearchParams(location.search).has("idledebug");
-let emotions = {};
 
-function emotionUrl(name) {
-  const file = emotions[name];
-  return file ? ARONA_BASE + file : null;
-}
+// ---- 情绪预设映射（单一事实源：emotions.cjs 值 = 预设动画名；closedEye 在此补充）----
+// 数字预设 = 游戏原生情绪（Phase A 普查：34 个数字预设 00~32+99 均为纯脸部骨 attachment 集）。
+// closedEye：该预设 key 了 L/R_Eye_Cover_01/02（闭眼）→ 情绪期间禁止眨眼
+// （Eye_Close_01 播完末帧会把 cover 置 null，闭眼预设上眨眼会闪出"睁眼"）。
+const CLOSED_EYE_PRESETS = new Set([
+  "03", "10", "11", "12", "13", "14", "18", "23", "24", "26", "27", "28", "29", "30", "32", "99",
+]);
+// 睁眼预设默认保留瞳孔跟随；以下预设禁跟随：jealous(07) 自带固定斜视（跟随会覆盖）、
+// angry(05) 眼神固定不跟光标、doubt(27) 闭眼本就关闭（显式列出以便理解）。
+const NO_GAZE_PRESETS = new Set(["05", "07", "27"]);
+let EMOTION_PRESET = {};
 
-// ---- 情绪切换：单向溶解过渡状态机 ----
-const TRANSITION_MS = 200;
-
-// 稳定态：{ kind:"spine" } | { kind:"emotion", name, slotEl }
-let cur = { kind: "spine" };
-// 进行中的过渡（含 prep 阶段）：{ seq, target, from, to, slotEl, direction, anims, committed }
-let inflight = null;
-let seqCounter = 0;
-// 当前稳定态情绪名（spine 基底时为 null），供基底恢复时选择介导 exit 动画
+// 当前稳定态情绪名（"spine" 基底时为 null）；同名重复路由跳过（幂等）
 let currentEmotion = null;
 
-function sideEl(side) {
-  if (side.kind === "spine") return spineCanvas;
-  return side.slotEl;
-}
-
-function sideTarget(side) {
-  return side.kind === "spine" ? "spine" : side.name;
-}
-
-// 层序归位（静态层序由 style.css 提供：spine 1 / slot 3）
-function resetLayers() {
-  for (const s of slots) s.style.zIndex = "";
-}
-
-// 过渡落定后隐藏一侧：spine 侧 no-op（基底继续渲染、继续播 Idle——露出的是活动画）
-function hideSide(side) {
-  const el = sideEl(side);
-  el.style.display = "none";
-  el.style.opacity = "";
-  if (side.kind === "emotion") el.removeAttribute("src");
-}
-
-// 过渡落定后一侧成为稳定态：spine 侧 no-op（永远在播）
-function showSide(side) {
-  const el = sideEl(side);
-  el.style.display = "block";
-  el.style.opacity = "";
-}
-
-function applyFinalState(t) {
-  for (const a of t.anims) a.cancel();
-  if (t.direction === "out") {
-    hideSide(t.from);
-    showSide(t.to);
-    cur = t.to;
-  } else {
-    hideSide(t.to);
-    showSide(t.from);
-    cur = t.from;
-  }
-  resetLayers();
-}
-
-function completeTransition(t, anim) {
-  // 仅响应当前动画的自然结束（回播/落定会替换 t.anims 或清空 inflight，旧回调一律忽略）
-  if (inflight !== t || t.anims[0] !== anim) return;
-  inflight = null;
-  applyFinalState(t);
-}
-
-// 启动已提交的过渡动画：from 在顶、to 垫底常亮
-// direction "out"：from 淡出（正常方向）；"in"：from 淡回（中断反向回播）
-function startAnimation(t, startOp) {
-  const topEl = sideEl(t.from);
-  const botEl = sideEl(t.to);
-
-  // 层序：情绪 slot 提到最顶（spine 基底永远是垫底 z1）
-  if (t.from.kind === "emotion") t.from.slotEl.style.zIndex = "4";
-  botEl.style.display = "block";
-  botEl.style.opacity = "1";
-  topEl.style.display = "block";
-
-  const targetOp = t.direction === "out" ? 0 : 1;
-  // 回播场景 startOp<1，时长等比缩短，溶解速率一致
-  const dur = Math.max(1, TRANSITION_MS * Math.abs(targetOp - startOp));
-  const opts = { duration: dur, easing: "linear", fill: "forwards" };
-  const anim = topEl.animate([{ opacity: startOp }, { opacity: targetOp }], opts);
-  t.anims = [anim];
-  anim.finished.then(() => completeTransition(t, anim)).catch(() => {});
-}
-
-// prep 期被抢占：撤销不可见的准备工作（此刻 cur 仍完全不透明地显示着，无视觉变化）
-function abortPrep(t) {
-  if (t.slotEl) t.slotEl.removeAttribute("src");
-}
-
-// 中断情形 1：反向回播（新目标 == 正在淡出的 from 侧），从当前 opacity 原路退回，零跳变
-function reverseInflight(mySeq) {
-  const t = inflight;
-  const topEl = sideEl(t.from);
-  let op = parseFloat(getComputedStyle(topEl).opacity);
-  if (!Number.isFinite(op)) op = 1;
-  // cancel 前显式锁定当前透明度，避免 WAAPI cancel 后浏览器回退到默认值 1 造成闪帧
-  topEl.style.opacity = String(op);
-  for (const a of t.anims) a.cancel();
-  t.direction = "in";
-  t.seq = mySeq;
-  t.target = sideTarget(t.from);
-  startAnimation(t, op);
-}
-
-// 中断情形 3：第三者闯入，瞬间落定当前过渡（≤200ms 进度步进），再由调用方按新目标重启
-function settleInflight() {
-  const t = inflight;
-  inflight = null;
-  applyFinalState(t);
-}
-
-async function transitionTo(target) {
-  // 幂等：已在目标稳定态；续播：正在向目标过渡（含 prep）
-  if (!inflight && sideTarget(cur) === target) return;
-  if (inflight && inflight.target === target) return;
-
-  const mySeq = ++seqCounter;
-
-  if (inflight && inflight.committed) {
-    if (sideTarget(inflight.from) === target) {
-      reverseInflight(mySeq);
-      return;
-    }
-    settleInflight();
-  } else if (inflight) {
-    abortPrep(inflight);
-    inflight = null;
-  }
-
-  const t = {
-    seq: mySeq,
-    target,
-    from: cur,
-    to: null,
-    slotEl: null,
-    direction: "out",
-    anims: [],
-    committed: false,
-  };
-  inflight = t;
-
-  // ---- prep（仅不可见变更；每个 await 后检查是否被抢占）----
-  if (target === "spine") {
-    // 无需 prep：基底永远在播（emotion→spine 溶解可直接开始）
-    t.to = { kind: "spine" };
-  } else {
-    const url = emotionUrl(target);
-    if (!url) {
-      if (inflight === t) inflight = null;
-      return;
-    }
-    // 双 slot：当前显示占一个，目标用另一个
-    const slotEl = cur.kind === "emotion" && cur.slotEl === slots[0] ? slots[1] : slots[0];
-    t.slotEl = slotEl;
-    slotEl.src = url;
-    // decode 完成再开始动画，避免透明窗口下闪白（情绪图已预加载，实际秒回）
-    try { await slotEl.decode(); } catch {}
-    if (inflight !== t) return;
-    t.to = { kind: "emotion", name: target, slotEl };
-  }
-
-  // ---- commit（同步可见变更 + 启动动画）----
-  t.committed = true;
-  startAnimation(t, 1);
-}
-
-// ---- 情绪 ↔ Spine 介导姿态（旧 clip 介导过渡的免费替代，Step 6）----
-// 情绪 PNG 溶解盖上的同时，track0 crossfade 到对应姿态——PNG 溶解退出时底下姿势已衔接。
-// enter 是单帧 pose 时非循环持有；exit 播完由 spine_layer 自动接回 Idle_01。
-const EMOTION_SPINE_ANIM = {
-  saying: { enter: "Look_01_A", exit: "LookEnd_01_A" },
-  doubt:  { enter: "Look_01_M", exit: "LookEnd_01_M" },
-  tired:  { enter: "Eye_Close_01" },
-  enjoy:  { enter: "Pat_01_A" },
-};
-
-function applyBaseHooks(target) {
-  const L = window.SpineLayer;
-  if (target === "spine") {
-    // 回基底：先播 exit 介导动画（如有）再接 Idle；开启空闲注视
-    const prev = currentEmotion;
-    currentEmotion = null;
-    if (prev && EMOTION_SPINE_ANIM[prev] && EMOTION_SPINE_ANIM[prev].exit) {
-      L.setEmotionPose(null, EMOTION_SPINE_ANIM[prev].exit);
-    } else {
-      L.clearEmotionPose();
-    }
-    L.setGaze(true);
-  } else {
-    currentEmotion = target;
-    L.setGaze(false);
-    const m = EMOTION_SPINE_ANIM[target];
-    if (m) L.setEmotionPose(m.enter || null, null);
-    else L.clearEmotionPose();
-  }
-}
-
-// 路由入口：摸头中收到新指令先结束摸头（crossfade 回 Idle），再正常路由
-async function routeTo(target) {
+// 路由入口：摸头中收到新指令先结束摸头（crossfade 回 Idle），再正常路由。
+// 瞬时切换语义：setAnimation 直接 snap（本运行时高 track attachment 恒覆盖低 track），无过渡。
+function routeTo(target) {
   if (window.SpineLayer.getState().patting) window.SpineLayer.endPat();
-  applyBaseHooks(target);
-  await transitionTo(target);
+  if (target === "spine") {
+    if (currentEmotion === null) return;
+    currentEmotion = null;
+    // ⚠️ 摘除必须走 setEmptyAnimation（触发 mix-out SETUP 重置，脸回 setup pose）；
+    // clearTrack 会残留预设 attachment 不还原（见 spine_layer.clearEmotionPreset 注释）。
+    window.SpineLayer.clearEmotionPreset();
+    // 空闲注视恢复（决策点：情绪期间 gaze/眼球跟随维持关闭，与现状一致）
+    window.SpineLayer.setGaze(true);
+  } else {
+    if (currentEmotion === target) return;
+    const m = EMOTION_PRESET[target];
+    if (!m) return;
+    currentEmotion = target;
+    // 睁眼情绪保留瞳孔跟随，闭眼 / 禁跟随预设（jealous/angry/doubt）关闭
+    window.SpineLayer.setGaze(m.gaze);
+    window.SpineLayer.setEmotionPreset(m.anim, m.closedEye, m.gaze);
+  }
 }
 
 // ---- 眨眼调度（2~6s 均匀随机，15% 概率双眨；?idledebug 缩短为 1~2s 供视觉回归截获）----
@@ -233,19 +61,18 @@ function scheduleBlink() {
 }
 
 function tryBlink() {
-  // 忙时跳过本次并重排：情绪 PNG 显示中（底下眨眼看不到）、DOM 过渡中、摸头/介导姿态中
-  if (cur.kind !== "spine" || inflight) return;
+  // 互斥判断全在 SpineLayer.blink() 内部（摸头中/闭眼情绪预设中返回 false 即跳过本次）
   if (!window.SpineLayer.blink()) return;
   if (Math.random() < 0.15) {
     // 双眨：第一次（0.133s）结束后 150~250ms 再来一次
     setTimeout(() => {
-      if (cur.kind === "spine" && !inflight) window.SpineLayer.blink();
+      window.SpineLayer.blink();
     }, 300 + Math.random() * 150);
   }
 }
 
 function showEmotion(name) {
-  if (!emotionUrl(name)) return;
+  if (!EMOTION_PRESET[name]) return;
   routeTo(name);
 }
 
@@ -367,13 +194,14 @@ function onMouseUp() {
 }
 
 async function init() {
-  emotions = await window.petAPI.getEmotions();
-
-  // 预加载并解码全部情绪图，避免首次切换闪白
-  for (const name of Object.keys(emotions)) {
-    const img = new Image();
-    img.src = emotionUrl(name);
-    img.decode().catch(() => {});
+  // 情绪预设映射：emotions.cjs（与 main 进程白名单同源）值 = 预设动画名
+  const emotions = await window.petAPI.getEmotions();
+  for (const [name, anim] of Object.entries(emotions)) {
+    EMOTION_PRESET[name] = {
+      anim,
+      closedEye: CLOSED_EYE_PRESETS.has(anim),
+      gaze: !CLOSED_EYE_PRESETS.has(anim) && !NO_GAZE_PRESETS.has(anim),
+    };
   }
 
   // Spine 基底（加载失败时抛出——spine 资源是硬依赖，渲染层无降级路径）

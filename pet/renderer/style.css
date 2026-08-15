@@ -20,7 +20,7 @@ body:active {
   height: 100%;
 }
 
-/* Spine 骨骼动画基底：z1 常驻、永不隐藏（情绪 PNG 溶解覆盖其上） */
+/* Spine 骨骼动画基底：z1 常驻、永不隐藏（情绪由 track4 数字预设切换，无 DOM 层） */
 #spine {
   position: absolute;
   inset: 0;
@@ -30,14 +30,3 @@ body:active {
   z-index: 1;
 }
 
-/* 情绪 PNG：静态 z3；过渡期间由 renderer.js 动态提到 z4 作顶层淡出 */
-.emo {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  pointer-events: none;
-  z-index: 3;
-  display: none;
-}

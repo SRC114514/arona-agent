@@ -31,13 +31,13 @@ arona --no-voice
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
 - **Voice**: Qwen TTS + STT.
-- **Desktop pet**: transparent always-on-top Electron window, idle video loop + 15 emotion expressions + cursor-following pupils + drag/shake easter egg.
+- **Desktop pet**: transparent frameless always-on-top Electron window, Spine skeleton idle animation + emotion switching + cursor-following pupils + drag/head-pat easter egg + full-screen click/trail FX.
 
 ---
 
 ## Requirements
 
-- **Node.js >= 22.19.0** (runs TypeScript directly via `--experimental-strip-types`, no build step)
+- **Node.js >= 22.19.0**
 - **Python 3.12 / 3.13**
 
 ---
@@ -89,7 +89,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 ## Desktop Pet & STT Hotkey
 
-- **Desktop pet**: transparent frameless always-on-top window with a looping idle video. Before each message segment the agent calls `change_emotion` to switch among 15 emotion expressions. Emotion switching uses a one-way dissolve transition; dragging the head region left-right triggers the easter egg; TTS plays sentence by sentence.
+- **Desktop pet**: transparent frameless always-on-top window with a looping Spine skeleton idle animation (`Idle_01`) as its base. Before each message segment the agent calls `change_emotion`; Drag to move the window; shaking the head region left-right triggers a "head-pat" easter egg; clicks/drags also fire full-screen click and trail FX. TTS plays sentence by sentence, and the emotion persists until TTS finishes, then reverts to the default automatically.
 - **STT hotkey**: right Cmd key — press and hold for ≥ 2 seconds to start a one-shot recording.
 - **macOS permissions**: global keyboard monitoring requires Accessibility permission for Python (System Settings → Privacy & Security → Accessibility); Computer Use screenshots require Screen Recording permission for the terminal.
 
