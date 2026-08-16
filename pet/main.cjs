@@ -6,10 +6,14 @@ const fs = require("fs");
 const os = require("os");
 const { AGENTS } = require("./agents.cjs");
 
-// Windows 透明无边框窗口在部分显卡驱动下会触发渲染进程崩溃；
-// 关闭硬件加速（须在 app ready 前调用），Mac 保持 GPU 渲染不变。
+// Windows 透明无边框窗口在部分显卡驱动下会触发渲染进程崩溃；禁 GPU 硬件加速（须在 app ready 前调用）。
+// 注意：不能用 app.disableHardwareAcceleration()——Electron 43 里它会顺带 --disable-software-rasterizer，
+// 把软件 WebGL 一并堵死（实测 getGPUFeatureStatus().webgl === "disabled_off"，Spine 直接白屏）。
+// 改用细粒度 flag：disable-gpu 只禁硬件 GPU（保留"防透明窗口崩溃"的初衷），
+// enable-unsafe-swiftshader 放行 SwiftShader 软件 WebGL（仍失败则 spine_layer 自动降级 Canvas 2D，见 §B12）。
 if (process.platform === "win32") {
-  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("enable-unsafe-swiftshader");
 }
 
 // 当前桌宠角色：ARONA_AGENT 环境变量（src/pet.ts 注入），非法/缺省回退 arona
@@ -18,6 +22,13 @@ const AGENT = AGENTS[AGENT_ID];
 
 const PREFIX = "###PET###";
 const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
+
+// --verbose（src/pet.ts 注入 ARONA_PET_VERBOSE=1 + --enable-logging）：
+// 主进程详细日志走 stderr 原样转发回终端，用于锁定 Windows 白屏等"进程活着但无画面"问题。
+const VERBOSE = process.env.ARONA_PET_VERBOSE === "1";
+function vlog(...args) {
+  if (VERBOSE) console.error("[pet:verbose]", ...args);
+}
 
 let win = null;
 let fxWin = null; // 全屏透明特效窗口（点击/拖尾），覆盖所有显示器、鼠标穿透
@@ -34,7 +45,16 @@ function send(msg) {
 function loadPosition() {
   try {
     const data = JSON.parse(fs.readFileSync(POS_FILE, "utf-8"));
-    if (Number.isFinite(data.x) && Number.isFinite(data.y)) return data;
+    if (Number.isFinite(data.x) && Number.isFinite(data.y)) {
+      // 屏幕边界检查：记忆坐标须落在任一显示器 bounds 内（中心点判定），否则视为失效。
+      // 防分辨率变化 / Mac→Win 迁移 / 负坐标导致窗口创建在屏幕外"看似没显示"。
+      const W = 320, H = 674; // 与 createWindow 尺寸一致
+      for (const d of screen.getAllDisplays()) {
+        const { x, y, width, height } = d.bounds;
+        const cx = data.x + W / 2, cy = data.y + H / 2;
+        if (cx >= x && cx <= x + width && cy >= y && cy <= y + height) return data;
+      }
+    }
   } catch {
     // 无记录或损坏，忽略
   }
@@ -74,20 +94,49 @@ function createWindow() {
   }
   const pos = loadPosition();
   if (pos) win.setPosition(pos.x, pos.y);
+  vlog("window created", JSON.stringify({ pos, alwaysOnTop: win.isAlwaysOnTop(), visible: win.isVisible(), bounds: win.getBounds() }));
 
   // PET_PAGE=spinetest → 加载 Spine 调试页（默认仍 index.html，零风险）
   const page = process.env.PET_PAGE === "spinetest" ? "spinetest.html" : "index.html";
   // ?agent=<id>：渲染层（spine_layer.js/renderer.js）据此读取对应角色配置
-  win.loadFile(path.join(__dirname, "renderer", page), { search: "agent=" + AGENT_ID });
+  const url = path.join(__dirname, "renderer", page);
+  win.loadFile(url, { search: "agent=" + AGENT_ID });
+  vlog("loadFile", url, "?agent=" + AGENT_ID);
   if (process.env.PET_PAGE) {
     // 调试页：附带 devtools 便于人工查看 console / 网络加载
     win.webContents.openDevTools({ mode: "detach" });
   }
-  win.webContents.on("did-finish-load", () => send({ type: "ready" }));
+  win.webContents.on("did-finish-load", () => {
+    vlog("did-finish-load", win.webContents.getURL());
+    send({ type: "ready" });
+  });
+  // 页面加载失败（资源 404 / file:// 路径错 / 加载被拦）：必然白屏，任何模式都要转发
+  win.webContents.on("did-fail-load", (_e, code, desc, url2, isMain) => {
+    if (!isMain) return;
+    console.error(`[pet:render] did-fail-load code=${code} desc=${desc} url=${url2}`);
+  });
+  // renderer console 转发到 stderr（src/pet.ts 已打印 [pet] 前缀）：页面 JS 错误默认静默
+  // （不进 stderr），Windows 白屏等故障全靠它定位。Electron 43 规范签名为单事件对象：
+  // event.{message, level, lineNumber, sourceId}（老双参数签名会打 deprecation 警告）。
+  win.webContents.on("console-message", (event) => {
+    const msg = typeof event.message === "string" ? event.message : "";
+    if (!msg) return;
+    const line = event.lineNumber ? `:${event.lineNumber}` : "";
+    // verbose：带 level（0=verbose 1=info 2=warning 3=error）+ 来源文件
+    if (VERBOSE) {
+      const src = event.sourceId ? ` (${event.sourceId}${line})` : "";
+      console.error(`[pet:render:${event.level ?? "?"}]${src} ${msg}`);
+    } else {
+      console.error(`[pet:render]${line} ${msg}`);
+    }
+  });
   // 渲染进程崩溃上报（Windows 透明窗口崩溃的主因；reason/exitCode 可精确定位）
   win.webContents.on("render-process-gone", (_e, details) => {
     send({ type: "crash", kind: "render", reason: details.reason, exitCode: details.exitCode, url: win.webContents.getURL() });
+    vlog("render-process-gone", JSON.stringify(details));
   });
+  // 窗口关闭诊断（verbose）：window-all-closed 会因任一窗口被系统/驱动关闭而触发，导致 code 0 退出
+  win.on("closed", () => vlog("win closed"));
   startCursorTracking();
 }
 
@@ -134,6 +183,8 @@ function createFxWindow() {
     fxWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
   fxWin.loadFile(path.join(__dirname, "renderer", "fx.html"));
+  fxWin.on("closed", () => vlog("fxWin closed"));
+  vlog("fx window created", JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }));
 }
 
 // ---- 特效坐标转发：桌宠窗口(全局 DIP) → 特效窗口(本地 CSS px) ----
@@ -215,6 +266,7 @@ let buffer = "";
 
 function handleMessage(msg) {
   if (!win) return;
+  vlog("stdin msg", JSON.stringify(msg));
   switch (msg.type) {
     case "set_emotion":
       if (AGENT.emotions[msg.name]) {
@@ -247,14 +299,32 @@ process.stdin.on("data", (data) => {
   }
 });
 
-process.stdin.on("end", () => app.quit());
+process.stdin.on("end", () => {
+  // Windows：stdin 会提前 EOF（GUI 子系统 + 父进程 stdio 链），直接 app.quit() 会把刚启动、
+  // 尚未 did-finish-load 的桌宠误杀（症状：code 0 静默退出、窗口闪一下不见）。
+  // 桌宠退出由父进程（src/pet.ts）的 quit 指令 + SIGTERM 兜底驱动，不依赖 stdin EOF。
+  // 其他平台：stdin EOF 可靠表示父进程退出，跟随退出防孤儿进程。
+  vlog("stdin END", process.platform === "win32" ? "(ignored on win32)" : "(quit)");
+  if (process.platform !== "win32") app.quit();
+});
 
 app.whenReady().then(() => {
+  if (VERBOSE) {
+    // GPU 功能状态：确认 webgl/webgl2 是 hardware/software/disabled（Windows 白屏排查关键）
+    try {
+      vlog("GPU feature status:", JSON.stringify(app.getGPUFeatureStatus()));
+    } catch (e) {
+      vlog("getGPUFeatureStatus failed:", e.message);
+    }
+    vlog("platform:", process.platform, "electron:", process.versions.electron, "chrome:", process.versions.chrome);
+    vlog("displays:", JSON.stringify(screen.getAllDisplays().map((d) => d.bounds)));
+  }
   createWindow();
   createFxWindow();
 });
 
 app.on("window-all-closed", () => {
+  vlog("window-all-closed → app.quit()");
   if (cursorTimer) {
     clearInterval(cursorTimer);
     cursorTimer = null;
@@ -262,9 +332,14 @@ app.on("window-all-closed", () => {
   app.quit();
 });
 
+// 退出链路诊断（verbose）：定位"进程 code 0 退出但无 did-finish-load"的退出源
+app.on("before-quit", () => vlog("before-quit"));
+app.on("will-quit", () => vlog("will-quit"));
+
 // ---- 崩溃日志：GPU/utility 子进程崩溃 + 主进程 JS 异常（配合 src/pet.ts 的 crash 处理定位问题） ----
 app.on("child-process-gone", (_e, details) => {
   send({ type: "crash", kind: details.type || "child", reason: details.reason, exitCode: details.exitCode });
+  vlog("child-process-gone", JSON.stringify(details));
 });
 process.on("uncaughtException", (err) => {
   console.error("[pet:crash] uncaughtException:", err && err.stack ? err.stack : err);

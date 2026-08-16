@@ -25,6 +25,9 @@ arona
 
 # 禁用TTS+STT并启动
 arona --no-voice
+
+# 详细日志模式（桌宠/子进程日志原样输出，排查白屏等显示问题用）
+arona --verbose
 ```
 
 ---

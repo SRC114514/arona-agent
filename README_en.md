@@ -23,6 +23,9 @@ arona
 
 # Launch with TTS/STT disabled
 arona --no-voice
+
+# Verbose logging mode (pet/subprocess logs forwarded verbatim; for diagnosing display issues like white screens)
+arona --verbose
 ```
 
 ---

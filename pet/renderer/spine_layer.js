@@ -43,6 +43,10 @@
 
   let canvas = null;
   let gl = null;
+  let ctx2d = null;             // Canvas 2D 降级模式上下文（WebGL 不可用时）
+  let canvasRenderer2d = null;  // spine.canvas.SkeletonRenderer（降级模式）
+  let mode = "webgl";           // "webgl" | "canvas2d"（WebGL 创建失败自动降级）
+  let cam2d = { scale: 1, cx: 0, cy: 0, cw: 1, ch: 1 }; // 2D 模式投影参数（fitCamera 填充）
   let assetManager = null;
   let skeleton = null;
   let state = null;
@@ -68,13 +72,20 @@
     return v < lo ? lo : v > hi ? hi : v;
   }
 
-  // 窗口 CSS px → 骨架世界坐标（runtime 自带逆投影，与绘制投影严格一致）
+  // 窗口 CSS px → 骨架世界坐标（与绘制投影严格一致：WebGL 用 runtime 逆投影，
+  // canvas2d 用 cam2d 手动画的 ctx 变换之逆——注意 2D 投影含 y 轴翻转）
   function windowToSkeleton(x, y) {
     const cw = canvas.clientWidth || window.innerWidth;
     const ch = canvas.clientHeight || window.innerHeight;
-    const p = new spine.webgl.Vector3(x, y, 0);
-    renderer.camera.screenToWorld(p, cw, ch);
-    return { x: p.x, y: p.y };
+    if (mode === "webgl") {
+      const p = new spine.webgl.Vector3(x, y, 0);
+      renderer.camera.screenToWorld(p, cw, ch);
+      return { x: p.x, y: p.y };
+    }
+    return {
+      x: (x - cam2d.cw / 2) / cam2d.scale + cam2d.cx,
+      y: -(y - cam2d.ch / 2) / cam2d.scale + cam2d.cy,
+    };
   }
 
   // 尺寸拟合：包围盒等比缩放填满窗口（无 pad，构图与 1010×2128 情绪 PNG 对齐）
@@ -88,19 +99,23 @@
     const ch = canvas.clientHeight || window.innerHeight;
     const extra = agent && typeof agent.extraScale === "number" ? agent.extraScale : EXTRA_SCALE;
     const scale = Math.min(cw / size.x, ch / size.y) * extra;
-    renderer.camera.setViewport(cw / scale, ch / scale);
-    renderer.camera.position.set(
-      offset.x + size.x / 2 + OFFSET_X,
-      offset.y + size.y / 2 + OFFSET_Y,
-      0
-    );
+    const cx = offset.x + size.x / 2 + OFFSET_X;
+    const cy = offset.y + size.y / 2 + OFFSET_Y;
+    if (mode === "webgl") {
+      renderer.camera.setViewport(cw / scale, ch / scale);
+      renderer.camera.position.set(cx, cy, 0);
+    } else {
+      // canvas2d：记录投影参数，loop 每帧换算成 ctx 变换（含 y 轴翻转）
+      cam2d = { scale, cx, cy, cw, ch };
+    }
   }
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round((canvas.clientWidth || window.innerWidth) * dpr);
     canvas.height = Math.round((canvas.clientHeight || window.innerHeight) * dpr);
-    gl.viewport(0, 0, canvas.width, canvas.height);
+    if (mode === "webgl") gl.viewport(0, 0, canvas.width, canvas.height);
+    // canvas2d：无需 viewport；loop 每帧按 cam2d + dpr 重设 ctx 变换
   }
 
   // 手动骨骼覆盖（每帧，apply 之后）：
@@ -177,11 +192,25 @@
     state.apply(skeleton);
     applyManualBones();
     skeleton.updateWorldTransform();
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    renderer.begin();
-    renderer.drawSkeleton(skeleton, true); // premultiplied
-    renderer.end();
+    if (mode === "webgl") {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      renderer.begin();
+      renderer.drawSkeleton(skeleton, true); // premultiplied
+      renderer.end();
+    } else {
+      // Canvas 2D 降级：手动投影（等价 WebGL camera 的 setViewport+position）：
+      // setTransform(dpr) 后 translate 到画布中心 → scale(scale, -scale) 缩放并翻转 y
+      // （骨架世界坐标 y 向上、canvas 2D y 向下）→ translate 到世界中心。
+      const c = ctx2d;
+      const dpr = window.devicePixelRatio || 1;
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      c.clearRect(0, 0, cam2d.cw, cam2d.ch);
+      c.translate(cam2d.cw / 2, cam2d.ch / 2);
+      c.scale(cam2d.scale, -cam2d.scale);
+      c.translate(-cam2d.cx, -cam2d.cy);
+      canvasRenderer2d.draw(skeleton);
+    }
     requestAnimationFrame(loop);
   }
 
@@ -207,18 +236,33 @@
       premultipliedAlpha: true,
       antialias: true,
     });
-    if (!gl) throw new Error("WebGL 不可用");
-    assetManager = new spine.webgl.AssetManager(gl, agent.spineBase);
-    // 纹理上传时预乘（UNPACK_PREMULTIPLY_ALPHA_WEBGL），与 drawSkeleton(skeleton, true) 的
-    // premultiplied 混合配套。注意：本 vendored 3.8 构建的 GLTexture 只有 (context, image, useMipMaps)
-    // 三个参数、无 premultiply 开关——必须在上传前手动设 pixelStorei，否则边缘 RGB 不预乘
-    // 会与 premultiplied 混合冲突，半透明边缘爆白（"白边像抠图没抠好"+ 虹膜被冲淡成白）。
-    assetManager.textureLoader = (image) => {
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-      const tex = new spine.webgl.GLTexture(gl, image, false);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      return tex;
-    };
+    if (gl) {
+      // ---- WebGL 模式（macOS 主路径；Windows 需 enable-unsafe-swiftshader 软渲染）----
+      mode = "webgl";
+      assetManager = new spine.webgl.AssetManager(gl, agent.spineBase);
+      // 纹理上传时预乘（UNPACK_PREMULTIPLY_ALPHA_WEBGL），与 drawSkeleton(skeleton, true) 的
+      // premultiplied 混合配套。注意：本 vendored 3.8 构建的 GLTexture 只有 (context, image, useMipMaps)
+      // 三个参数、无 premultiply 开关——必须在上传前手动设 pixelStorei，否则边缘 RGB 不预乘
+      // 会与 premultiplied 混合冲突，半透明边缘爆白（"白边像抠图没抠好"+ 虹膜被冲淡成白）。
+      assetManager.textureLoader = (image) => {
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        const tex = new spine.webgl.GLTexture(gl, image, false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        return tex;
+      };
+    } else {
+      // ---- Canvas 2D 降级（WebGL 不可用时的保险丝，如 Windows 软渲染失败/远程桌面）----
+      // getContext("webgl") 返回 null 不锁定 canvas 类型，可再取 2d。
+      // canvas 2D 无 premultiplied 管线问题（drawImage 由浏览器按 straight alpha 合成）。
+      mode = "canvas2d";
+      console.warn("[pet:render] WebGL 不可用，已降级 Canvas 2D 渲染（性能较低，仅兜底）");
+      ctx2d = canvas.getContext("2d");
+      if (!ctx2d) throw new Error("Canvas 2D 也不可用");
+      assetManager = new spine.AssetManager(
+        (img) => ({ getImage: () => img }), // 最小 Texture：仅需 getImage()（drawImages 只读图）
+        agent.spineBase
+      );
+    }
     assetManager.loadBinary(agent.skelFile);
     assetManager.loadTextureAtlas(agent.atlasFile);
     const ok = await waitLoad(assetManager);
@@ -243,7 +287,14 @@
     state = new spine.AnimationState(stateData);
     state.setAnimation(TRACK.main, agent.anims.idle, true);
 
-    renderer = new spine.webgl.SceneRenderer(canvas, gl, true);
+    if (mode === "webgl") {
+      renderer = new spine.webgl.SceneRenderer(canvas, gl, true);
+    } else {
+      canvasRenderer2d = new spine.canvas.SkeletonRenderer(ctx2d);
+      // drawImages 模式会跳过 mesh attachment（骨架网格变形部分不显示），
+      // 开 triangleRendering 逐三角形绘制保证骨架完整（性能换完整性，兜底场景可接受）。
+      canvasRenderer2d.triangleRendering = true;
+    }
     resize();
     fitCamera();
     window.addEventListener("resize", () => {

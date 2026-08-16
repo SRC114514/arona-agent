@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import chalk from "chalk";
-import { PET_DIR } from "./config.ts";
+import { PET_DIR, verbose } from "./config.ts";
 import { getMainAgent, type AgentId } from "./agent_registry.ts";
 import { t } from "./locale.ts";
 
@@ -14,6 +14,12 @@ const STDERR_RING_SIZE = 100; // 崩溃时 dump 的 stderr 最近行数
 // 避免首次启动时 CLI 卡在慢速的 GitHub Releases 下载上。
 const ELECTRON_DIR = join(PET_DIR, "..", "node_modules", "electron");
 const ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/";
+
+// --verbose 调试日志：原样转发 Electron stdout/stderr、spawn 参数、协议消息，
+// 用于锁定 Windows 白屏等"进程活着但无画面"类问题（正常模式这些日志被静默/过滤）。
+function vlog(...args: unknown[]): void {
+  if (verbose) console.error(chalk.gray("[pet:verbose]"), ...args);
+}
 
 /** 与 electron/install.js getPlatformPath() 保持一致：各平台可执行文件的相对路径 */
 function electronPlatformPath(): string {
@@ -131,7 +137,16 @@ class PetBridge {
       delete env.ELECTRON_RUN_AS_NODE;
       // --no-sandbox：部分环境（权限受限的终端/容器）无法初始化 Chromium sandbox；
       // 桌宠只加载本地文件，关闭 sandbox 风险可接受
-      this.proc = spawn(electronPath, ["--no-sandbox", join(PET_DIR, "main.cjs")], {
+      const args = ["--no-sandbox"];
+      if (verbose) {
+        // --enable-logging：把渲染进程 console（WebGL/GPU 初始化失败等）原样打进 stderr——
+        // 不传的话 renderer 的 console.error 默认只进 devtools，白屏根因完全不可见。
+        // 同时用 env 通知 pet/main.cjs 输出主进程详细日志。
+        args.push("--enable-logging");
+        env.ARONA_PET_VERBOSE = "1";
+        vlog("spawn", electronPath, args.concat(join(PET_DIR, "main.cjs")), "agent=", this.agentId);
+      }
+      this.proc = spawn(electronPath, args.concat(join(PET_DIR, "main.cjs")), {
         env,
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -154,17 +169,20 @@ class PetBridge {
       // 始终入环（崩溃时 dump 用）；平时仅打印非空且不常见的错误
       this.stderrRing.push(msg);
       if (this.stderrRing.length > STDERR_RING_SIZE) this.stderrRing.shift();
-      if (!msg.includes("dbus") && !msg.includes("GLib")) {
+      // verbose：原样转发全部 stderr（不过滤 dbus/GLib——它们可能夹带关键渲染日志）
+      if (verbose || (!msg.includes("dbus") && !msg.includes("GLib"))) {
         console.error(chalk.gray("[pet]"), msg);
       }
     });
 
     this.proc.on("error", (err) => {
+      vlog("spawn error:", err.message);
       console.warn(chalk.yellow(t(`桌宠：进程错误（${err.message}），已降级。`, `Pet: process error (${err.message}), degraded.`)));
       this.proc = null;
     });
 
     this.proc.on("close", (code, signal) => {
+      vlog("process closed", { code, signal, intentional: this.intentionalStop, pendingAgent: this.pendingAgent });
       this.proc = null;
       if (this.pendingAgent) {
         // 切换角色：旧进程已退出，以新角色重新拉起（stop 时 intentionalStop=true 不会走退避重启）
@@ -209,6 +227,7 @@ class PetBridge {
     } catch {
       return;
     }
+    vlog("recv", JSON.stringify(msg));
     if (msg.type === "ready") {
       this.restartCount = 0; // 成功启动后重置退避计数
     } else if (msg.type === "error") {
@@ -216,12 +235,15 @@ class PetBridge {
     } else if (msg.type === "crash") {
       // 渲染/GPU 子进程崩溃上报（pet/main.cjs 的 render-process-gone / child-process-gone）
       console.error(chalk.red(`[pet:crash] ${msg.kind ?? "process"} reason=${msg.reason ?? "?"} exitCode=${msg.exitCode ?? "?"} url=${msg.url ?? ""}`));
+      // verbose：附带原始 detail（main.cjs 在 ARONA_PET_VERBOSE 下会补全字段）
+      vlog("crash detail:", JSON.stringify(msg));
     }
     // moved / shake 目前仅作日志用途，无需处理
   }
 
   private send(msg: Record<string, unknown>): void {
     if (!this.proc || this.proc.killed) return;
+    vlog("send", JSON.stringify(msg));
     try {
       this.proc.stdin.write(JSON.stringify(msg) + "\n");
     } catch {

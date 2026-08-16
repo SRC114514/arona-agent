@@ -23,6 +23,9 @@ ensureDir(SKILLS_DIR);
 // Parse --no-voice flag from CLI args
 const noVoice = process.argv.includes("--no-voice");
 
+// Parse --verbose flag from CLI args（桌宠/子进程详细日志；Electron 加 --enable-logging 转发 renderer 日志）
+export const verbose = process.argv.includes("--verbose");
+
 export interface McpServerConfig {
   command?: string;
   args?: string[];

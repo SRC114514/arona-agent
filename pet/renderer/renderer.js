@@ -204,8 +204,15 @@ async function init() {
     };
   }
 
-  // Spine 基底（加载失败时抛出——spine 资源是硬依赖，渲染层无降级路径）
-  await window.SpineLayer.init(spineCanvas);
+  try {
+    // Spine 基底（加载失败时抛出——spine 资源是硬依赖，渲染层无降级路径；
+    // WebGL 不可用时 spine_layer 内部已自动降级 Canvas 2D，此处仅兜底输出错误）
+    await window.SpineLayer.init(spineCanvas);
+  } catch (err) {
+    // 错误经 main.cjs console-message 转发 → 终端可见（[pet:render]），不静默
+    console.error("[pet:render] SpineLayer.init 失败:", err && err.message ? err.message : err);
+    return; // 不挂交互事件，保持窗口透明
+  }
 
   // 光标 → Spine（摸头头部跟随 / 空闲注视共用）
   window.petAPI.onCursor((x, y) => window.SpineLayer.setCursor(x, y));
