@@ -7,6 +7,7 @@ import { t } from "./locale.ts";
 
 const PREFIX = "###PET###";
 const MAX_RESTARTS = 3;
+const STDERR_RING_SIZE = 100; // 崩溃时 dump 的 stderr 最近行数
 
 /**
  * Desktop pet bridge: spawns the Electron pet window as a subprocess and
@@ -21,6 +22,8 @@ class PetBridge {
   private intentionalStop = false;
   private restartCount = 0;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  // stderr 环形缓冲：进程异常退出时 dump 最近输出，便于定位崩溃根因
+  private stderrRing: string[] = [];
   // 当前桌宠角色（ARONA_AGENT env 传给 pet/main.cjs）；默认跟随 settings.json mainAgent
   private agentId: AgentId = getMainAgent();
   // 待切换角色：stop() 后等待旧进程 close 再以新角色拉起（避免双窗口闪现）
@@ -71,8 +74,11 @@ class PetBridge {
 
     this.proc.stderr.on("data", (data) => {
       const msg = data.toString().trim();
-      // Electron 自身告警较多，仅打印非空且不常见的错误
-      if (msg && !msg.includes("dbus") && !msg.includes("GLib")) {
+      if (!msg) return;
+      // 始终入环（崩溃时 dump 用）；平时仅打印非空且不常见的错误
+      this.stderrRing.push(msg);
+      if (this.stderrRing.length > STDERR_RING_SIZE) this.stderrRing.shift();
+      if (!msg.includes("dbus") && !msg.includes("GLib")) {
         console.error(chalk.gray("[pet]"), msg);
       }
     });
@@ -82,17 +88,27 @@ class PetBridge {
       this.proc = null;
     });
 
-    this.proc.on("close", () => {
+    this.proc.on("close", (code, signal) => {
       this.proc = null;
       if (this.pendingAgent) {
         // 切换角色：旧进程已退出，以新角色重新拉起（stop 时 intentionalStop=true 不会走退避重启）
         const agent = this.pendingAgent;
         this.pendingAgent = null;
         void this.start();
-      } else if (!this.intentionalStop) {
+      } else if (!this.intentionalStop && (code === null || code !== 0)) {
+        // 正常退出（code 0）不重启；被信号终止（code null）或异常退出才视为崩溃
+        console.warn(chalk.yellow(t(`桌宠：进程异常退出（code=${code} signal=${signal}），准备重启。`, `Pet: process exited abnormally (code=${code} signal=${signal}), restarting.`)));
+        this.dumpStderr();
         this.scheduleRestart();
       }
     });
+  }
+
+  /** 崩溃时输出 Electron 最近 stderr（渲染崩溃/主进程异常堆栈都在这里） */
+  private dumpStderr(): void {
+    if (!this.stderrRing.length) return;
+    console.error(chalk.gray(`[pet:stderr] 最近 ${this.stderrRing.length} 行输出（定位崩溃用）：\n` + this.stderrRing.join("\n")));
+    this.stderrRing = [];
   }
 
   private scheduleRestart(): void {
@@ -121,6 +137,9 @@ class PetBridge {
       this.restartCount = 0; // 成功启动后重置退避计数
     } else if (msg.type === "error") {
       console.error(chalk.gray("[pet]"), msg.message);
+    } else if (msg.type === "crash") {
+      // 渲染/GPU 子进程崩溃上报（pet/main.cjs 的 render-process-gone / child-process-gone）
+      console.error(chalk.red(`[pet:crash] ${msg.kind ?? "process"} reason=${msg.reason ?? "?"} exitCode=${msg.exitCode ?? "?"} url=${msg.url ?? ""}`));
     }
     // moved / shake 目前仅作日志用途，无需处理
   }

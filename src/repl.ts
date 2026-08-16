@@ -2,7 +2,7 @@ import * as readline from "readline";
 import chalk from "chalk";
 import { execSync, type ChildProcessWithoutNullStreams } from "child_process";
 import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
+import { join, resolve } from "path";
 import type { AgentSession, ModelRuntime, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { config } from "./config.ts";
 import { handleCommand, type CommandContext } from "./commands.ts";
@@ -230,13 +230,14 @@ export class Repl {
    */
   private async startHotkeyHook() {
     if (this.hotkeyProc) return; // 已启动
-    const scriptPath = `${PYTHON_DIR}/hotkey.py`;
+    const scriptPath = join(PYTHON_DIR, "hotkey.py");
     this.hotkeyReady = false;
     this.hotkeyBuffer = "";
     try {
       const proc = spawnCompat(config.pythonPath, ["-u", scriptPath], {
         env: {
           ...process.env,
+          PYTHONUTF8: "1",
           ARONA_HOTKEY_KEY: "cmd_r",
           ARONA_HOTKEY_HOLD_MS: String(STT_HOLD_MS),
         },

@@ -228,7 +228,7 @@ export function loadConfig(): AronaConfig {
 
     cuaApiKey: s.cuaApiKey || "",
 
-    pythonPath: s.pythonPath || "python3",
+    pythonPath: s.pythonPath || (process.platform === "win32" ? "python" : "python3"),
     mcpServers: s.mcpServers || {},
   };
 }

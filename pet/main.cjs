@@ -6,6 +6,12 @@ const fs = require("fs");
 const os = require("os");
 const { AGENTS } = require("./agents.cjs");
 
+// Windows 透明无边框窗口在部分显卡驱动下会触发渲染进程崩溃；
+// 关闭硬件加速（须在 app ready 前调用），Mac 保持 GPU 渲染不变。
+if (process.platform === "win32") {
+  app.disableHardwareAcceleration();
+}
+
 // 当前桌宠角色：ARONA_AGENT 环境变量（src/pet.ts 注入），非法/缺省回退 arona
 const AGENT_ID = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
 const AGENT = AGENTS[AGENT_ID];
@@ -78,6 +84,10 @@ function createWindow() {
     win.webContents.openDevTools({ mode: "detach" });
   }
   win.webContents.on("did-finish-load", () => send({ type: "ready" }));
+  // 渲染进程崩溃上报（Windows 透明窗口崩溃的主因；reason/exitCode 可精确定位）
+  win.webContents.on("render-process-gone", (_e, details) => {
+    send({ type: "crash", kind: "render", reason: details.reason, exitCode: details.exitCode, url: win.webContents.getURL() });
+  });
   startCursorTracking();
 }
 
@@ -250,4 +260,16 @@ app.on("window-all-closed", () => {
     cursorTimer = null;
   }
   app.quit();
+});
+
+// ---- 崩溃日志：GPU/utility 子进程崩溃 + 主进程 JS 异常（配合 src/pet.ts 的 crash 处理定位问题） ----
+app.on("child-process-gone", (_e, details) => {
+  send({ type: "crash", kind: details.type || "child", reason: details.reason, exitCode: details.exitCode });
+});
+process.on("uncaughtException", (err) => {
+  console.error("[pet:crash] uncaughtException:", err && err.stack ? err.stack : err);
+  process.exit(1); // 主进程状态已不可靠，退出让父进程按崩溃路径重启
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[pet:crash] unhandledRejection:", reason);
 });

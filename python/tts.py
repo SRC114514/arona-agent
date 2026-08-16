@@ -12,7 +12,7 @@ ARONA TTS - Qwen TTS (阿里云百炼 DashScope) 实时语音合成客户端
   QWEN_TTS_SAMPLE_RATE  - 采样率（默认 22050）
 
 流程：run-task → (等 task-started) → continue-task(text) → finish-task
-音频以二进制帧返回：pcm 用 pyaudio 流式播放，其它格式缓冲后用 afplay 播放。
+音频以二进制帧返回：pcm 用 pyaudio 流式播放，其它格式缓冲后按平台选择播放命令播放。
 进程在播放结束后才退出（runPython 的 await 语义依赖此行为）。
 """
 
@@ -165,7 +165,7 @@ async def tts_synthesize(text, api_key, workspace_id, model, voice, audio_format
         if buffered:
             try:
                 data = b"".join(buffered)
-                # afplay 无法播放裸 PCM：补 WAV 头后写成 .wav
+                # 裸 PCM 无法直接播放：补 WAV 头后写成 .wav
                 if audio_format == "pcm":
                     import io
                     import wave
@@ -182,7 +182,14 @@ async def tts_synthesize(text, api_key, workspace_id, model, voice, audio_format
                 with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
                     f.write(data)
                     tmp_path = f.name
-                subprocess.run(["afplay", tmp_path], check=True, timeout=120)
+                if sys.platform == "darwin":
+                    play_cmd = ["afplay", tmp_path]
+                elif sys.platform == "win32":
+                    play_cmd = ["powershell", "-NoProfile", "-NonInteractive",
+                                "-Command", f"(New-Object Media.SoundPlayer '{tmp_path}').PlaySync()"]
+                else:
+                    play_cmd = ["aplay", tmp_path]
+                subprocess.run(play_cmd, check=True, timeout=120)
             except Exception as e:
                 print(t(f"TTS 播放错误：{e}", f"TTS playback error: {e}"), file=sys.stderr)
 
