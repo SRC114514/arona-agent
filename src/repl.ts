@@ -193,7 +193,7 @@ export class Repl {
         this.resumeSession(path);
       },
       saveCurrentSession: () => {
-        // /change-main-agent 重建会话前落盘当前对话（resume 覆盖原文件 / 新会话仅有效对话）
+        // /change-agent 重建会话前落盘当前对话（resume 覆盖原文件 / 新会话仅有效对话）
         this.saveCurrentSessionIfNeeded();
       },
       // 交互式命令（如 /resume）接管输入期间，暂停斜杠菜单监听器
@@ -493,6 +493,16 @@ export class Repl {
           this.menu.move(key.name === "up" ? -1 : 1, this.rl);
           return; // 不转发给 readline（避免移动输入光标）
         }
+        // 行末再按 →：把选中指令填入输入框但不执行（用户可随后补参数/编辑，
+        // 再自己 Enter）。光标不在行末时落到 readline 正常移动光标。
+        if (key.name === "right") {
+          const line: string = (this.rl as any).line ?? "";
+          const cursor: number = (this.rl as any).cursor ?? 0;
+          if (cursor >= line.length) {
+            this.menu.complete(this.rl);
+            return;
+          }
+        }
         if (key.name === "return") { this.menu.confirm(this.rl); return; } // 补全但不提交
         if (key.name === "tab") { return; } // 菜单内 Tab 无操作
       } else if (key.name === "escape" && this.isProcessing) {
@@ -525,6 +535,21 @@ export class Repl {
     this.rl.on("line", async (input: string) => {
       // 提交时关闭菜单（若仍打开）
       if (this.menu.isOpen()) this.menu.close(this.rl);
+
+      // needsParams 指令：菜单 Enter 只填入不执行，
+      // 消费信号后仅重绘提示行，让用户补参数再回车。信号由同一按键同步置位、
+      // 紧随其后的 "line" 事件消费，无泄漏。
+      if (this.menu.consumeNoExecSignal()) {
+        // readline 处理 return 时已：①在 emit "line" 前清空 rl.line；②输出了
+        // \r\n 换行。故必须用 input（confirm 补全后的指令）恢复 line，且 prompt
+        // 带 preserveCursor=true（无参会把 cursor 归零、参数被插到行首），并在
+        // 重绘前 \x1b[1A 上移一行抵消那次换行——否则补全内容会错位到下一行。
+        (this.rl as any).line = input;
+        (this.rl as any).cursor = input.length;
+        process.stdout.write("\x1b[1A");
+        this.rl.prompt(true);
+        return;
+      }
 
       const trimmed = input.trim();
 

@@ -18,7 +18,7 @@
 
 import chalk from "chalk";
 import type { Interface } from "readline";
-import { SLASH_COMMANDS, type SlashCommandSpec } from "./slash_registry.ts";
+import { SLASH_COMMANDS, resolveSlashCommand, type SlashCommandSpec } from "./slash_registry.ts";
 import { t } from "./locale.ts";
 
 const MAX_VISIBLE = 8;
@@ -114,9 +114,19 @@ export class SlashMenu {
   private visible = false;
   // 当前已画出的菜单行数（含边框与页脚）。用于 close 时定位要清除的区域。
   private drawnLineCount = 0;
+  // 「本次填入不执行」信号：confirm() 在选中 needsParams 指令且实际替换了输入行时
+  // 置位，由 repl 的 line handler 消费（同一按键的 "line" 事件同步跟随，无泄漏）。
+  private pendingNoExec = false;
 
   isOpen(): boolean {
     return this.visible;
+  }
+
+  /** 供 repl 的 line handler 读取并清除「本次填入不执行」信号。 */
+  consumeNoExecSignal(): boolean {
+    const v = this.pendingNoExec;
+    this.pendingNoExec = false;
+    return v;
   }
 
   /**
@@ -130,6 +140,12 @@ export class SlashMenu {
       return;
     }
     const query = line.slice(1).split(/\s/)[0]; // 仅对第一个 token 做模糊
+    // 守卫：首 token 已是完整指令名/别名（已选定或正在输参数）→ 不弹菜单，
+    // 让输入框干净地留着指令。仅输入 "/" 时 query 为空，跳过守卫照常弹全部。
+    if (query && resolveSlashCommand(query)) {
+      if (this.visible) this.close(rl);
+      return;
+    }
     if (query === "") {
       this.setMatches(SLASH_COMMANDS.slice(), rl);
       return;
@@ -178,12 +194,37 @@ export class SlashMenu {
    * 注意：不能调 rl.prompt(true)——它的 clearScreenDown 会干扰，且会让
    * readline 认为 return 前已重绘，可能跳过 emit "line"。
    *
-   * 参数保护：若输入行第一个 token 已经是所选命令的完整名/别名（用户已
-   * 敲完命令名、正在补参数，如 `/change-main-agent plana`），则只关菜单、
-   * 保留已输入内容——否则会把参数整个吞掉（只留下 "/<name> "）。
+   * needsParams 指令：填完不执行——置 pendingNoExec
+   * 信号，repl 的 line handler 消费后只重绘提示行，用户补参数再 Enter。
    */
   confirm(rl: Interface): void {
+    if (!this.visible) {
+      this.pendingNoExec = false;
+      return;
+    }
+    const spec = this.matches[this.selected];
+    const filled = this.fillSelected(rl);
+    this.pendingNoExec = !!(filled && spec?.needsParams);
+  }
+
+  /**
+   * → 键：把选中命令填入输入框，但不触发执行（无后续 return 事件，readline
+   * 不会 emit "line"）。与 confirm 的区别仅在「是否让执行发生」，填入逻辑共享
+   * fillSelected。填完手动 prompt(true) 重绘提示行——此流程没有后续按键来触发
+   * 重绘。参数保护同样生效：已在输参数时只关菜单保留原行。
+   */
+  complete(rl: Interface): void {
     if (!this.visible) return;
+    this.fillSelected(rl);
+    (rl as any).prompt(true);
+  }
+
+  /**
+   * 擦菜单 + 重置状态 + 按选中项整体替换 rl.line（含参数保护）。返回是否真正
+   * 替换了行（false = 首 token 已是完整命令名/别名，参数输入中，保留原行）。
+   * 注意先读 spec 再重置 this.matches。
+   */
+  private fillSelected(rl: Interface): boolean {
     const spec = this.matches[this.selected];
     // 擦除菜单画面并重置状态
     this.eraseMenu();
@@ -192,14 +233,15 @@ export class SlashMenu {
     this.selected = 0;
     this.scrollTop = 0;
     this.drawnLineCount = 0;
-    if (!spec) return;
+    if (!spec) return false;
     const currentLine: string = (rl as any).line ?? "";
     const currentToken = currentLine.startsWith("/") ? currentLine.slice(1).split(/\s/)[0] : "";
     const names = [spec.name, ...(spec.aliases ?? [])];
-    if (names.includes(currentToken)) return; // 参数输入中，保留原行
+    if (names.includes(currentToken)) return false; // 参数输入中，保留原行
     const replacement = spec.interactive ? `/${spec.name}` : `/${spec.name} `;
     (rl as any).line = replacement;
     (rl as any).cursor = replacement.length;
+    return true;
   }
 
   /** Esc / 外部关闭。保留已输入内容。 */
@@ -296,7 +338,7 @@ export class SlashMenu {
     // 页脚提示
     const moreUp = this.scrollTop > 0;
     const moreDown = this.scrollTop + maxVisible < this.matches.length;
-    let footer = t("  ↑/↓ 选择 · Enter 补全 · Esc 取消", "  ↑/↓ select · Enter complete · Esc cancel");
+    let footer = t("  ↑/↓ 选择 · Enter 补全 · → 填入 · Esc 取消", "  ↑/↓ select · Enter complete · → fill · Esc cancel");
     if (moreUp || moreDown) {
       const ind = `${moreUp ? "↑" : ""}${moreDown ? "↓" : ""}`;
       footer += t(`  · ${ind} 可滚动`, `  · ${ind} scrollable`);

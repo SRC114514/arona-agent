@@ -11,6 +11,8 @@ const ARONA = {
   spineBase: "../../assets/blue-archive/arona/spine/",
   skelFile: "arona_spr.skel",
   atlasFile: "arona_spr.atlas.txt",
+  // 构图放大系数（fitCamera 用）：Arona bounds 1:2.105 填满 320×674 窗口，保持 1.0
+  extraScale: 1,
   anims: {
     idle: "Idle_01",           // 3.333s 全身循环。setup pose 是瘫开的折叠姿势，绝不能裸显
     blink: "Eye_Close_01",     // 闭眼（只 key 眼部 cover + 眉毛 translate，可安全叠加）
@@ -59,6 +61,9 @@ const PLANA = {
   spineBase: "../../assets/blue-archive/plana/spine/",
   skelFile: "plana_spr.skel",
   atlasFile: "plana_spr.atlas.txt",
+  // 构图放大系数：Plana bounds 1154×2216（1:1.92，比例偏宽）→ 宽度先顶格，身高只占窗口 91%，
+  // 比 Arona（满窗 99.9%）矮 ~9%；1.10 使其身高 ≈ Arona（两侧各裁 ~16px，一般只裁到光环/发梢边缘）
+  extraScale: 1.1,
   anims: {
     idle: "Idle_01",           // 6.667s 全身循环（与 Arona 的 3.333s 不同，勿改）
     blink: "Eye_Close_01",     // 0.333s 闭眼

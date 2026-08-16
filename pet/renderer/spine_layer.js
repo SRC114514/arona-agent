@@ -78,13 +78,16 @@
   }
 
   // 尺寸拟合：包围盒等比缩放填满窗口（无 pad，构图与 1010×2128 情绪 PNG 对齐）
+  // extraScale 按角色参数化（agents.cjs）：Arona 1.0；Plana 1.10——其 bounds 比例偏宽、
+  // 宽度先顶格导致身高只占窗口 91%，放大后接近 Arona 的满窗高度（数据见 CLAUDE.md A4）
   function fitCamera() {
     const offset = new spine.Vector2();
     const size = new spine.Vector2();
     skeleton.getBounds(offset, size, []);
     const cw = canvas.clientWidth || window.innerWidth;
     const ch = canvas.clientHeight || window.innerHeight;
-    const scale = Math.min(cw / size.x, ch / size.y) * EXTRA_SCALE;
+    const extra = agent && typeof agent.extraScale === "number" ? agent.extraScale : EXTRA_SCALE;
+    const scale = Math.min(cw / size.x, ch / size.y) * extra;
     renderer.camera.setViewport(cw / scale, ch / scale);
     renderer.camera.position.set(
       offset.x + size.x / 2 + OFFSET_X,

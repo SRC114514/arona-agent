@@ -92,7 +92,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 - **Desktop pet**: transparent frameless always-on-top window with a looping Spine skeleton idle animation (`Idle_01`) as its base. Before each message segment the agent calls `change_emotion`; Drag to move the window; shaking the head region left-right triggers a "head-pat" easter egg; clicks/drags also fire full-screen click and trail FX. TTS plays sentence by sentence, and the emotion persists until TTS finishes, then reverts to the default automatically. 
 
-  Two characters are built in: `arona` (Arona) and `plana` (Plana) — switch with `/change-main-agent arona|plana` or the `mainAgent` field in settings.json.
+  Two characters are built in: `arona` (Arona) and `plana` (Plana) — switch with `/change-agent` (arrow-key picker) or the `mainAgent` field in settings.json.
   
   The current session is saved automatically before switching.
 - **STT hotkey**: right Cmd key — press and hold for ≥ 2 seconds to start a one-shot recording.
@@ -108,7 +108,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 | Display | `/thinking` · `/details` · `/compact` (compress context) |
 | Voice | `/tts` · `/stt` |
 | Extensions | `/skill` (list/invoke) · `/mcp` (manage MCP servers and tools) |
-| Other | `/change-main-agent` (switch main agent) · `/undo` · `/redo` · `/help` |
+| Other | `/change-agent` (switch main agent) · `/undo` · `/redo` · `/help` |
 
 ---
 

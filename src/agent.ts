@@ -37,7 +37,7 @@ function nowStr(): string {
 function buildSystemPrompt(memoryContent: string): string {
   const moodBaseline = loadMoodBaseline(memoryContent) || t("（无）", "(none)");
   const isEn = getLang() === "en";
-  const agent = getMainAgent(); // 主 Agent 决定人格模板（/change-main-agent 切换后重建 session 生效）
+  const agent = getMainAgent(); // 主 Agent 决定人格模板（/change-agent 切换后重建 session 生效）
 
   let prompt = isEn
     ? agent === "plana"

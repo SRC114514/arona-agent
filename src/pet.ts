@@ -48,7 +48,7 @@ class PetBridge {
     try {
       // 剔除 ELECTRON_RUN_AS_NODE，否则 Electron 会退化为纯 Node 运行；
       // 注入 ARONA_AGENT 让桌宠主进程选择角色（agents.cjs）
-      const env = { ...process.env, ARONA_AGENT: this.agentId };
+      const env: NodeJS.ProcessEnv = { ...process.env, ARONA_AGENT: this.agentId };
       delete env.ELECTRON_RUN_AS_NODE;
       // --no-sandbox：部分环境（权限受限的终端/容器）无法初始化 Chromium sandbox；
       // 桌宠只加载本地文件，关闭 sandbox 风险可接受

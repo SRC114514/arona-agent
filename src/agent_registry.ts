@@ -1,4 +1,4 @@
-// 主 Agent 注册表：桌宠形象 + 人格的切换（/change-main-agent 命令）。
+// 主 Agent 注册表：桌宠形象 + 人格的切换（/change-agent 命令）。
 // 持久化到 ~/.arona/settings.json 的 mainAgent 字段（"arona" | "plana"，缺省 arona）。
 // 桌宠侧对应 pet/agents.cjs（ARONA_AGENT env 选择），人格侧对应 agent.ts 的 buildPrompt*Plana。
 

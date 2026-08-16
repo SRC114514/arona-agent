@@ -95,7 +95,7 @@ arona --no-voice
 
 - **桌宠**：透明无边框置顶窗口，以 Spine 骨骼动画 `Idle_01` 作为待机基底循环播放；Agent 每段发言前调用 `change_emotion` 切换情绪；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发全屏点击与拖尾特效；TTS 逐句播放，情绪保持到 TTS 播完自动恢复默认。
 
-  内置双角色：`arona`（阿洛娜）与 `plana`（普拉娜），用 `/change-main-agent arona|plana` 或 settings.json 的 `mainAgent` 字段切换
+  内置双角色：`arona`（阿洛娜）与 `plana`（普拉娜），用 `/change-agent`（上下键选择）或 settings.json 的 `mainAgent` 字段切换
   
   切换前会自动保存当前会话。
 - **STT 热键**：右 Cmd 键，长按 ≥ 2 秒触发一次性录音。
@@ -111,7 +111,7 @@ arona --no-voice
 | 显示 | `/thinking` · `/details` · `/compact`（压缩上下文） |
 | 语音 | `/tts` · `/stt` |
 | 扩展 | `/skill`（列出/调用）· `/mcp`（管理 MCP 服务器和工具） |
-| 其他 | `/change-main-agent`（切换主 Agent）· `/undo` · `/redo` · `/help` |
+| 其他 | `/change-agent`（切换主 Agent）· `/undo` · `/redo` · `/help` |
 
 ---
 

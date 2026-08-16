@@ -10,7 +10,7 @@ import * as mcp from "./mcp.ts";
 import * as skills from "./skills.ts";
 import { setShowThinking, getShowThinking, setShowToolDetails, getShowToolDetails } from "./renderer.ts";
 import { SLASH_COMMANDS, resolveSlashCommand } from "./slash_registry.ts";
-import { getMainAgent, isValidAgentId, setMainAgent } from "./agent_registry.ts";
+import { AGENT_IDS, getMainAgent, setMainAgent, type AgentId } from "./agent_registry.ts";
 import { pet } from "./pet.ts";
 import type { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
@@ -22,7 +22,7 @@ export interface CommandContext {
   newSession: () => Promise<void>;
   resumeSession: (path: string) => void;
   // 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话时才另存）。
-  // 与 Repl 退出时的保存语义一致；/change-main-agent 在重建会话前调用，避免对话丢失。
+  // 与 Repl 退出时的保存语义一致；/change-agent 在重建会话前调用，避免对话丢失。
   saveCurrentSession: () => void;
   // 走完整 Agent 回合生命周期（undo/isProcessing/pet.reset/abort），但不展开 @文件 / !命令。
   // /skill 调用技能时使用，避免技能内容里的 @ / ! 被当作输入展开。
@@ -61,7 +61,7 @@ ${chalk.bold("扩展")}
   /mcp             列出 MCP 服务器和工具
 
 ${chalk.bold("其他")}
-  /change-main-agent  切换主 Agent（桌宠形象 + 人格）：/change-main-agent <arona|plana>
+  /change-agent    切换主 Agent（桌宠形象 + 人格，上下键选择）
   /undo            撤销上一个回合的全部文件改动（本地快照，无需 git）
   /redo            重做已撤销的改动
   /help            显示本帮助
@@ -93,7 +93,7 @@ ${chalk.bold("Extensions")}
   /mcp             List MCP servers and tools
 
 ${chalk.bold("Other")}
-  /change-main-agent  Switch the main agent (pet + persona): /change-main-agent <arona|plana>
+  /change-agent    Switch the main agent (pet + persona, pick with arrow keys)
   /undo            Undo the previous turn's file changes (local snapshot, no git)
   /redo            Redo undone changes
   /help            Show this help
@@ -204,8 +204,8 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       await handleMcp(args);
       return true;
 
-    case "change-main-agent":
-      await handleChangeMainAgent(args, ctx);
+    case "change-agent":
+      await handleChangeAgent(ctx);
       return true;
 
     default:
@@ -213,6 +213,45 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       console.log(chalk.red(t(`未知命令：/${typedName}。输入 /help 查看可用命令。`, `Unknown command: /${typedName}. Type /help to see available commands.`)));
       return true;
   }
+}
+
+/** 计算一个字符串去除 ANSI 转义后的可见宽度（CJK/全角算 2，控制符算 0）。 */
+function visibleWidth(s: string): number {
+  const stripped = s.replace(/\x1b(?:\[[0-9;?]*[A-Za-z]|[0-9])/g, "");
+  let w = 0;
+  for (const ch of stripped) {
+    const code = ch.codePointAt(0)!;
+    if (code >= 0x1100 && (
+      code <= 0x115f || (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3040 && code <= 0x33bf) || (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6)
+    )) w += 2;
+    else if (code >= 0x20) w += 1;
+  }
+  return w;
+}
+
+/** 截断字符串到可见宽度（保留 ANSI 颜色转义，超出加 …）。 */
+function truncateStyled(text: string, maxW: number, style: (s: string) => string): string {
+  if (visibleWidth(text) <= maxW) return style(text);
+  let res = "";
+  let w = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    const cw = (code >= 0x1100 && (
+      code <= 0x115f || (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3040 && code <= 0x33bf) || (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6)
+    )) ? 2 : 1;
+    if (w + cw > maxW - 1) break;
+    res += ch;
+    w += cw;
+  }
+  return style(res + "…");
 }
 
 /**
@@ -241,45 +280,6 @@ async function handleResume(ctx: CommandContext) {
   let cursor = 0; // index of currently highlighted session
   let drawnScreenLines = 0; // 已画出的屏幕行数（按终端宽度折行后），用于精确上移
   const cols = process.stdout.columns ?? 80;
-
-  // 计算一个字符串去除 ANSI 转义后的可见宽度（CJK 算 2）
-  const visibleWidth = (s: string): number => {
-    const stripped = s.replace(/\x1b(?:\[[0-9;?]*[A-Za-z]|[0-9])/g, "");
-    let w = 0;
-    for (const ch of stripped) {
-      const code = ch.codePointAt(0)!;
-      if (code >= 0x1100 && (
-        code <= 0x115f || (code >= 0x2e80 && code <= 0x303e) ||
-        (code >= 0x3040 && code <= 0x33bf) || (code >= 0x3400 && code <= 0x4dbf) ||
-        (code >= 0x4e00 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7af) ||
-        (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe6f) ||
-        (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6)
-      )) w += 2;
-      else if (code >= 0x20) w += 1;
-    }
-    return w;
-  };
-  // 截断字符串到可见宽度（保留 ANSI 颜色转义，超出加 …）。
-  // 先截断纯文本再重新着色，避免直接操作带 ANSI 的字符串错位。
-  const truncateStyled = (text: string, maxW: number, style: (s: string) => string): string => {
-    if (visibleWidth(text) <= maxW) return style(text);
-    let res = "";
-    let w = 0;
-    for (const ch of text) {
-      const code = ch.codePointAt(0)!;
-      const cw = (code >= 0x1100 && (
-        code <= 0x115f || (code >= 0x2e80 && code <= 0x303e) ||
-        (code >= 0x3040 && code <= 0x33bf) || (code >= 0x3400 && code <= 0x4dbf) ||
-        (code >= 0x4e00 && code <= 0xa4cf) || (code >= 0xac00 && code <= 0xd7af) ||
-        (code >= 0xf900 && code <= 0xfaff) || (code >= 0xfe30 && code <= 0xfe6f) ||
-        (code >= 0xff01 && code <= 0xff60) || (code >= 0xffe0 && code <= 0xffe6)
-      )) ? 2 : 1;
-      if (w + cw > maxW - 1) break;
-      res += ch;
-      w += cw;
-    }
-    return style(res + "…");
-  };
 
   const render = () => {
     // 上移已画出的屏幕行数（首次为 0，不移动），避免上移过多吞掉上方内容
@@ -449,45 +449,110 @@ async function handleSkill(args: string, ctx: CommandContext) {
 }
 
 /**
- * /change-main-agent：切换主 Agent（桌宠形象 + 人格）。
- * 流程：写 settings.json 的 mainAgent → 桌宠带 ARONA_AGENT env 重启 →
- * 保存当前会话（若有效对话）→ 重建 session（新人设生效）。
+ * /change-agent：切换主 Agent（桌宠形象 + 人格）。
+ * 交互式 TUI 选择器（沿用终端背景，不用纯色背景）：上下键循环选择 arona/plana，
+ * 回车确认，Esc/q/Ctrl+C 取消。确认后走切换流程：写 settings.json → 桌宠换形象 →
+ * 保存当前会话 → 重建 session（新人设生效）。
  */
-async function handleChangeMainAgent(args: string, ctx: CommandContext) {
-  // 兼容用法提示里的尖括号占位写法：/change-main-agent <plana> 可直接粘贴
-  let id = args.trim().toLowerCase();
-  if (id.startsWith("<") && id.endsWith(">")) id = id.slice(1, -1).trim();
-  if (!id) {
-    console.log(chalk.cyan(t(
-      `当前主 Agent：${getMainAgent()}。用法：/change-main-agent <arona|plana>。`,
-      `Current main agent: ${getMainAgent()}. Usage: /change-main-agent <arona|plana>.`,
-    )));
-    return;
-  }
-  if (!isValidAgentId(id)) {
-    console.log(chalk.red(t(
-      `未知 Agent："${id}"。可用：arona、plana。`,
-      `Unknown agent: "${id}". Available: arona, plana.`,
-    )));
-    return;
-  }
-  if (id === getMainAgent()) {
-    console.log(chalk.cyan(t(`当前主 Agent 已是 ${id}。`, `Main agent is already ${id}.`)));
-    return;
-  }
+async function handleChangeAgent(ctx: CommandContext) {
+  const current = getMainAgent();
+  const options: { id: AgentId; label: string }[] = AGENT_IDS.map((id) => ({
+    id,
+    label: id === "arona" ? t("阿洛娜", "Arona") : id === "plana" ? t("普拉娜", "Plana") : id,
+  }));
 
-  // 1. 持久化（settings.json mainAgent 字段）
-  setMainAgent(id);
-  // 2. 桌宠换形象（pet/main.cjs 按 ARONA_AGENT env 选 agents.cjs 配置；旧进程退出后自动拉起）
-  pet.restartWithAgent(id);
-  // 3. 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
-  ctx.saveCurrentSession();
-  // 4. 重建 session → buildSystemPrompt 依 getMainAgent() 选新人格模板
-  await ctx.newSession();
-  console.log(chalk.green(t(
-    `已切换主 Agent 为 ${id}（桌宠形象 + 人格已切换，新会话已开始）。`,
-    `Switched main agent to ${id} (pet + persona switched, new session started).`,
-  )));
+  // 暂停斜杠菜单 keypress 监听器，避免上下键被菜单捕获并画菜单
+  ctx.pauseMenuListener?.();
+
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+  process.stdin.setEncoding("utf8");
+
+  let cursor = Math.max(0, options.findIndex((o) => o.id === current));
+  let drawnScreenLines = 0;
+  const cols = process.stdout.columns ?? 80;
+
+  const render = () => {
+    if (drawnScreenLines > 0) {
+      process.stdout.write("\x1b[" + drawnScreenLines + "A");
+    }
+    process.stdout.write("\r\x1b[0J");
+    const maxW = cols - 1;
+    const out: string[] = [];
+    out.push(chalk.bold.cyan(t("切换主 Agent（↑/↓ 选择，回车确认，Esc 取消）：", "Switch main agent (↑/↓ select, Enter confirm, Esc cancel):")));
+    options.forEach((o, i) => {
+      const marker = i === cursor ? "▶ " : "  ";
+      const suffix = o.id === current ? t("（当前）", " (current)") : "";
+      const text = `${marker}${o.id}${suffix}  —  ${o.label}`;
+      const styled = i === cursor
+        ? truncateStyled(text, maxW, (x) => chalk.bold.cyan(x))
+        : truncateStyled(text, maxW, (x) => x);
+      out.push(styled);
+    });
+    out.push(chalk.cyan(t("  (回车切换，Esc/q 取消)", "  (Enter to switch, Esc/q to cancel)")));
+    process.stdout.write(out.join("\r\n") + "\r\n");
+    drawnScreenLines = out.length;
+  };
+
+  render();
+
+  // 真正执行切换的异步流程（确认后调用，完成后才 resolve 外层 Promise）
+  const applySwitch = async (id: AgentId) => {
+    if (id === current) {
+      console.log(chalk.cyan(t(`当前主 Agent 已是 ${id}。`, `Main agent is already ${id}.`)));
+      return;
+    }
+    // 1. 持久化（settings.json mainAgent 字段）
+    setMainAgent(id);
+    // 2. 桌宠换形象（pet/main.cjs 按 ARONA_AGENT env 选 agents.cjs 配置；旧进程退出后自动拉起）
+    pet.restartWithAgent(id);
+    // 3. 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
+    ctx.saveCurrentSession();
+    // 4. 重建 session → buildSystemPrompt 依 getMainAgent() 选新人格模板
+    await ctx.newSession();
+    console.log(chalk.green(t(
+      `已切换主 Agent 为 ${id}（桌宠形象 + 人格已切换，新会话已开始）。`,
+      `Switched main agent to ${id} (pet + persona switched, new session started).`,
+    )));
+  };
+
+  let resolveFn: () => void = () => {};
+  const onData = (key: string) => {
+    if (key === "\x1b[A") {
+      cursor = (cursor - 1 + options.length) % options.length;
+      render();
+    } else if (key === "\x1b[B") {
+      cursor = (cursor + 1) % options.length;
+      render();
+    } else if (key === "\r" || key === "\n") {
+      // Enter: confirm selection
+      cleanup();
+      const sel = options[cursor];
+      void applySwitch(sel.id)
+        .catch((err) => {
+          console.error(chalk.red(t("切换失败：", "Switch failed: ") + (err instanceof Error ? err.message : err)));
+        })
+        .finally(() => resolveFn());
+    } else if (key === "\x1b" || key === "\x1b\x1b" || key === "q" || key === "\x03") {
+      // Esc / q / Ctrl+C: cancel
+      cleanup();
+      console.log(chalk.cyan(t("已取消。", "Cancelled.")));
+      resolveFn();
+    }
+  };
+
+  const cleanup = () => {
+    // 仅移除本选择器的 data 监听器，不要 pause stdin 或 setRawMode(false)——
+    // 那会触发 readline 的 close 事件 → doExit() 导致程序意外退出。
+    process.stdin.removeListener("data", onData);
+    // 恢复斜杠菜单监听器
+    ctx.resumeMenuListener?.();
+  };
+
+  process.stdin.on("data", onData);
+  return new Promise<void>((resolve) => { resolveFn = resolve; });
 }
 
 async function handleMcp(args: string) {
