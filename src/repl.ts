@@ -34,7 +34,7 @@ export class Repl {
   private sigintTimer: NodeJS.Timeout | null = null;
   // 实时流式 TTS 管道（python/tts_stream.py 常驻进程；text_delta 边生成边合成边播放）
   private ttsStream = new TtsStream(
-    () => config.ttsAuto && voice.isTtsEnabled(),
+    () => voice.isTtsEnabled(),
     () => {
       // play_end 空闲回调：回合已结束且无剩余播放段 → 恢复桌宠默认视频
       if (this.turnEnded && !this.ttsStream.isPending) pet.reset();

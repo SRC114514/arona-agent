@@ -6,7 +6,7 @@
 
 ![Screenshot](./intro.png)
 
-A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), featuring Computer Use (desktop control), voice (TTS/STT), a desktop pet, persistent memory, and session management.
+A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), featuring Computer Use, voice (TTS/STT), a desktop pet, persistent memory, and session management.
 
 ---
 
@@ -30,7 +30,7 @@ arona --no-voice
 ## Key Features
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
-- **Voice**: Real-time streaming TTS (LLM text is synthesized & spoken as it is generated; short narration between tool calls is spoken too) + STT.
+- **Voice**: Real-time streaming TTS + STT.
 - **Desktop pet**: transparent frameless always-on-top Electron window, Spine skeleton idle animation + emotion switching + cursor-following pupils + drag/head-pat easter egg + full-screen click/trail FX.
 
 ---
@@ -50,18 +50,17 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 |---|---|---|
 | `apiKey` | LLM API key | — |
 | `apiBaseUrl` | API base URL (empty = auto-matched by model name) | — |
-| `model` | Model name (`provider/model-id`; bare names get an auto-added prefix) | `openai/gpt-4o` |
+| `model` | Model name | `openai/gpt-4o` |
 | `thinkingLevel` | Thinking level | `medium` |
 | `language` | Interface language (`auto`/`zh`/`en`) | `auto` |
 | `mainAgent` | Main agent (`arona`/`plana`) | `arona` |
 | `ttsEnabled` | Enable TTS | `true` |
 | `sttEnabled` | Enable STT | `true` |
-| `ttsAuto` | Auto-speak replies (real-time streaming: spoken while generated, short narration between tool calls included) | `true` |
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
 | `ttsApiKey` | DashScope API key (TTS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
 | `ttsVoice` | Cloned voice_id (filled by `arona setup`) | — |
-| `ttsFormat` | TTS audio format (pcm/mp3/wav/opus; streaming always uses pcm) | `pcm` |
+| `ttsFormat` | TTS audio format | `pcm` |
 | `ttsSampleRate` | TTS sample rate | `22050` |
 | `sttApiKey` | DashScope API key (STT) | — |
 | `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
@@ -104,11 +103,11 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 | Category | Commands |
 |---|---|
-| Session | `/new` `/clear` (new session) · `/resume` (restore) · `/exit` (quit) · `/export` (export Markdown) |
-| Display | `/thinking` · `/details` · `/compact` (compress context) |
+| Session | `/new` `/clear` · `/resume`  · `/exit` · `/export`  |
+| Display | `/thinking` · `/details` · `/compact` |
 | Voice | `/tts` · `/stt` |
-| Extensions | `/skill` (list/invoke) · `/mcp` (manage MCP servers and tools) |
-| Other | `/change-agent` (switch main agent) · `/undo` · `/redo` · `/help` |
+| Extensions | `/skill`  · `/mcp` |
+| Other | `/change-agent` · `/undo` · `/redo` · `/help` |
 
 ---
 

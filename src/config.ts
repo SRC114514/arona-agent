@@ -56,7 +56,6 @@ export interface AronaConfig {
   sttSampleRate: number;
   ttsEnabled: boolean;
   sttEnabled: boolean;
-  ttsAuto: boolean;
   // Cua
   cuaApiKey: string;
   // Misc
@@ -74,6 +73,7 @@ interface Settings {
   mainAgent?: string;
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
+  /** @deprecated 已合并进 ttsEnabled，仅读兼容（旧配置 ttsAuto:false 仍生效） */
   ttsAuto?: boolean;
   workspaceId?: string;
   ttsApiKey?: string;
@@ -222,9 +222,9 @@ export function loadConfig(): AronaConfig {
     sttModel: noVoice ? "" : (s.sttModel || "qwen-audio-3.0-asr-flash-streaming"),
     sttFormat: noVoice ? "pcm" : (s.sttFormat || "pcm"),
     sttSampleRate: noVoice ? 16000 : (s.sttSampleRate || 16000),
-    ttsEnabled: noVoice ? false : (s.ttsEnabled ?? true),
+    // ttsAuto 已合并进 ttsEnabled（旧配置兼容：ttsAuto ?? true）
+    ttsEnabled: noVoice ? false : (s.ttsEnabled ?? s.ttsAuto ?? true),
     sttEnabled: noVoice ? false : (s.sttEnabled ?? true),
-    ttsAuto: noVoice ? false : (s.ttsAuto ?? true),
 
     cuaApiKey: s.cuaApiKey || "",
 

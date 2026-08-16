@@ -8,7 +8,7 @@
 
 ![示意图](./intro.png)
 
-基于 [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建的终端对话式 AI Agent，集成 Computer Use（电脑控制）、语音（TTS/STT）、桌面宠物、持久记忆与会话管理。
+基于 [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建的终端对话式 AI Agent，集成 Computer Use、语音（TTS/STT）、桌面宠物、持久记忆与会话管理。
 
 ---
 
@@ -32,7 +32,7 @@ arona --no-voice
 ## 核心特性
 
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
-- **语音**：实时流式 TTS（LLM 边生成边合成边朗读，中间过程播报短句也发声）+ STT。
+- **语音**：实时流式 TTS + STT。
 - **桌面宠物**：透明无边框置顶 Electron 窗口，Spine 骨骼动画待机 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
 
 
@@ -59,12 +59,11 @@ arona --no-voice
 | `mainAgent` | 主 Agent（`arona`/`plana`） | `arona` |
 | `ttsEnabled` | 启用 TTS | `true` |
 | `sttEnabled` | 启用 STT | `true` |
-| `ttsAuto` | 回复自动朗读（实时流式：边生成边朗读，工具调用间的播报短句也朗读） | `true` |
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
 | `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
 | `ttsVoice` | 音色克隆voice_id（`arona setup` 填充） | — |
-| `ttsFormat` | TTS 音频格式（pcm/mp3/wav/opus；实时播放固定 pcm） | `pcm` |
+| `ttsFormat` | TTS 音频格式 | `pcm` |
 | `ttsSampleRate` | TTS 采样率 | `22050` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |
@@ -72,7 +71,7 @@ arona --no-voice
 | `sttSampleRate` | STT 采样率 | `16000` |
 | `cuaApiKey` | Cua API Key | — |
 | `pythonPath` | Python 路径 | `python3` |
-| `mcpServers` | MCP 服务器 JSON 配置 | `{}` |
+| `mcpServers` | MCP 服务器 JSON | `{}` |
 
 模型名前缀自动检测：若 `model` 不含 `/`，按模型名前缀或 `apiBaseUrl` 域名自动补 `provider/`。
 
@@ -95,7 +94,7 @@ arona --no-voice
 
 - **桌宠**：透明无边框置顶窗口，以 Spine 骨骼动画 `Idle_01` 作为待机基底循环播放；Agent 每段发言前调用 `change_emotion` 切换情绪；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发全屏点击与拖尾特效；TTS 逐句播放，情绪保持到 TTS 播完自动恢复默认。
 
-  内置双角色：`arona`（阿洛娜）与 `plana`（普拉娜），用 `/change-agent`（上下键选择）或 settings.json 的 `mainAgent` 字段切换
+  内置双角色：`arona`（阿洛娜）与 `plana`（普拉娜），用 `/change-agent` 或 settings.json 的 `mainAgent` 字段切换
   
   切换前会自动保存当前会话。
 - **STT 热键**：右 Cmd 键，长按 ≥ 2 秒触发一次性录音。
@@ -107,11 +106,11 @@ arona --no-voice
 
 | 分类 | 命令 |
 |---|---|
-| 会话 | `/new` `/clear`（新会话）· `/resume`（恢复）· `/exit`（退出）· `/export`（导出 Markdown） |
+| 会话 | `/new` `/clear` · `/resume` · `/exit` · `/export` |
 | 显示 | `/thinking` · `/details` · `/compact`（压缩上下文） |
 | 语音 | `/tts` · `/stt` |
-| 扩展 | `/skill`（列出/调用）· `/mcp`（管理 MCP 服务器和工具） |
-| 其他 | `/change-agent`（切换主 Agent）· `/undo` · `/redo` · `/help` |
+| 扩展 | `/skill`· `/mcp` |
+| 其他 | `/change-agent`· `/undo` · `/redo` · `/help` |
 
 ---
 

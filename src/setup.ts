@@ -20,6 +20,7 @@ interface Settings {
   language?: "auto" | "zh" | "en";
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
+  /** @deprecated 已合并进 ttsEnabled，仅读兼容（旧配置 ttsAuto:false 仍生效） */
   ttsAuto?: boolean;
   workspaceId?: string;
   ttsApiKey?: string;
@@ -86,7 +87,7 @@ async function main() {
       "[demoMode] enabled: skip settings.json write + skip real voice cloning calls.",
     )));
     console.log(chalk.gray(t(`  [verbose] settings.json demoMode = ${JSON.stringify(existing.demoMode)} (类型 ${typeof existing.demoMode})`, `  [verbose] settings.json demoMode = ${JSON.stringify(existing.demoMode)} (type ${typeof existing.demoMode})`)));
-    console.log(chalk.gray(t(`  [verbose] Step 3 将执行: pip3.13 install -r "${join(PROJECT_ROOT, "requirements.txt")}"`, `  [verbose] Step 3 will run: pip3.13 install -r "${join(PROJECT_ROOT, "requirements.txt")}"`)));
+    console.log(chalk.gray(t(`  [verbose] Step 3 将执行: pip3.13 install -r "${join(PROJECT_ROOT, "requirements.txt")}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`, `  [verbose] Step 3 will run: pip3.13 install -r "${join(PROJECT_ROOT, "requirements.txt")}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`)));
     console.log(chalk.gray(t("  [verbose] Step 4 将模拟 4s 等待并生成占位 voice_id，不调用 voice_clone.py", "  [verbose] Step 4 will simulate a 4s wait and produce a placeholder voice_id, without calling voice_clone.py")));
     console.log(chalk.gray(t(`  [verbose] 末尾将跳过写入: ${SETTINGS_FILE}`, `  [verbose] will skip writing at the end: ${SETTINGS_FILE}`)));
   }
@@ -202,8 +203,8 @@ async function main() {
 
     const requirementsFile = join(PROJECT_ROOT, "requirements.txt");
     const pipCmd = demoMode
-      ? `pip3.13 install -r "${requirementsFile}"`
-      : `${pythonPath} -m pip install -r "${requirementsFile}"`;
+      ? `pip3.13 install -r "${requirementsFile}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`
+      : `${pythonPath} -m pip install -r "${requirementsFile}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`;
     let depsOk = false;
     try {
       execSync(pipCmd, { stdio: "inherit" });
@@ -247,7 +248,7 @@ async function main() {
         dashscopeOk = true;
       } catch {
         console.log(chalk.yellow(t("  dashscope 包仍不可用。跳过音色克隆。", "  The dashscope package is still unavailable. Skipping voice cloning.")));
-        console.log(chalk.gray(t(`  运行 ${pythonPath} -m pip install dashscope 后重新执行 arona setup。`, `  Run ${pythonPath} -m pip install dashscope and re-run arona setup.`)));
+        console.log(chalk.gray(t(`  运行 ${pythonPath} -m pip install dashscope -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple 后重新执行 arona setup。`, `  Run ${pythonPath} -m pip install dashscope -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple and re-run arona setup.`)));
       }
 
       if (dashscopeOk) {
@@ -304,9 +305,8 @@ async function main() {
         model: resolvedModel,
         thinkingLevel: existing.thinkingLevel || "medium",
         language: langSetting,
-        ttsEnabled: existing.ttsEnabled ?? true,
+        ttsEnabled: existing.ttsEnabled ?? existing.ttsAuto ?? true, // ttsAuto 已合并，旧配置兼容
         sttEnabled: existing.sttEnabled ?? true,
-        ttsAuto: existing.ttsAuto ?? true,
         workspaceId: existing.workspaceId || "",
         ttsApiKey: ttsApiKey,
         ttsModel: existing.ttsModel || "qwen-audio-3.0-tts-plus",

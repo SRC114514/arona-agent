@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import chalk from "chalk";
 import { PET_DIR } from "./config.ts";
@@ -8,6 +9,29 @@ import { t } from "./locale.ts";
 const PREFIX = "###PET###";
 const MAX_RESTARTS = 3;
 const STDERR_RING_SIZE = 100; // 崩溃时 dump 的 stderr 最近行数
+// Electron 42+ 移除了 postinstall 自动下载：二进制改为首次 require 时才按需下载（供应链安全考虑）。
+// pet 桥是项目里唯一 require("electron") 的地方，这里用国内镜像在 import 之前手动预下载，
+// 避免首次启动时 CLI 卡在慢速的 GitHub Releases 下载上。
+const ELECTRON_DIR = join(PET_DIR, "..", "node_modules", "electron");
+const ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/";
+
+/** 与 electron/install.js getPlatformPath() 保持一致：各平台可执行文件的相对路径 */
+function electronPlatformPath(): string {
+  if (process.platform === "win32") return "electron.exe";
+  if (process.platform === "darwin") return "Electron.app/Contents/MacOS/Electron";
+  return "electron";
+}
+
+/** dist 二进制是否已就绪（版本匹配 + 可执行文件存在），与 install.js 的 isInstalled() 判定一致 */
+function isElectronInstalled(): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(ELECTRON_DIR, "package.json"), "utf-8"));
+    const version = readFileSync(join(ELECTRON_DIR, "dist", "version"), "utf-8").replace(/^v/, "");
+    return version === pkg.version && existsSync(join(ELECTRON_DIR, "dist", electronPlatformPath()));
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Desktop pet bridge: spawns the Electron pet window as a subprocess and
@@ -29,6 +53,50 @@ class PetBridge {
   // 待切换角色：stop() 后等待旧进程 close 再以新角色拉起（避免双窗口闪现）
   private pendingAgent: AgentId | null = null;
 
+  /**
+   * Electron 42+ 把二进制下载从 postinstall 挪到了首次 require，而 pet 桥是唯一
+   * require("electron") 的地方。这里在 import 之前抢先检查 dist 是否就绪：
+   * 未就绪则用国内镜像手动执行预下载脚本（install.js 与原 postinstall 同代码、自带幂等检查），
+   * 并给下载过程让出一段专属输出区域提示用户等待。
+   *
+   * @returns "missing" = electron npm 包未安装;true = 已就绪或下载成功;false = 下载失败
+   */
+  private async ensureElectronBinary(): Promise<true | false | "missing"> {
+    if (!existsSync(join(ELECTRON_DIR, "package.json"))) return "missing";
+    if (isElectronInstalled()) return true;
+
+    const border = "─".repeat(46);
+    console.log();
+    console.log(chalk.bold.magenta(border));
+    console.log(chalk.bold.magenta(t("  正在安装 Electron，请耐心等待…", "  Installing Electron, please wait…")));
+    console.log(chalk.gray(t("  首次使用需下载桌面运行时（约 100MB）", "  First run downloads the desktop runtime (~100MB)")));
+    console.log(chalk.gray(t(`  正在从国内镜像下载：${ELECTRON_MIRROR}`, `  Downloading from CN mirror: ${ELECTRON_MIRROR}`)));
+    console.log(chalk.bold.magenta(border));
+    console.log();
+
+    const ok = await new Promise<boolean>((resolve) => {
+      const child = spawn(process.execPath, [join(ELECTRON_DIR, "install.js")], {
+        // 注入国内镜像；用户若已自定义 ELECTRON_MIRROR 则尊重其配置
+        env: { ...process.env, ELECTRON_MIRROR: process.env.ELECTRON_MIRROR ?? ELECTRON_MIRROR },
+        stdio: "inherit",
+      });
+      child.on("error", (err) => {
+        console.warn(chalk.yellow(t(`桌宠：无法启动 Electron 安装器（${err.message}）。`, `Pet: failed to launch Electron installer (${err.message}).`)));
+        resolve(false);
+      });
+      child.on("exit", (code) => {
+        if (code !== 0) {
+          console.warn(chalk.yellow(t("桌宠：Electron 下载失败，已跳过桌宠，可稍后重试。", "Pet: Electron download failed, pet skipped; retry later.")));
+          resolve(false);
+          return;
+        }
+        console.log(chalk.green(t("  ✓ Electron 安装完成", "  ✓ Electron installed")));
+        resolve(true);
+      });
+    });
+    return ok;
+  }
+
   async start(): Promise<void> {
     // Headless 环境降级（Linux 无显示服务器时直接跳过）
     if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
@@ -36,13 +104,21 @@ class PetBridge {
       return;
     }
 
+    // 未安装 electron 包 → 维持原有降级提示；下载失败 → 提示已在 ensureElectronBinary 内输出
+    const binaryState = await this.ensureElectronBinary();
+    if (binaryState === "missing") {
+      console.warn(chalk.yellow(t("桌宠：未安装 electron，跳过启动（npm install -D electron）。", "Pet: electron not installed, skipping startup (npm install -D electron).")));
+      return;
+    }
+    if (binaryState === false) return;
+
     let electronPath: string;
     try {
       // electron 包默认导出二进制路径字符串
       const mod = await import("electron");
       electronPath = mod.default as unknown as string;
     } catch {
-      console.warn(chalk.yellow(t("桌宠：未安装 electron，跳过启动（npm install -D electron）。", "Pet: electron not installed, skipping startup (npm install -D electron).")));
+      console.warn(chalk.yellow(t("桌宠：electron 加载失败，跳过启动。", "Pet: failed to load electron, skipping startup.")));
       return;
     }
 
