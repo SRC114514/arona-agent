@@ -35,5 +35,8 @@ if (!existsSync(tsxBin)) {
 const child = spawn(tsxBin, [join(root, target), ...passArgs], {
   stdio: 'inherit',
   cwd: root,
+  // Windows: tsxBin 是 .cmd 批处理文件。Node >=20.12.2/18.20.2（CVE-2024-27980 修复，2024-04-10）
+  // 起，spawn .bat/.cmd 且不设 shell 会直接抛 EINVAL，导致 `arona setup` 在 Windows 上无法启动。
+  shell: process.platform === 'win32',
 });
 child.on('exit', (code) => process.exit(code ?? 0));

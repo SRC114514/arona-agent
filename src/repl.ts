@@ -1,6 +1,6 @@
 import * as readline from "readline";
 import chalk from "chalk";
-import { execSync, spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { execSync, type ChildProcessWithoutNullStreams } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import type { AgentSession, ModelRuntime, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
@@ -17,6 +17,7 @@ import { printLogo } from "./logo.ts";
 import { PYTHON_DIR } from "./config.ts";
 import { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
+import { spawnCompat } from "./utils/spawn.ts";
 
 // STT 长按阈值：按下录音热键持续 ≥ 该毫秒数并在释放时才触发录音；提前松开视为误触
 const STT_HOLD_MS = 2000;
@@ -233,7 +234,7 @@ export class Repl {
     this.hotkeyReady = false;
     this.hotkeyBuffer = "";
     try {
-      const proc = spawn(config.pythonPath, ["-u", scriptPath], {
+      const proc = spawnCompat(config.pythonPath, ["-u", scriptPath], {
         env: {
           ...process.env,
           ARONA_HOTKEY_KEY: "cmd_r",

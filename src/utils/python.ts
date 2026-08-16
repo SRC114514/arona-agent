@@ -1,6 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import type { ChildProcessWithoutNullStreams } from "child_process";
 import { PYTHON_DIR, config } from "../config.ts";
 import { t, getLang } from "../locale.ts";
+import { spawnCompat } from "./spawn.ts";
 
 /**
  * Run a Python script one-shot: spawn, pass input via stdin, return stdout.
@@ -17,7 +18,7 @@ export async function runPython(
   // ARONA_LANG 传给 Python 侧做 i18n（覆盖仅靠 LANG 不可靠的场景）
   const baseEnv = { ...process.env, ARONA_LANG: getLang(), ...env };
   return new Promise((resolve, reject) => {
-    const proc = spawn(config.pythonPath, [scriptPath, ...args], {
+    const proc = spawnCompat(config.pythonPath, [scriptPath, ...args], {
       env: baseEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -88,7 +89,7 @@ export class PythonBridge {
 
   async start(): Promise<void> {
     const scriptPath = `${PYTHON_DIR}/${this.scriptName}`;
-    this.proc = spawn(config.pythonPath, ["-u", scriptPath, ...this.args], {
+    this.proc = spawnCompat(config.pythonPath, ["-u", scriptPath, ...this.args], {
       env: { ...process.env, ARONA_LANG: getLang(), ...this.env },
       stdio: ["pipe", "pipe", "pipe"],
     });

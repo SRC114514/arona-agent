@@ -97,11 +97,19 @@ async function main() {
   if (!existsSync(ARONA_DIR)) mkdirSync(ARONA_DIR, { recursive: true });
 
   // ---- Python version check (must be 3.12 or 3.13) ----
-  const pythonPath = existing.pythonPath || "python3";
-  const pyCheck = checkPythonVersion(pythonPath);
+  // 优先用 settings 里的 pythonPath；检查失败时静默回退到 "python"（Windows 端通常没有 python3 命令），
+  // 回退成功后 settings.json 里的 pythonPath 会写为 "python"。两个都失败才报错。
+  let pythonPath = existing.pythonPath || "python3";
+  let pyCheck = checkPythonVersion(pythonPath);
   if (!pyCheck.ok) {
+    // 静默吞掉报错输出，自动回退到 "python"（不加 "3"，兼容 Windows）
+    pythonPath = "python";
+    pyCheck = checkPythonVersion(pythonPath);
+  }
+  if (!pyCheck.ok) {
+    const tried = `"${existing.pythonPath || "python3"}" 与 "python"`;
     if (pyCheck.version === "not found") {
-      console.log(chalk.red(t(`\n✗ 未找到 Python（${pythonPath}）。`, `\n✗ Python not found (${pythonPath}).`)));
+      console.log(chalk.red(t(`\n✗ 未找到可用的 Python（已尝试 ${tried}）。`, `\n✗ No usable Python found (tried ${tried}).`)));
       console.log(chalk.cyan(t("  ARONA 需要 Python 3.12 或 3.13（不支持 3.14）。", "  ARONA requires Python 3.12 or 3.13 (3.14 is not supported).")));
       console.log(chalk.gray(t("  请安装 Python 后重新运行 arona setup。", "  Install Python and run arona setup again.")));
     } else {
