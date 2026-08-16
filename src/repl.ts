@@ -9,6 +9,7 @@ import { handleCommand, type CommandContext } from "./commands.ts";
 import { createRenderer, renderSavedMessages } from "./renderer.ts";
 import * as memory from "./memory.ts";
 import * as voice from "./voice.ts";
+import { TtsStream } from "./tts_stream.ts";
 import { stopComputerUse } from "./tools/computer_use.ts";
 import { disconnectAllMcp } from "./mcp.ts";
 import { pet, stopPet } from "./pet.ts";
@@ -31,9 +32,16 @@ export class Repl {
   private aborted = false; // 中断标志：避免 processInput finally 重复 prompt
   private sigintCount = 0;
   private sigintTimer: NodeJS.Timeout | null = null;
-  private ttsPending = false; // TTS 播放中：回合未真正结束，桌宠暂不恢复默认视频
-  private ttsQueue: string[] = []; // 逐句 TTS 待播队列（串行播放，避免重叠）
-  private ttsPlaying = false; // drainTtsQueue 正在排空中
+  // 实时流式 TTS 管道（python/tts_stream.py 常驻进程；text_delta 边生成边合成边播放）
+  private ttsStream = new TtsStream(
+    () => config.ttsAuto && voice.isTtsEnabled(),
+    () => {
+      // play_end 空闲回调：回合已结束且无剩余播放段 → 恢复桌宠默认视频
+      if (this.turnEnded && !this.ttsStream.isPending) pet.reset();
+    },
+  );
+  // 回合结束标志：中间段的 play_end 不触发 pet.reset，只有回合结束后才恢复桌宠
+  private turnEnded = false;
   private onExit: () => void;
   private onNewSession: () => Promise<{
     session: AgentSession;
@@ -89,42 +97,16 @@ export class Repl {
     });
 
     // Setup renderer with TTS callbacks
-    // onMessageComplete: 每条消息结束时触发逐句 TTS（<50 字过滤）
-    // onResponseComplete: 回合结束时保存最后一条消息文本（供 /export）
+    // onTextDelta: 文本增量实时送入流式 TTS（中间过程与最终回复统一覆盖，<50 字按句朗读）
+    // onMessageComplete: 每条消息结束时结束当前合成段（残段收尾 + finish-task）
     this.renderer = createRenderer(
-      (text) => this.enqueueTts(text),
+      () => this.ttsStream.endSegment(),
+      undefined,
+      (delta) => this.ttsStream.pushText(delta),
     );
     this.rendererUnsub = this.renderer.subscribe(this.session);
 
     this.setupSignals();
-  }
-
-  /**
-   * 将一段消息文本加入 TTS 待播队列。<50 字才入队（长段技术说明跳过）。
-   * 队列串行播放，避免多段语音重叠。
-   */
-  private enqueueTts(text: string): void {
-    const clean = text.trim();
-    if (!config.ttsAuto || !voice.isTtsEnabled() || !clean || clean.length >= 50) return;
-    this.ttsQueue.push(clean);
-    this.ttsPending = true;
-    void this.drainTtsQueue();
-  }
-
-  /**
-   * 排空 TTS 队列：串行播放每段文本。队列空后恢复桌宠默认视频。
-   * 若已在排空则直接返回——新项会被正在运行的循环自动取出。
-   */
-  private async drainTtsQueue(): Promise<void> {
-    if (this.ttsPlaying) return;
-    this.ttsPlaying = true;
-    while (this.ttsQueue.length > 0) {
-      const text = this.ttsQueue.shift()!;
-      await voice.speak(text);
-    }
-    this.ttsPlaying = false;
-    this.ttsPending = false;
-    pet.reset();
   }
 
   private setupSignals() {
@@ -137,7 +119,7 @@ export class Repl {
         this.session.abort().catch(() => {});
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
-        this.ttsQueue = []; // 清空待播 TTS，中断后不再播放后续句子
+        this.ttsStream.cancel(); // 打断流式 TTS，中断后不再播放后续内容
         // 清空 readline 缓冲区，避免残留内容在重绘时混入提示符行
         (this.rl as any).line = "";
         (this.rl as any).cursor = 0;
@@ -351,7 +333,7 @@ export class Repl {
       this.session.abort().catch(() => {});
       this.isProcessing = false;
       this.aborted = true; // 阻止 processInput finally 再次 prompt
-      this.ttsQueue = []; // 清空待播 TTS
+      this.ttsStream.cancel(); // 打断流式 TTS（STT 接管输入前清掉残余播放）
       (this.rl as any).line = "";
       (this.rl as any).cursor = 0;
       process.stdout.write(chalk.yellow("\n[aborted by stt]\n"));
@@ -511,7 +493,7 @@ export class Repl {
         this.session.abort().catch(() => {});
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
-        this.ttsQueue = []; // 清空待播 TTS
+        this.ttsStream.cancel(); // 打断流式 TTS
         // 清空 readline 缓冲区，避免残留内容在重绘时混入提示符行
         (this.rl as any).line = "";
         (this.rl as any).cursor = 0;
@@ -594,6 +576,9 @@ export class Repl {
   private async runRawTurn(input: string) {
     memory.markConversation();
     this.isProcessing = true;
+    this.turnEnded = false;
+    // 回合开始前打断上一回合残余 TTS 播放（新输入立即接管）
+    this.ttsStream.cancel();
     // 回合开始前打 checkpoint:扫一次当前工作目录,作为 before 快照
     // (回合结束后 afterTurn 会与它做 diff 入 undo 栈)
     this.undoManager.beforeTurn();
@@ -613,8 +598,9 @@ export class Repl {
         console.warn(chalk.yellow(t(`撤销快照记录失败：${err instanceof Error ? err.message : err}`, `Failed to record undo snapshot: ${err instanceof Error ? err.message : err}`)));
       }
       this.isProcessing = false;
-      // 无 TTS 时回合随回复结束；有 TTS 时由 drainTtsQueue() 排空后恢复默认视频
-      if (!this.ttsPending) pet.reset();
+      // 回合结束：无 TTS 残余播放则立即恢复桌宠；仍有播放由 play_end 空闲回调恢复
+      this.turnEnded = true;
+      if (!this.ttsStream.isPending) pet.reset();
       // 若被 Esc/Ctrl+C 中断，中断处理已重绘提示符，跳过重复 prompt
       if (this.aborted) {
         this.aborted = false;
@@ -640,6 +626,9 @@ export class Repl {
 
     // 停止全局热键监听（pynput）
     this.stopHotkeyHook();
+
+    // 停止实时流式 TTS 常驻进程
+    this.ttsStream.shutdown();
 
     // Cleanup
     stopComputerUse();

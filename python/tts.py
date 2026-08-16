@@ -62,7 +62,7 @@ async def tts_synthesize(text, api_key, workspace_id, model, voice, audio_format
 
     tmp_path = None
     try:
-        async with websockets.connect(uri, additional_headers=headers, max_size=64 * 1024 * 1024) as ws:
+        async with websockets.connect(uri, additional_headers=headers, max_size=64 * 1024 * 1024, proxy=None) as ws:
             # 1. run-task
             run_task = {
                 "header": {

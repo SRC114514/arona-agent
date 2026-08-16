@@ -127,7 +127,7 @@ async def stt_recognize(api_key, workspace_id, model, audio_format, sample_rate)
             frames_per_buffer=frames_per_buffer,
         )
 
-        async with websockets.connect(uri, additional_headers=headers, max_size=64 * 1024 * 1024) as ws:
+        async with websockets.connect(uri, additional_headers=headers, max_size=64 * 1024 * 1024, proxy=None) as ws:
             await ws.send(json.dumps(run_task))
 
             # 等 task-started

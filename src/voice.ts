@@ -24,8 +24,9 @@ export function setSttEnabled(enabled: boolean): void {
 
 /**
  * Strip markdown formatting and code blocks before sending to TTS.
+ * （供 tts_stream.ts 实时流式管道复用）
  */
-function stripMarkdown(text: string): string {
+export function stripMarkdown(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, " (code block) ")
     .replace(/`[^`]+`/g, "")

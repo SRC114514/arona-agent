@@ -14,6 +14,7 @@ const THINKING_TAIL_LINES = 3;
 export function createRenderer(
   onMessageComplete?: (text: string) => void,
   onResponseComplete?: (text: string) => void,
+  onTextDelta?: (delta: string) => void,
 ) {
   let responseText = "";
   // Full thinking content accumulated during this assistant message.
@@ -42,6 +43,8 @@ export function createRenderer(
               }
               process.stdout.write(ae.delta);
               responseText += ae.delta;
+              // 实时 TTS：文本增量边生成边送入流式合成管道（中间过程与最终回复统一覆盖）
+              onTextDelta?.(ae.delta);
             } else if (ae.type === "thinking_delta") {
               if (showThinking) {
                 if (!inThinking) {

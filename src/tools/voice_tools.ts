@@ -5,7 +5,7 @@ import { listen } from "../voice.ts";
 /**
  * 语音相关 Tool 集合。
  *
- * 设计原则：TTS 完全由程序在 Agent 回复后自动触发（renderer → voice.speak），
+ * 设计原则：TTS 完全由程序在 Agent 回复时自动触发（renderer text_delta → TtsStream 实时流式），
  * 语气风格由 TTS 引擎自身决定，无需 Tool 介入。
  * STT 在用户长按右 Cmd ≥2秒时自动 listen（见 repl.ts），也无需 Tool 介入。
  *

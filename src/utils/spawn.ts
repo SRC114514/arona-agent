@@ -33,3 +33,24 @@ export function spawnCompat(
   }
   return spawn(command, args, options) as ChildProcessWithoutNullStreams;
 }
+
+/**
+ * 剔除代理环境变量，返回新对象（不改动原 process.env）。
+ *
+ * Python 侧 websockets/requests 会读 ALL_PROXY/all_proxy 走 SOCKS 代理；用户本机常开 Clash
+ * 为 GitHub 等设 SOCKS 代理，但阿里云百炼 DashScope 是国内服务、应直连。若代理变量泄漏进
+ * Python 子进程，websockets 16.x 会报 "connecting through a SOCKS proxy requires python-socks"。
+ * 故所有 spawn Python 语音脚本（TTS/STT）时都用此函数清洗 env。
+ */
+export function stripProxyEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const key of [
+    "ALL_PROXY", "all_proxy",
+    "SOCKS_PROXY", "socks_proxy",
+    "HTTP_PROXY", "http_proxy",
+    "HTTPS_PROXY", "https_proxy",
+  ]) {
+    delete out[key];
+  }
+  return out;
+}

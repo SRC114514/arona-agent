@@ -216,7 +216,7 @@ export function loadConfig(): AronaConfig {
     ttsApiKey: noVoice ? "" : (s.ttsApiKey || ""),
     ttsModel: noVoice ? "" : (s.ttsModel || "qwen-audio-3.0-tts-plus"),
     ttsVoice: noVoice ? "" : (s.ttsVoice || ""),
-    ttsFormat: noVoice ? "mp3" : (s.ttsFormat || "mp3"),
+    ttsFormat: noVoice ? "pcm" : (s.ttsFormat || "pcm"),
     ttsSampleRate: noVoice ? 22050 : (s.ttsSampleRate || 22050),
     sttApiKey: noVoice ? "" : (s.sttApiKey || ""),
     sttModel: noVoice ? "" : (s.sttModel || "qwen-audio-3.0-asr-flash-streaming"),

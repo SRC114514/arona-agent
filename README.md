@@ -32,7 +32,7 @@ arona --no-voice
 ## 核心特性
 
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
-- **语音**：Qwen TTS + STT。
+- **语音**：实时流式 TTS（LLM 边生成边合成边朗读，中间过程播报短句也发声）+ STT。
 - **桌面宠物**：透明无边框置顶 Electron 窗口，Spine 骨骼动画待机 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
 
 
@@ -59,12 +59,12 @@ arona --no-voice
 | `mainAgent` | 主 Agent（`arona`/`plana`） | `arona` |
 | `ttsEnabled` | 启用 TTS | `true` |
 | `sttEnabled` | 启用 STT | `true` |
-| `ttsAuto` | 回复自动朗读 | `true` |
+| `ttsAuto` | 回复自动朗读（实时流式：边生成边朗读，工具调用间的播报短句也朗读） | `true` |
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
 | `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
 | `ttsVoice` | 音色克隆voice_id（`arona setup` 填充） | — |
-| `ttsFormat` | TTS 音频格式（mp3/pcm/wav/opus） | `mp3` |
+| `ttsFormat` | TTS 音频格式（pcm/mp3/wav/opus；实时播放固定 pcm） | `pcm` |
 | `ttsSampleRate` | TTS 采样率 | `22050` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |

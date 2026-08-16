@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "child_process";
 import { join } from "path";
 import { PYTHON_DIR, config } from "../config.ts";
 import { t, getLang } from "../locale.ts";
-import { spawnCompat } from "./spawn.ts";
+import { spawnCompat, stripProxyEnv } from "./spawn.ts";
 
 /**
  * Run a Python script one-shot: spawn, pass input via stdin, return stdout.
@@ -17,7 +17,8 @@ export async function runPython(
 ): Promise<string> {
   const scriptPath = join(PYTHON_DIR, scriptName);
   // ARONA_LANG 传给 Python 侧做 i18n（覆盖仅靠 LANG 不可靠的场景）；PYTHONUTF8 让子进程 stdin/stdout/stderr 走 UTF-8
-  const baseEnv = { ...process.env, ARONA_LANG: getLang(), PYTHONUTF8: "1", ...env };
+  // stripProxyEnv 剔除代理变量，避免 websockets 误走本机 SOCKS 代理（DashScope 国内服务应直连）
+  const baseEnv = stripProxyEnv({ ...process.env, ARONA_LANG: getLang(), PYTHONUTF8: "1", ...env });
   return new Promise((resolve, reject) => {
     const proc = spawnCompat(config.pythonPath, [scriptPath, ...args], {
       env: baseEnv,
@@ -91,7 +92,7 @@ export class PythonBridge {
   async start(): Promise<void> {
     const scriptPath = join(PYTHON_DIR, this.scriptName);
     this.proc = spawnCompat(config.pythonPath, ["-u", scriptPath, ...this.args], {
-      env: { ...process.env, ARONA_LANG: getLang(), PYTHONUTF8: "1", ...this.env },
+      env: stripProxyEnv({ ...process.env, ARONA_LANG: getLang(), PYTHONUTF8: "1", ...this.env }),
       stdio: ["pipe", "pipe", "pipe"],
     });
 

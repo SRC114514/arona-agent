@@ -30,7 +30,7 @@ arona --no-voice
 ## Key Features
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
-- **Voice**: Qwen TTS + STT.
+- **Voice**: Real-time streaming TTS (LLM text is synthesized & spoken as it is generated; short narration between tool calls is spoken too) + STT.
 - **Desktop pet**: transparent frameless always-on-top Electron window, Spine skeleton idle animation + emotion switching + cursor-following pupils + drag/head-pat easter egg + full-screen click/trail FX.
 
 ---
@@ -56,12 +56,12 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `mainAgent` | Main agent (`arona`/`plana`) | `arona` |
 | `ttsEnabled` | Enable TTS | `true` |
 | `sttEnabled` | Enable STT | `true` |
-| `ttsAuto` | Auto-speak replies | `true` |
+| `ttsAuto` | Auto-speak replies (real-time streaming: spoken while generated, short narration between tool calls included) | `true` |
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
 | `ttsApiKey` | DashScope API key (TTS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
 | `ttsVoice` | Cloned voice_id (filled by `arona setup`) | — |
-| `ttsFormat` | TTS audio format (mp3/pcm/wav/opus) | `mp3` |
+| `ttsFormat` | TTS audio format (pcm/mp3/wav/opus; streaming always uses pcm) | `pcm` |
 | `ttsSampleRate` | TTS sample rate | `22050` |
 | `sttApiKey` | DashScope API key (STT) | — |
 | `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
