@@ -3,6 +3,7 @@ import {
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
   resolveCliModel,
   type ToolDefinition,
   type AgentSession,
@@ -538,6 +539,15 @@ export async function initAgent(): Promise<{
   ];
 
   // 8. Create session
+  // 压缩阈值：reserveTokens=150000 → 约 85 万 token 才触发压缩（默认 16384 太晚）
+  const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
+  settingsManager.applyOverrides({
+    compaction: {
+      enabled: true,
+      reserveTokens: 150000,
+      keepRecentTokens: 20000,
+    },
+  });
   const { session } = await createAgentSession({
     cwd: process.cwd(),
     agentDir: ARONA_DIR,
@@ -548,6 +558,7 @@ export async function initAgent(): Promise<{
     tools: toolNames,
     customTools,
     sessionManager: SessionManager.inMemory(),
+    settingsManager,
   });
 
   return { session, modelRuntime, loader, customTools };

@@ -278,6 +278,9 @@ function handleMessage(msg) {
     case "reset":
       win.webContents.send("pet:reset");
       break;
+    case "text":
+      win.webContents.send("pet:text", { kind: msg.kind, data: msg.data });
+      break;
     case "quit":
       app.quit();
       break;

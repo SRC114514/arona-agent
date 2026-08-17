@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("petAPI", {
   onEmotion: (cb) => ipcRenderer.on("pet:emotion", (_e, name) => cb(name)),
   onReset: (cb) => ipcRenderer.on("pet:reset", () => cb()),
+  onText: (cb) => ipcRenderer.on("pet:text", (_e, p) => cb(p)),
   getAgentConfig: () => ipcRenderer.invoke("pet:get-agent-config"),
   drag: (dx, dy) => ipcRenderer.send("pet:drag", dx, dy),
   dragEnd: () => ipcRenderer.send("pet:dragend"),

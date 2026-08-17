@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { t } from "./locale.ts";
+import { splitStreamedText } from "./text_split.ts";
 
 let showThinking = true;
 let showToolDetails = true;
@@ -9,19 +10,171 @@ export function getShowThinking() { return showThinking; }
 export function setShowToolDetails(v: boolean) { showToolDetails = v; }
 export function getShowToolDetails() { return showToolDetails; }
 
-const THINKING_TAIL_LINES = 3;
+const THINKING_TAIL_LINES = 3; // 流式与历史回放统一：只显示思考尾部 N 行
+const PET_BUBBLE_FORCE_SPLIT_LEN = 9999; // 气泡只显示完整句子，不做强切，禁止截断
+const PET_MAX_BUBBLE_LEN = 50;
+
+// ── 显示宽度 & 行数工具（CJK/全角算 2，ANSI 控制符算 0）────────────
+function charWidth(code: number): number {
+  if (code < 0x20) return 0;
+  if (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3040 && code <= 0x33bf) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1f9ff))
+  ) {
+    return 2;
+  }
+  return 1;
+}
+function strWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) w += charWidth(ch.codePointAt(0)!);
+  return w;
+}
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b(?:\[[0-9;?]*[A-Za-z]|[0-9])/g, "");
+}
+/** 给定一行可见文本，根据当前终端列宽计算实际占用的物理行数（自动软换行）。 */
+function physicalLinesForRow(visibleText: string): number {
+  const cols = process.stdout.columns ?? 80;
+  if (cols <= 0) return 1;
+  const w = Math.max(1, strWidth(visibleText));
+  return Math.ceil(w / cols);
+}
+
+type PetTextKind = "mid" | "final";
+
+/** 气泡字数：中文/日文等每个字符算 1，英文单词算 1，标点不计。 */
+function bubbleTextLength(text: string): number {
+  // 去掉所有标点（保留字母、数字、空格、CJK）
+  const noPunct = text.replace(/[^\p{L}\p{N}\s]/gu, "");
+  const cjkMatches = noPunct.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g);
+  const cjkCount = cjkMatches ? cjkMatches.length : 0;
+  // 把 CJK 替换成空格后，按空白切分出英文/数字单词
+  const latinPart = noPunct.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, " ");
+  const words = latinPart.trim().split(/\s+/).filter(Boolean).length;
+  return cjkCount + words;
+}
 
 export function createRenderer(
   onMessageComplete?: (text: string) => void,
   onResponseComplete?: (text: string) => void,
   onTextDelta?: (delta: string) => void,
+  onPetText?: (kind: PetTextKind, data: string) => void,
 ) {
   let responseText = "";
-  // Full thinking content accumulated during this assistant message.
-  // Display is deferred to message_end where we only show the last 3 lines.
-  let thinkingFull = "";
   let inThinking = false;
   let inText = false;
+
+  // ── 流式思考折叠重绘 ──────────────────────────────────────────
+  let thinkingBuffer = "";          // 完整思考内容缓冲区
+  let drawnThinkingLines = 0;      // 上次渲染占用的**物理行数**（含 ANSI 软换行）
+  // 思考前缀：每行都加 2 空格缩进（与历史回放 renderSavedMessages 对齐）
+  const THINKING_PREFIX = "  ";
+
+  /** 擦除上次画出的思考区域，回到思考块第一行的行首。 */
+  function eraseDrawnThinking(): void {
+    if (drawnThinkingLines <= 0) return;
+    // 光标当前在思考块最后一行末尾。先回到该行第 1 列 → 上移 N-1 行到思考块顶行 → 清到屏幕末尾
+    process.stdout.write("\r");
+    if (drawnThinkingLines > 1) {
+      process.stdout.write(`\x1b[${drawnThinkingLines - 1}A`);
+    }
+    process.stdout.write("\x1b[0J");
+    drawnThinkingLines = 0;
+  }
+
+  /**
+   * 根据 thinkingBuffer 按折叠规则渲染（省略前缀 + 最后 THINKING_TAIL_LINES 行）。
+   * 与历史回放 renderSavedMessages 的格式严格对齐：
+   *   - 空缓冲 → 什么都不画
+   *   - 逻辑行 ≤ THINKING_TAIL_LINES → 全画
+   *   - 逻辑行 > THINKING_TAIL_LINES → 1 行省略提示 + 尾部 N 行
+   *   - 每行前缀 = THINKING_PREFIX
+   */
+  function renderThinking(): void {
+    const raw = thinkingBuffer.replace(/\n+$/, "");
+    if (!raw) return;
+    const allLines = raw.split("\n");
+    const total = allLines.length;
+    const showTail = total <= THINKING_TAIL_LINES
+      ? allLines
+      : allLines.slice(-THINKING_TAIL_LINES);
+    const hidden = total - showTail.length;
+
+    // 准备要写出的行（带格式、带前缀）
+    const renderLines: { visible: string; styled: string }[] = [];
+    if (hidden > 0) {
+      const visibleMsg = t(
+        `… (已省略 ${hidden} 行早期思考内容)`,
+        `… (${hidden} earlier thinking lines omitted)`,
+      );
+      renderLines.push({
+        visible: THINKING_PREFIX + visibleMsg,
+        styled: chalk.dim(THINKING_PREFIX + visibleMsg),
+      });
+    }
+    for (const line of showTail) {
+      renderLines.push({
+        visible: THINKING_PREFIX + line,
+        styled: chalk.dim(THINKING_PREFIX + line),
+      });
+    }
+
+    // 输出 + 统计物理行数
+    let physLines = 0;
+    const out: string[] = [];
+    for (const row of renderLines) {
+      out.push(row.styled);
+      physLines += physicalLinesForRow(row.visible);
+    }
+    process.stdout.write(out.join("\r\n"));
+    drawnThinkingLines = physLines;
+  }
+
+  /** 流式思考增量更新：擦旧 → 追加缓冲 → 重绘。 */
+  function appendThinkingDelta(delta: string): void {
+    eraseDrawnThinking();
+    thinkingBuffer += delta;
+    renderThinking();
+  }
+
+  /** 结束流式思考、准备输出正文时调用。把思考块"封版"，游标移到下一行开头。 */
+  function finalizeThinking(): void {
+    if (drawnThinkingLines > 0) {
+      // 画完最后一帧后光标在末行末尾；切到下一行第 1 列即可。
+      process.stdout.write("\r\n");
+    }
+    drawnThinkingLines = 0;
+    thinkingBuffer = "";
+  }
+
+  // 气泡状态
+  let petMidBuffer = "";
+
+  function flushPetMid(delta: string) {
+    petMidBuffer += delta;
+    if (!onPetText) return;
+    const { sentences, rest } = splitStreamedText(petMidBuffer, PET_BUBBLE_FORCE_SPLIT_LEN);
+    petMidBuffer = rest;
+    for (const sent of sentences) {
+      const clean = sent.trim();
+      if (!clean) continue;
+      // 只要是完整短句就上气泡，不再限定“工具阶段”
+      if (bubbleTextLength(clean) <= PET_MAX_BUBBLE_LEN) {
+        onPetText?.("mid", clean);
+      }
+    }
+  }
 
   return {
     subscribe: (session: any) => {
@@ -31,45 +184,45 @@ export function createRenderer(
             responseText = "";
             inText = false;
             inThinking = false;
-            thinkingFull = "";
+            petMidBuffer = "";
+            thinkingBuffer = "";
+            drawnThinkingLines = 0;
             break;
 
           case "message_update": {
             const ae = event.assistantMessageEvent;
             if (ae.type === "text_delta") {
               if (!inText) {
+                if (inThinking) {
+                  finalizeThinking();
+                  inThinking = false;
+                }
                 inText = true;
-                inThinking = false;
               }
               process.stdout.write(ae.delta);
               responseText += ae.delta;
               // 实时 TTS：文本增量边生成边送入流式合成管道（中间过程与最终回复统一覆盖）
               onTextDelta?.(ae.delta);
+              flushPetMid(ae.delta);
             } else if (ae.type === "thinking_delta") {
               if (showThinking) {
                 if (!inThinking) {
                   inThinking = true;
                   inText = false;
+                  // 先开一个新行；后续所有增量走 erase+redraw，从这行开始覆盖
+                  process.stdout.write("\r\n");
+                  drawnThinkingLines = 0;
+                  thinkingBuffer = "";
                 }
-                // Accumulate silently; we'll print only the tail at message_end
-                thinkingFull += ae.delta;
+                appendThinkingDelta(ae.delta);
               }
             }
             break;
           }
 
           case "message_end": {
-            if (inThinking && showThinking && thinkingFull.trim().length > 0) {
-              const allLines = thinkingFull.replace(/\n+$/, "").split("\n");
-              const tail = allLines.slice(-THINKING_TAIL_LINES);
-              const hidden = allLines.length - tail.length;
-              process.stdout.write("\n");
-              if (hidden > 0) {
-                process.stdout.write(chalk.dim(t(`  … (已省略 ${hidden} 行早期思考内容)\n`, `  … (${hidden} earlier thinking lines omitted)\n`)));
-              }
-              for (const line of tail) {
-                process.stdout.write(chalk.dim(`  ${line}\n`));
-              }
+            if (inThinking && showThinking) {
+              finalizeThinking();
             }
             if (inText) {
               process.stdout.write("\n");
@@ -78,9 +231,16 @@ export function createRenderer(
             if (responseText.trim()) {
               onMessageComplete?.(responseText);
             }
+            // 只把没有标点收尾的残段作为 final 气泡；已通过 mid 显示的句子不重复
+            const leftover = petMidBuffer.trim();
+            if (leftover && bubbleTextLength(leftover) <= PET_MAX_BUBBLE_LEN) {
+              onPetText?.("final", leftover);
+            }
             inThinking = false;
             inText = false;
-            thinkingFull = "";
+            petMidBuffer = "";
+            thinkingBuffer = "";
+            drawnThinkingLines = 0;
             break;
           }
 

@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "child_process";
 import { join } from "path";
-import { PYTHON_DIR, config } from "./config.ts";
+import { PYTHON_DIR, config, verbose } from "./config.ts";
 import { t, getLang } from "./locale.ts";
 import { spawnCompat, stripProxyEnv } from "./utils/spawn.ts";
 import { stripMarkdown } from "./voice.ts";
@@ -227,6 +227,8 @@ export class TtsStream {
           this.processEvents();
         });
         proc.stderr.on("data", (data) => {
+          // 非 --verbose 启动时静默 Python stderr，避免刷 [python:tts_stream] 日志
+          if (!verbose) return;
           const msg = data.toString().trim();
           if (msg) console.error(`[python:tts_stream]`, msg);
         });

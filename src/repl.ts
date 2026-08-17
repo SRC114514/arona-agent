@@ -36,7 +36,8 @@ export class Repl {
   private ttsStream = new TtsStream(
     () => voice.isTtsEnabled(),
     () => {
-      // play_end 空闲回调：回合已结束且无剩余播放段 → 恢复桌宠默认视频
+      // TTS 播放结束：先隐藏桌宠气泡，再恢复默认视频
+      this.hidePetBubble();
       if (this.turnEnded && !this.ttsStream.isPending) pet.reset();
     },
   );
@@ -97,16 +98,25 @@ export class Repl {
     });
 
     // Setup renderer with TTS callbacks
-    // onTextDelta: 文本增量实时送入流式 TTS（中间过程与最终回复统一覆盖，<50 字按句朗读）
+    // onTextDelta: 文本增量实时送入流式 TTS（中间过程与最终回复统一覆盖）
     // onMessageComplete: 每条消息结束时结束当前合成段（残段收尾 + finish-task）
+    // onPetText: 桌宠文字气泡（仅桌宠运行时发送）；情绪仍由 LLM change_emotion 工具驱动
     this.renderer = createRenderer(
       () => this.ttsStream.endSegment(),
       undefined,
       (delta) => this.ttsStream.pushText(delta),
+      (kind, data) => {
+        if (pet.isRunning) pet.sendText(kind, data);
+      },
     );
     this.rendererUnsub = this.renderer.subscribe(this.session);
 
     this.setupSignals();
+  }
+
+  /** 通知桌宠隐藏气泡（TTS 播放结束 / 打断时调用） */
+  private hidePetBubble(): void {
+    if (pet.isRunning) pet.sendText("tts_end", "");
   }
 
   private setupSignals() {
@@ -120,6 +130,7 @@ export class Repl {
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
         this.ttsStream.cancel(); // 打断流式 TTS，中断后不再播放后续内容
+        this.hidePetBubble(); // 打断时立即隐藏气泡
         // 清空 readline 缓冲区，避免残留内容在重绘时混入提示符行
         (this.rl as any).line = "";
         (this.rl as any).cursor = 0;
@@ -334,6 +345,7 @@ export class Repl {
       this.isProcessing = false;
       this.aborted = true; // 阻止 processInput finally 再次 prompt
       this.ttsStream.cancel(); // 打断流式 TTS（STT 接管输入前清掉残余播放）
+      this.hidePetBubble(); // 打断时立即隐藏气泡
       (this.rl as any).line = "";
       (this.rl as any).cursor = 0;
       process.stdout.write(chalk.yellow("\n[aborted by stt]\n"));
@@ -494,6 +506,7 @@ export class Repl {
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
         this.ttsStream.cancel(); // 打断流式 TTS
+        this.hidePetBubble(); // 打断时立即隐藏气泡
         // 清空 readline 缓冲区，避免残留内容在重绘时混入提示符行
         (this.rl as any).line = "";
         (this.rl as any).cursor = 0;
@@ -579,6 +592,7 @@ export class Repl {
     this.turnEnded = false;
     // 回合开始前打断上一回合残余 TTS 播放（新输入立即接管）
     this.ttsStream.cancel();
+    this.hidePetBubble();
     // 回合开始前打 checkpoint:扫一次当前工作目录,作为 before 快照
     // (回合结束后 afterTurn 会与它做 diff 入 undo 栈)
     this.undoManager.beforeTurn();

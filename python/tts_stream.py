@@ -6,7 +6,7 @@ ARONA TTS Stream - 常驻实时语音合成进程（阿里云百炼 DashScope �
 
   stdin 指令：
     {"type":"text","data":"..."}   文本增量（流式输入，可多次）
-    {"type":"end"}                 当前合成段结束（finish-task）
+    {"type":"end"}                 当前合成段结束（对该段执行 finish-task）
     {"type":"cancel"}              打断当前合成（取消连接任务 + 停止播放）
     {"type":"exit"}                退出进程
   stdout 事件：
@@ -15,9 +15,12 @@ ARONA TTS Stream - 常驻实时语音合成进程（阿里云百炼 DashScope �
     {"event":"play_end"}           当前段播放完毕（或被打断）
     {"event":"error","message":"..."}
 
-WebSocket duplex 流式输入：run-task → (task-started) → 多次 continue-task → finish-task。
-服务端边收文本边返回音频帧。音频格式固定 pcm，pyaudio 边收边播；
-pyaudio 不可用时缓冲为 WAV 后按平台选择播放命令（降级，非实时）。
+WebSocket duplex 流式输入：一段（首个 text 到 end）共用一个 task_id：
+  run-task → (task-started) → 多次 continue-task(text) → finish-task → 收帧到 task-finished。
+这样同一段内多句话共享语气上下文，避免逐句独立任务导致语气骤变。
+连接在主协程 connection_loop 中常驻复用；task 结束只向播放队列写 Marker，
+不等待播放完毕，因此下一段的合成可与上一段音频播放重叠。pyaudio 不可用时
+降级为逐段缓冲后整段播放（不做流水线）。
 
 环境变量：
   QWEN_WORKSPACE_ID     - 百炼业务空间 ID（可选；留空走旧域名 dashscope.aliyuncs.com）
@@ -31,6 +34,7 @@ pyaudio 不可用时缓冲为 WAV 后按平台选择播放命令（降级，非�
 """
 
 import asyncio
+import collections
 import io
 import json
 import os
@@ -39,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 import uuid
 import wave
@@ -59,15 +64,25 @@ def emit(event, **kwargs):
     sys.stdout.flush()
 
 
-class PcmPlayer:
-    """pcm 音频流式播放器。
+class Marker:
+    """播放队列中的任务结束标记：pump 线程遇到它后通过事件循环发 play_end。"""
 
-    - pyaudio 可用：后台线程从队列取块写入声卡（顺序播放，finish 排空后线程退出）。
+    def __init__(self, task_id):
+        self.task_id = task_id
+
+
+class PcmPlayer:
+    """pcm 音频流式播放器（连接复用后常驻，不再每段 new/close）。
+
+    - pyaudio 可用：后台线程从队列取块写入声卡；队列项为 bytes / Marker / None。
+      Marker 表示对应 task 的全部音频已入队，播放到该位置时发 play_end。
+      None 为关闭哨兵。
     - pyaudio 不可用：缓冲全部音频，finish 时写 WAV 临时文件按平台选择播放命令（降级）。
     """
 
-    def __init__(self, rate):
+    def __init__(self, rate, loop=None):
         self.rate = rate
+        self.loop = loop
         self.pyaudio_ok = False
         self.pa = None
         self.stream = None
@@ -79,51 +94,79 @@ class PcmPlayer:
         try:
             import pyaudio
             self.pa = pyaudio.PyAudio()
-            self.stream = self.pa.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=rate,
-                output=True,
-            )
+            self.pa_sample_format = pyaudio.paInt16
             self.pyaudio_ok = True
-            import queue as _queue
-            self.queue = _queue.Queue()
-            self.thread = threading.Thread(target=self._pump, daemon=True)
-            self.thread.start()
+            self._open()
         except Exception as e:
             self.pyaudio_ok = False
             print(t(f"TTS Stream: pyaudio 不可用，将缓冲后播放：{e}", f"TTS Stream: pyaudio unavailable, will buffer then play: {e}"), file=sys.stderr)
 
+    def _open(self):
+        if not self.pyaudio_ok:
+            return
+        import queue as _queue
+        if self.stream is not None:
+            try:
+                self.stream.close()
+            except Exception:
+                pass
+            self.stream = None
+        self.stream = self.pa.open(
+            format=self.pa_sample_format,
+            channels=1,
+            rate=self.rate,
+            output=True,
+        )
+        self.queue = _queue.Queue()
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+        self.thread.start()
+
     def _pump(self):
-        """后台播放线程：顺序写块；None 哨兵 = 排空退出；write 抛异常（被 abort 关闭）即退出。"""
+        """后台播放线程：顺序写块；Marker 发 play_end；None 哨兵 = 排空退出。"""
         while True:
             try:
-                chunk = self.queue.get()
-                if chunk is None:
+                item = self.queue.get()
+                if item is None:
                     break
-                self.stream.write(chunk)
+                if isinstance(item, Marker):
+                    if self.loop is not None:
+                        self.loop.call_soon_threadsafe(self._notify_play_end)
+                    continue
+                self.stream.write(item)
             except Exception:
                 break
 
+    def _notify_play_end(self):
+        print(t("TTS Stream play_end", "TTS Stream play_end"), file=sys.stderr)
+        emit("play_end")
+
+    def _ensure_open(self):
+        if not self.pyaudio_ok:
+            return
+        if self.stream is None or self.thread is None or not self.thread.is_alive():
+            try:
+                self._open()
+            except Exception as e:
+                print(t(f"TTS Stream: 重新打开音频输出失败：{e}", f"TTS Stream: reopen audio output failed: {e}"), file=sys.stderr)
+                self.pyaudio_ok = False
+                raise
+
     def write(self, chunk):
-        if self.pyaudio_ok and self.queue is not None:
-            self.queue.put(chunk)
+        if self.pyaudio_ok:
+            try:
+                self._ensure_open()
+                self.queue.put(chunk)
+            except Exception:
+                self.buffered.append(chunk)
         else:
             self.buffered.append(chunk)
 
-    def finish(self):
-        """正常收尾：等待所有已入队音频播完（或缓冲播放），返回后播放已结束。"""
+    def mark(self, task_id):
         if self.pyaudio_ok and self.queue is not None:
-            # 排空哨兵：线程会先把队列中已有块写完再退出
-            self.queue.put(None)
-            if self.thread is not None:
-                self.thread.join(timeout=10)
-            self._close_stream()
-        else:
-            self._play_buffered()
+            self.queue.put(Marker(task_id))
 
     def abort(self):
-        """打断：丢弃未播音频、停止播放（含 kill 掉降级播放子进程）。"""
+        """打断：丢弃排队中未播音频、停止当前/降级播放子进程。"""
         with self.lock:
             if self.play_proc is not None:
                 try:
@@ -132,10 +175,32 @@ class PcmPlayer:
                     pass
                 self.play_proc = None
         if self.pyaudio_ok:
-            self._close_stream()  # 中断 _pump 中的 write
+            if self.queue is not None:
+                try:
+                    while True:
+                        self.queue.get_nowait()
+                except Exception:
+                    pass
+                # 唤醒可能在 queue.get() 上等待的 pump 线程，避免 abort 后老线程残留
+                try:
+                    self.queue.put(None)
+                except Exception:
+                    pass
+            self._close_stream()
             if self.thread is not None:
-                self.thread.join(timeout=2)
+                try:
+                    self.thread.join(timeout=2)
+                except Exception:
+                    pass
+                self.thread = None
+            self.queue = None
         self.buffered = []
+
+    def finish(self):
+        """降级路径：等待已缓冲音频播完（pyaudio 可用时流水线不使用本方法）。"""
+        if self.pyaudio_ok:
+            return
+        self._play_buffered()
 
     def _close_stream(self):
         try:
@@ -202,9 +267,15 @@ class PcmPlayer:
                 self.play_proc = None
         if self.pyaudio_ok:
             try:
-                self._close_stream()
+                if self.queue is not None:
+                    try:
+                        self.queue.put(None)
+                    except Exception:
+                        pass
                 if self.thread is not None:
                     self.thread.join(timeout=2)
+                    self.thread = None
+                self._close_stream()
             except Exception:
                 pass
         if self.pa is not None:
@@ -224,241 +295,316 @@ class TtsStreamServer:
         self.sample_rate = int(os.environ.get("QWEN_TTS_SAMPLE_RATE", "22050"))
         self.format = "pcm"  # 实时播放固定 pcm，忽略 QWEN_TTS_FORMAT
 
-        # 段状态机：idle（无活跃段）→ running（建连+收音频，接受 text 流式）→ finishing（end 已发，等播完）
-        # 段间严格串行：上一条消息播完（play_end）后，才启动下一条（暂存于 next_texts）。
-        self.state = "idle"
-        self.task_id = None
+        # 流水线状态：pending_cmds 存放 stdin 来的 text/end；
+        # connection_loop 严格串行消费（同一时刻至多一个 task，无独立 sender）。
+        self.pending_cmds = collections.deque()
+        self.cmd_event = asyncio.Event()
         self.current_ws = None
-        self.started_evt = asyncio.Event()  # task-started 后置位
-        self.send_queue = asyncio.Queue()   # 当前段指令（continue-task / finish-task）
-        self.next_cmds = []                 # finishing 期间暂存的下一条消息指令（("text", str) / ("end", None)）
         self.player = None
-        self.run_task = None                # 当前段的 run_connection Task
+        self.task_id = None
+        self.task_active = False
         self.play_started = False
         self.cancelling = False
         self.exit_requested = False
+        self.loop = None
+        self.last_task_end_monotonic = 0.0
 
     # ------------------------------------------------------------
-    # 播放 / 段生命周期
+    # 播放器
     # ------------------------------------------------------------
     def _ensure_player(self):
         if self.player is None:
-            self.player = PcmPlayer(self.sample_rate)
+            self.player = PcmPlayer(self.sample_rate, self.loop)
+        elif self.loop is not None and self.player.loop is None:
+            self.player.loop = self.loop
         return self.player
 
-    def _start_session(self):
-        """开启一个新合成段：新 task_id + 新播放器 + 新连接任务。"""
-        self.task_id = str(uuid.uuid4())
-        # 清掉上一段残留指令（异常结束时未消费的 continue/finish 带旧 task_id，
-        # 泄漏进新段会触发服务端 task-failed 或让 _send_loop 提前退出吞掉正文）
-        self._clear_send_queue()
-        self.state = "running"
-        self.started_evt = asyncio.Event()
-        self.play_started = False
-        self.player = PcmPlayer(self.sample_rate)
-        self.run_task = asyncio.ensure_future(self.run_connection())
-        return self.task_id
+    # ------------------------------------------------------------
+    # 指令队列
+    # ------------------------------------------------------------
+    def _enqueue_cmd(self, cmd):
+        self.pending_cmds.append(cmd)
+        self.cmd_event.set()
 
-    def _clear_send_queue(self):
-        try:
-            while True:
-                self.send_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
+    def _clear_pending(self):
+        self.pending_cmds.clear()
+
+    async def _next_cmd(self):
+        while True:
+            if self.pending_cmds:
+                return self.pending_cmds.popleft()
+            if self.exit_requested:
+                return None
+            self.cmd_event.clear()
+            if not self.pending_cmds and not self.exit_requested:
+                await self.cmd_event.wait()
 
     # ------------------------------------------------------------
-    # WebSocket 连接生命周期（一个任务一次连接，cancel 后断开重连）
+    # WebSocket 连接（常驻复用；task-failed / cancel / 60s 空闲才重建）
     # ------------------------------------------------------------
-    async def run_connection(self):
+    async def _connect_ws(self):
         import websockets
         uri = build_uri(self.workspace_id)
-        task_id = self.task_id  # 由 _start_session 预生成
         headers = {
             "Authorization": f"bearer {self.api_key}",
             "X-DashScope-DataInspection": "enable",
         }
-        sender = None
-        try:
-            # 握手重试：opening handshake 超时多为瞬时网络抖动（DNS 慢 / 链路闪断 /
-            # 系统代理干扰），重试 3 次可吞掉；cancel 传播的 CancelledError 不重试直接上抛
-            ws = None
-            last_err = None
-            for attempt in range(3):
-                try:
-                    ws = await websockets.connect(
-                        uri, additional_headers=headers, max_size=64 * 1024 * 1024, open_timeout=30,
-                        # proxy=None 显式禁用代理：websockets 默认会读系统/环境代理（Clash 的 SOCKS 代理
-                        # 会让它报 "requires python-socks"），而 DashScope 国内服务应直连
-                        proxy=None,
-                    )
-                    break
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    last_err = e
-                    if attempt < 2:
-                        print(t(
-                            f"TTS Stream: 连接失败（{e}），立即重试（第 {attempt + 2}/3 次）",
-                            f"TTS Stream: connect failed ({e}), retry immediately (attempt {attempt + 2}/3)",
-                        ), file=sys.stderr)
-            if ws is None:
-                raise last_err
-            async with ws:
-                self.current_ws = ws
-                run_task = {
-                    "header": {
-                        "action": "run-task",
-                        "task_id": task_id,
-                        "streaming": "duplex",
-                    },
-                    "payload": {
-                        "task_group": "audio",
-                        "task": "tts",
-                        "function": "SpeechSynthesizer",
-                        "model": self.model,
-                        "parameters": {
-                            "text_type": "PlainText",
-                            "voice": self.voice,
-                            "format": self.format,
-                            "sample_rate": self.sample_rate,
-                            "volume": 50,
-                            "rate": 1,
-                            "pitch": 1,
-                            "enable_ssml": False,
-                        },
-                        "input": {},
-                    },
-                }
-                await ws.send(json.dumps(run_task))
-
-                # 发送协程：task-started 后从队列取 continue-task / finish-task 发送
-                # （sender 的取消/回收统一在 finally，覆盖正常 break 与异常断开所有路径）
-                sender = asyncio.ensure_future(self._send_loop())
-
-                # 接收循环
-                while True:
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=120.0)
-                    except asyncio.TimeoutError:
-                        print(t("TTS Stream: 接收超时，断开重连", "TTS Stream: receive timeout, reconnect"), file=sys.stderr)
-                        break
-
-                    if isinstance(msg, (bytes, bytearray)):
-                        if not self.play_started:
-                            self.play_started = True
-                            emit("play_start")
-                        self._ensure_player().write(bytes(msg))
-                        continue
-
-                    try:
-                        data = json.loads(msg)
-                    except Exception:
-                        continue
-                    header = data.get("header", {})
-                    event = header.get("event")
-
-                    if event == "task-started":
-                        self.started_evt.set()
-                    elif event == "task-finished":
-                        break
-                    elif event == "task-failed":
-                        err_code = header.get("error_code", "")
-                        err_msg = header.get("error_message", "")
-                        emit("error", message=t(
-                            f"TTS task-failed: {err_code} {err_msg}",
-                            f"TTS task-failed: {err_code} {err_msg}",
-                        ))
-                        break
-
-        except asyncio.CancelledError:
-            # 由 handle_cancel 取消：直接上抛，交由 finally 收尾
-            raise
-        except Exception as e:
-            if not self.cancelling:
-                emit("error", message=t(f"TTS Stream 错误：{e}", f"TTS Stream error: {e}"))
-                traceback.print_exc(file=sys.stderr)
-        finally:
-            # 连接已结束。播放收尾（串行阻塞到播完），完成后复位并启动下一段。
-            # 先把异常结束（未经 end）的段降级为 finishing：下方 await 收尾窗口内到达的
-            # text/end 会路由到 next_cmds（见 handle_text/handle_end）；若仍排进死段的
-            # send_queue，既丢失又会毒化下一段（旧 task_id 指令）。
-            if self.state == "running":
-                self.state = "finishing"
-            # 所有路径（含 ws 异常断开）都回收发送协程，防僵尸 _send_loop 吞掉新段指令
-            if sender is not None and not sender.done():
-                sender.cancel()
-                try:
-                    await sender
-                except Exception:
-                    pass
-            self.current_ws = None
-            player = self.player
-            self.player = None
-            if player is not None:
-                try:
-                    await asyncio.to_thread(player.finish)
-                except Exception:
-                    pass
-                try:
-                    await asyncio.to_thread(player.close)
-                except Exception:
-                    pass
-            emit("play_end")
-            self.state = "idle"
-            self.task_id = None
-            self.started_evt = asyncio.Event()
-            self.run_task = None
-            # 段间串行：若有暂存的下一段指令，立即重放开启新段
-            if self.next_cmds and not self.cancelling and not self.exit_requested:
-                cmds = self.next_cmds
-                self.next_cmds = []
-                for kind, val in cmds:
-                    if kind == "text":
-                        await self.handle_text(val)
-                    else:  # "end"
-                        await self.handle_end()
-
-    async def _send_loop(self):
-        """等待 task-started 后，从队列逐个发送 continue-task / finish-task。"""
-        await self.started_evt.wait()
-        while True:
-            item = await self.send_queue.get()
-            if item is None:
-                break
-            kind, payload = item
+        last_err = None
+        for attempt in range(3):
             try:
-                await self.current_ws.send(json.dumps(payload))
-            except Exception:
-                break
-            if kind == "finish":
-                # finish-task 已发出，任务将在服务端侧收尾
-                break
+                return await websockets.connect(
+                    uri, additional_headers=headers, max_size=64 * 1024 * 1024, open_timeout=30,
+                    # proxy=None 显式禁用代理：websockets 默认会读系统/环境代理（Clash 的 SOCKS 代理
+                    # 会让它报 "requires python-socks"），而 DashScope 国内服务应直连
+                    proxy=None,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    print(t(
+                        f"TTS Stream: 连接失败（{e}），立即重试（第 {attempt + 2}/3 次）",
+                        f"TTS Stream: connect failed ({e}), retry immediately (attempt {attempt + 2}/3)",
+                    ), file=sys.stderr)
+        raise last_err
 
-    def _make_continue_task(self, text):
-        return ("text", {
+    async def _ensure_ws(self):
+        if self.current_ws is None:
+            self.current_ws = await self._connect_ws()
+        return self.current_ws
+
+    async def _close_ws(self):
+        ws = self.current_ws
+        self.current_ws = None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    def _make_run_task(self, task_id):
+        return {
+            "header": {
+                "action": "run-task",
+                "task_id": task_id,
+                "streaming": "duplex",
+            },
+            "payload": {
+                "task_group": "audio",
+                "task": "tts",
+                "function": "SpeechSynthesizer",
+                "model": self.model,
+                "parameters": {
+                    "text_type": "PlainText",
+                    "voice": self.voice,
+                    "format": self.format,
+                    "sample_rate": self.sample_rate,
+                    "volume": 50,
+                    "rate": 1,
+                    "pitch": 1,
+                    "enable_ssml": False,
+                },
+                "input": {},
+            },
+        }
+
+    def _make_continue_task(self, task_id, text):
+        return {
             "header": {
                 "action": "continue-task",
-                "task_id": self.task_id,
+                "task_id": task_id,
                 "streaming": "duplex",
             },
             "payload": {"input": {"text": text}},
-        })
+        }
 
-    def _make_finish_task(self, cancel=False):
+    def _make_finish_task(self, task_id, cancel=False):
         payload = {"input": {}}
         if cancel:
             payload["input"]["directive"] = "cancel"
-        return ("finish", {
+        return {
             "header": {
                 "action": "finish-task",
-                "task_id": self.task_id,
+                "task_id": task_id,
                 "streaming": "duplex",
             },
             "payload": payload,
-        })
+        }
+
+    async def _send_json(self, ws, payload):
+        await ws.send(json.dumps(payload))
 
     # ------------------------------------------------------------
-    # 指令处理（主循环调用）
+    # 分段任务：一段（text...end）共用一个 task_id，保留上下文语气；
+    # 段与段之间复用 WS，且上一段播放未结束时即可开始下一段合成。
+    # ------------------------------------------------------------
+    async def _start_task(self, ws, text):
+        task_id = str(uuid.uuid4())
+        self.task_id = task_id
+        self.task_active = True
+        self.play_started = False
+        player = self._ensure_player()
+        print(t(f"TTS Stream task-start {task_id[:8]}", f"TTS Stream task-start {task_id[:8]}"), file=sys.stderr)
+
+        try:
+            # 距上次任务结束超过 50s：主动重连，规避服务端 60s 空闲断开
+            if self.last_task_end_monotonic and (time.monotonic() - self.last_task_end_monotonic) > 50.0:
+                await self._close_ws()
+                ws = await self._ensure_ws()
+
+            await self._send_json(ws, self._make_run_task(task_id))
+
+            # 等 task-started（15s 超时）
+            started = False
+            while not started:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    raise TimeoutError("task-started timeout")
+                if isinstance(msg, (bytes, bytearray)):
+                    continue
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    continue
+                event = data.get("header", {}).get("event")
+                if event == "task-started":
+                    started = True
+                elif event == "task-failed":
+                    err_code = data.get("header", {}).get("error_code", "")
+                    err_msg = data.get("header", {}).get("error_message", "")
+                    emit("error", message=t(
+                        f"TTS task-failed: {err_code} {err_msg}",
+                        f"TTS task-failed: {err_code} {err_msg}",
+                    ))
+                    await self._close_ws()
+                    self.task_active = False
+                    self.task_id = None
+                    return
+
+            # 首句文本通过 continue-task 送入当前任务
+            await self._send_json(ws, self._make_continue_task(task_id, text))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.task_active = False
+            self.task_id = None
+            raise
+
+    async def _continue_task(self, ws, text):
+        if not self.task_id:
+            return
+        await self._send_json(ws, self._make_continue_task(self.task_id, text))
+
+    async def _finish_task(self, ws):
+        task_id = self.task_id
+        if not task_id:
+            return
+        player = self._ensure_player()
+        try:
+            await self._send_json(ws, self._make_finish_task(task_id, cancel=False))
+
+            # 收音频到 task-finished；这一段内所有 continue-task 的文本共享同一语气上下文
+            timed_out = False
+            while True:
+                try:
+                    msg = await asyncio.wait_for(ws.recv(), timeout=120.0)
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    print(t("TTS Stream: 接收超时，断开重连", "TTS Stream: receive timeout, reconnect"), file=sys.stderr)
+                    break
+
+                if isinstance(msg, (bytes, bytearray)):
+                    if not self.play_started:
+                        self.play_started = True
+                        print(t(f"TTS Stream play-start {task_id[:8]}", f"TTS Stream play-start {task_id[:8]}"), file=sys.stderr)
+                        emit("play_start")
+                    player.write(bytes(msg))
+                    continue
+
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    continue
+                event = data.get("header", {}).get("event")
+                if event == "task-finished":
+                    break
+                if event == "task-failed":
+                    err_code = data.get("header", {}).get("error_code", "")
+                    err_msg = data.get("header", {}).get("error_message", "")
+                    emit("error", message=t(
+                        f"TTS task-failed: {err_code} {err_msg}",
+                        f"TTS task-failed: {err_code} {err_msg}",
+                    ))
+                    await self._close_ws()
+                    if self.play_started:
+                        emit("play_end")  # 避免 Node 侧 pending 卡住
+                    return
+
+            if timed_out:
+                raise TimeoutError("receive timeout")
+
+            print(t(f"TTS Stream task-finished {task_id[:8]}", f"TTS Stream task-finished {task_id[:8]}"), file=sys.stderr)
+
+            # 正常结束：pyaudio 用 Marker 发 play_end（不阻塞等播完）；
+            # 降级路径直接等整段播完再发 play_end（串行）。
+            if player.pyaudio_ok:
+                player.mark(task_id)
+            else:
+                await asyncio.to_thread(player.finish)
+                emit("play_end")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            if not self.cancelling and not self.exit_requested:
+                emit("error", message=t(f"TTS Stream 错误：{e}", f"TTS Stream error: {e}"))
+                traceback.print_exc(file=sys.stderr)
+            await self._close_ws()
+            if self.play_started:
+                emit("play_end")
+        finally:
+            self.task_active = False
+            self.task_id = None
+            self.last_task_end_monotonic = time.monotonic()
+
+    # ------------------------------------------------------------
+    # 主连接协程：常驻，逐个消费 pending_cmds
+    # ------------------------------------------------------------
+    async def connection_loop(self):
+        while not self.exit_requested:
+            # 上一次 cancel 的标记由这里消费，避免任务误报错误
+            if self.cancelling:
+                self.cancelling = False
+            cmd = await self._next_cmd()
+            if cmd is None:
+                break
+            kind, data = cmd
+            try:
+                ws = await self._ensure_ws()
+                if kind == "text":
+                    if self.task_active:
+                        # 同一段内继续追加文本，保持语气上下文
+                        await self._continue_task(ws, data)
+                    else:
+                        # 新的一段：开新 task，后续文本直到 end 都留在同一 task 内
+                        await self._start_task(ws, data)
+                elif kind == "end":
+                    if self.task_active:
+                        await self._finish_task(ws)
+                    # 没有活跃任务时 end 直接忽略
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                if not self.cancelling and not self.exit_requested:
+                    emit("error", message=t(f"TTS Stream 连接错误：{e}", f"TTS Stream connection error: {e}"))
+                await self._close_ws()
+                if not self.exit_requested:
+                    await asyncio.sleep(0.2)
+        await self._close_ws()
+
+    # ------------------------------------------------------------
+    # 指令处理（stdin 主循环调用）
     # ------------------------------------------------------------
     async def handle_text(self, text: str):
         if not self.api_key:
@@ -466,62 +612,44 @@ class TtsStreamServer:
             return
         if not text:
             return
-        if self.state == "idle":
-            self._start_session()
-        if self.state == "finishing":
-            # 上一条消息还在播放：暂存完整指令，段间串行（下段播完上段后自动重放）
-            self.next_cmds.append(("text", text))
-            return
-        # running（含刚启动的段）
-        await self.send_queue.put(self._make_continue_task(text))
+        self._enqueue_cmd(("text", text))
 
     async def handle_end(self):
-        if self.state == "running":
-            self.state = "finishing"
-            await self.send_queue.put(self._make_finish_task(cancel=False))
-        elif self.state == "finishing":
-            # 下一条消息的 end：与暂存的 text 一起排队重放
-            self.next_cmds.append(("end", None))
-        # idle：忽略（Node 串行发指令，不会出现）
+        # end 表示当前这一段结束：connection_loop 收到后会对活跃 task 执行 finish-task
+        self._enqueue_cmd(("end", None))
 
     async def handle_cancel(self):
         self.cancelling = True
-        self._clear_send_queue()
-        self.next_cmds = []
-        # 先打断播放器（置 None），再取消连接 Task——避免 finally 里阻塞 finish 播完残余
+        self._clear_pending()
         if self.player is not None:
             self.player.abort()
-            self.player = None
-        if self.run_task is not None and not self.run_task.done():
-            self.run_task.cancel()
+        # 正在跑任务时尽量发 cancel finish-task，随后关 ws 让当前任务退出
+        if self.current_ws is not None and self.task_id is not None:
             try:
-                await self.run_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        ws = self.current_ws
-        if ws is not None:
-            try:
-                await ws.close()
+                await self._send_json(self.current_ws, self._make_finish_task(self.task_id, cancel=True))
             except Exception:
                 pass
-        emit("play_end")  # 立即复位 Node 侧 pending（幂等）
-        self.state = "idle"
+        await self._close_ws()
+        emit("play_end")  # 幂等：Node 侧 pendingCount 已归零时会忽略
+        self.task_active = False
         self.task_id = None
-        self.started_evt = asyncio.Event()
-        self.run_task = None
-        self.cancelling = False
+        self.play_started = False
+        # 注意：cancelling 不在本函数复位，由 connection_loop 下轮消费
 
     async def handle_exit(self):
         if self.exit_requested:
             return
         self.exit_requested = True
+        self.cmd_event.set()
         await self.handle_cancel()
         if self.player is not None:
             self.player.close()
+            self.player = None
 
 
 async def main():
     server = TtsStreamServer()
+    server.loop = asyncio.get_running_loop()
     if not server.api_key:
         emit("error", message=t("TTS: 未设置 QWEN_TTS_API_KEY", "TTS: QWEN_TTS_API_KEY not set"))
     emit("ready")
@@ -550,16 +678,20 @@ async def main():
             elif kind == "exit":
                 await server.handle_exit()
                 break
-        # stdin 关闭或 exit：结束进程
-        if not server.exit_requested:
-            await server.handle_exit()
 
+    connection_task = asyncio.ensure_future(server.connection_loop())
     try:
         await read_stdin()
     except Exception as e:
         print(t(f"TTS Stream 主循环错误：{e}", f"TTS Stream main loop error: {e}"), file=sys.stderr)
     finally:
         await server.handle_exit()
+        if connection_task is not None and not connection_task.done():
+            connection_task.cancel()
+            try:
+                await connection_task
+            except BaseException:
+                pass
         os._exit(0)
 
 

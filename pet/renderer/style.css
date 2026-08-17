@@ -30,3 +30,29 @@ body:active {
   z-index: 1;
 }
 
+
+/* 桌宠文字气泡：顶部居中、高于 Spine、鼠标穿透；只显示 mid/final 短消息 */
+#pet-bubble {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 260px;
+  padding: 8px 12px;
+  box-sizing: border-box;
+  background: rgba(20, 22, 34, 0.82);
+  border-radius: 14px;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  word-break: break-all;
+  pointer-events: none;
+  z-index: 10;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+#pet-bubble.hidden {
+  opacity: 0;
+}

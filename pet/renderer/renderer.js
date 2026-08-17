@@ -190,6 +190,22 @@ function onMouseUp() {
   }
 }
 
+// ---- 文字气泡 ----
+const petBubble = document.getElementById("pet-bubble");
+let bubbleTimer = null;
+
+function showBubble(text) {
+  if (!petBubble) return;
+  petBubble.textContent = text;
+  petBubble.classList.remove("thinking");
+  petBubble.classList.remove("hidden");
+}
+
+function hideBubble() {
+  if (!petBubble) return;
+  petBubble.classList.add("hidden");
+}
+
 async function init() {
   // 情绪预设映射：agents.cjs（与 main 进程白名单同源）值 = 预设动画名；
   // closedEye/noGaze 集合同样来自当前 Agent 配置
@@ -221,6 +237,23 @@ async function init() {
 
   window.petAPI.onEmotion(showEmotion);
   window.petAPI.onReset(resetToBase);
+
+  // 文字气泡：只显示 mid/final 短消息；等到 TTS 播放结束（tts_end）再消失
+  window.petAPI.onText(({ kind, data }) => {
+    if (!petBubble) return;
+    if (kind === "tts_end") {
+      if (bubbleTimer) clearTimeout(bubbleTimer);
+      bubbleTimer = null;
+      hideBubble();
+      return;
+    }
+    // mid / final
+    if (typeof data === "string" && data.length > 0) {
+      if (bubbleTimer) clearTimeout(bubbleTimer);
+      bubbleTimer = null;
+      showBubble(data);
+    }
+  });
 
   document.addEventListener("mousedown", onMouseDown);
   document.addEventListener("mousemove", onMouseMove);

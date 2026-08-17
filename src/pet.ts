@@ -255,6 +255,10 @@ class PetBridge {
     this.send({ type: "set_emotion", name });
   }
 
+  sendText(kind: string, data: string): void {
+    this.send({ type: "text", kind, data });
+  }
+
   reset(): void {
     this.send({ type: "reset" });
   }
