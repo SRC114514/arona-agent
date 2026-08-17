@@ -36,7 +36,7 @@ export class Repl {
   private ttsStream = new TtsStream(
     () => voice.isTtsEnabled(),
     () => {
-      // TTS 播放结束：先隐藏桌宠气泡，再恢复默认视频
+      // TTS 播放结束：先隐藏桌宠气泡，再恢复默认待机
       this.hidePetBubble();
       if (this.turnEnded && !this.ttsStream.isPending) pet.reset();
     },
@@ -103,7 +103,6 @@ export class Repl {
     // onPetText: 桌宠文字气泡（仅桌宠运行时发送）；情绪仍由 LLM change_emotion 工具驱动
     this.renderer = createRenderer(
       () => this.ttsStream.endSegment(),
-      undefined,
       (delta) => this.ttsStream.pushText(delta),
       (kind, data) => {
         if (pet.isRunning) pet.sendText(kind, data);
@@ -596,7 +595,7 @@ export class Repl {
     // 回合开始前打 checkpoint:扫一次当前工作目录,作为 before 快照
     // (回合结束后 afterTurn 会与它做 diff 入 undo 栈)
     this.undoManager.beforeTurn();
-    // 回合开始：不主动切换情绪，保持空闲视频动画播放；
+    // 回合开始：不主动切换情绪，保持默认待机动画；
     // 由 agent 调用 change_emotion 一步到位地确定本回合情绪，避免先 saying 再切换的跳变
 
     try {

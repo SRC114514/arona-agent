@@ -1,11 +1,10 @@
 // ARONA 全屏特效渲染层：ba-click-fx（manual 输入），覆盖整个屏幕画点击特效 + 拖尾。
 // 桌宠窗口只负责检测「窗口内长按拖动」，主进程把全局屏幕坐标转发到这里。
 // 透明窗口关键：outputCompositing 'browser-overlay' + hostCompositingSurface 'transparent-window'。
-const FXL_ENABLED = true;
 let fx = null;
 
 function initFx() {
-  if (!FXL_ENABLED || typeof BAClickFX === "undefined") return;
+  if (typeof BAClickFX === "undefined") return;
   try {
     fx = new BAClickFX.BAClickFX({
       target: "#fx",

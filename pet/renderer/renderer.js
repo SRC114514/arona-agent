@@ -197,7 +197,6 @@ let bubbleTimer = null;
 function showBubble(text) {
   if (!petBubble) return;
   petBubble.textContent = text;
-  petBubble.classList.remove("thinking");
   petBubble.classList.remove("hidden");
 }
 

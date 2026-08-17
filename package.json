@@ -13,7 +13,6 @@
     "pet/",
     "assets/blue-archive/",
     "bin/",
-    "assets/blue-archive/voice.mp3",
     "requirements.txt"
   ],
   "scripts": {

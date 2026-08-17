@@ -40,9 +40,6 @@ function strWidth(s: string): number {
   for (const ch of s) w += charWidth(ch.codePointAt(0)!);
   return w;
 }
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b(?:\[[0-9;?]*[A-Za-z]|[0-9])/g, "");
-}
 /** 给定一行可见文本，根据当前终端列宽计算实际占用的物理行数（自动软换行）。 */
 function physicalLinesForRow(visibleText: string): number {
   const cols = process.stdout.columns ?? 80;
@@ -67,7 +64,6 @@ function bubbleTextLength(text: string): number {
 
 export function createRenderer(
   onMessageComplete?: (text: string) => void,
-  onResponseComplete?: (text: string) => void,
   onTextDelta?: (delta: string) => void,
   onPetText?: (kind: PetTextKind, data: string) => void,
 ) {
@@ -257,10 +253,6 @@ export function createRenderer(
               const status = event.isError ? chalk.red(t("错误", "error")) : chalk.green(t("完成", "done"));
               process.stdout.write(t("  [工具] ", "  [tool] ") + `${status}\n`);
             }
-            break;
-
-          case "agent_end":
-            onResponseComplete?.(responseText);
             break;
 
           case "compaction_start":

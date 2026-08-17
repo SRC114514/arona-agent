@@ -9,7 +9,7 @@ export const AGENT_IDS = ["arona", "plana"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 
 /** 校验 agent id（含类型收窄） */
-export function isValidAgentId(id: string): id is AgentId {
+function isValidAgentId(id: string): id is AgentId {
   return (AGENT_IDS as readonly string[]).includes(id);
 }
 

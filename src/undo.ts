@@ -15,7 +15,7 @@
  */
 
 import { homedir } from "os";
-import { join, relative, resolve, sep } from "path";
+import { join, relative, resolve } from "path";
 import {
   closeSync,
   existsSync,

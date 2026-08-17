@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { MEMORY_FILE, SESSIONS_DIR } from "./config.ts";
 import { t, getLang } from "./locale.ts";
@@ -87,10 +87,6 @@ export function loadMoodBaseline(memoryContent: string): string {
   const re = /## \[(?:我们之间|Us)\] · (?:心情基线|Mood baseline)\n_[^_\n]+_\n([\s\S]*?)(?=\n## |\n*$)/;
   const m = memoryContent.match(re);
   return m ? m[1].trim() : "";
-}
-
-export function saveMemory(content: string): void {
-  writeFileSync(MEMORY_FILE, content);
 }
 
 // ============================================================

@@ -9,7 +9,7 @@ import * as voice from "./voice.ts";
 import * as mcp from "./mcp.ts";
 import * as skills from "./skills.ts";
 import { setShowThinking, getShowThinking, setShowToolDetails, getShowToolDetails } from "./renderer.ts";
-import { SLASH_COMMANDS, resolveSlashCommand } from "./slash_registry.ts";
+import { resolveSlashCommand } from "./slash_registry.ts";
 import { AGENT_IDS, getMainAgent, setMainAgent, type AgentId } from "./agent_registry.ts";
 import { pet } from "./pet.ts";
 import type { UndoManager } from "./undo.ts";

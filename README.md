@@ -66,7 +66,6 @@ arona --verbose
 | `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
 | `ttsVoice` | 音色克隆voice_id（`arona setup` 填充） | — |
-| `ttsFormat` | TTS 音频格式 | `pcm` |
 | `ttsSampleRate` | TTS 采样率 | `22050` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |
@@ -109,8 +108,8 @@ arona --verbose
 
 | 分类 | 命令 |
 |---|---|
-| 会话 | `/new` `/clear` · `/resume` · `/exit` · `/export` |
-| 显示 | `/thinking` · `/details` · `/compact`（压缩上下文） |
+| 会话 | `/new` `/clear` · `/resume` · `/exit` · `/export` · `/compact` |
+| 显示 | `/thinking` · `/details` |
 | 语音 | `/tts` · `/stt` |
 | 扩展 | `/skill`· `/mcp` |
 | 其他 | `/change-agent`· `/undo` · `/redo` · `/help` |

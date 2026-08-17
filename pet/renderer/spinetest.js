@@ -1,24 +1,17 @@
-// ARONA Spine 调试页（spinetest）：加载 skel/atlas/png → 转储骨骼/动画事实 → 交互预览。
-// 用途（spike）：
-//   1) Idle_01 姿势与情绪 PNG 构图对齐校验（?overlay=smile 半透叠）
-//   2) Head_Rot 手动设 rotation 是否只转头
-//   3) A/M/Dev 各变体动画语义
-//   4) Look/LookEnd 起止姿势与介导路由对应关系
-//   5) Flush_01/02 是否可叠加的局部动画
-//   6) Touch_Point_KeyV / Touch_Eye_KeyT 是否 Point attachment
-//   7) spine-webgl 在透明窗的实际合成效果（?pm=0 可切换非 premultiplied 路径对比）
+// ARONA Spine 调试页（spinetest）：加载 skel/atlas/png → 交互预览（事实转储到 console）。
+// 用途（spike 遗留）：
+//   1) Head_Rot 手动设 rotation 是否只转头
+//   2) A/M/Dev 各变体动画语义
+//   3) Look/LookEnd 起止姿势
+//   4) spine-webgl 在透明窗的实际合成效果（?pm=0 可切换非 premultiplied 路径对比）
 // 键盘：←/→ 手动转 Head_Rot；↑/↓ 循环动画；1~9/0/a~z 直接跳转到第 N 个动画。
-// ?probe：加载完成后置 window.__SPINE_READY=true 并在 console 输出完整事实清单（供探针 harness 读取）。
 const SPINE_BASE = "../../assets/blue-archive/arona/spine/";
 const canvas = document.getElementById("spine");
 const hud = document.getElementById("hud");
-const overlayEl = document.getElementById("overlay");
 const params = new URLSearchParams(location.search);
 
 const USE_PM = params.get("pm") !== "0"; // 默认 premultiplied 路径
-const PROBE = params.has("probe");
-const OVERLAY = params.get("overlay"); // 情绪名（如 smile）：半透叠校验
-console.log("[spinetest] URL", location.href, "| search", location.search, "| PROBE", PROBE);
+console.log("[spinetest] URL", location.href, "| search", location.search);
 
 let gl = null;
 let assetManager = null;
@@ -98,14 +91,7 @@ async function load() {
   resize();
   fitCamera();
 
-  // 半透叠校验层
-  if (OVERLAY) {
-    overlayEl.src = "../../assets/blue-archive/arona/arona_" + OVERLAY + ".png";
-    overlayEl.style.display = "block";
-  }
-
   dumpFacts();
-  if (PROBE) window.__SPINE_READY = true;
   requestAnimationFrame(loop);
   window.addEventListener("keydown", onKey);
   window.addEventListener("resize", resize);
@@ -233,8 +219,7 @@ function dumpFacts() {
       ? { name: headBone.data.name, parent: headBone.parent ? headBone.parent.data.name : null, restRot: headRestRot, world: { x: +headBone.x.toFixed(1), y: +headBone.y.toFixed(1) } }
       : null,
   };
-  window.__FACTS = facts;
-  if (PROBE) log("FACTS", JSON.stringify(facts));
+  log("FACTS", JSON.stringify(facts));
   log("动画数", sd.animations.length, "骨骼数", sd.bones.length, "Point 附件数", points.length);
 }
 
@@ -306,170 +291,5 @@ function updateHud() {
     (hud.dataset.head || "") +
     `\n按键：←→ 转 Head_Rot · ↑↓/数字/字母 切动画`;
 }
-
-// ---- 探针 API（供 spike_probe.cjs / visual_test 通过 executeJavaScript 调用）----
-window.spineTest = {
-  setAnim: (name, loop) => {
-    const idx = skeleton.data.animations.findIndex((a) => a.name === name);
-    if (idx < 0) return false;
-    animIndex = idx;
-    state.setAnimation(0, name, loop !== false);
-    updateHud();
-    return true;
-  },
-  setManualHeadRot: (deg) => {
-    manualHeadRot = Math.max(-35, Math.min(35, deg));
-    updateHud();
-  },
-  getState: () => ({
-    track0: state.tracks[0] ? state.tracks[0].animation.name : null,
-    headRot: +headBone.rotation.toFixed(2),
-    headRestRot,
-    manualHeadRot,
-    headWorld: headBone ? { x: +headBone.x.toFixed(1), y: +headBone.y.toFixed(1) } : null,
-    windowToSkeleton100: windowToSkeleton(100, 100),
-  }),
-  sampleAlpha: () => {    // 读像素 alpha：4 角 + 中心 + 头部骨骼投影位置（验证透明窗合成）
-    const w = canvas.width, h = canvas.height;
-    const pts = [
-      [4, 4], [w - 5, 4], [4, h - 5], [w - 5, h - 5],
-      [w >> 1, h >> 1],
-    ];
-    if (headBone) {
-      const p = renderer.camera; // 世界 → 屏幕：x 同向，y 翻转
-      const sx = (headBone.x - p.position.x + p.viewportWidth / 2) / p.viewportWidth * w;
-      const sy = (p.position.y + p.viewportHeight / 2 - headBone.y) / p.viewportHeight * h;
-      pts.push([Math.round(sx), Math.round(sy)]);
-    }
-    const out = [];
-    for (const [x, y] of pts) {
-      const px = new Uint8Array(4);
-      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      out.push({ x, y, a: px[3] });
-    }
-    return out;
-  },
-  // 每个动画里眼部相关 slot 的 attachment 帧（帧名 ∅=null=隐藏），用于语义映射
-  dumpEyeFrames: () => {
-    const sd = skeleton.data;
-    const EYE_SLOTS = new Set([
-      "L_Eye_01", "R_Eye_01", "L_Eye_PP", "R_Eye_PP", "L_Eye_Cover_01", "R_Eye_Cover_01",
-      "L_Eye_White_01", "R_Eye_White_01", "L_Eye_P_01", "R_Eye_P_01", "L_Eye_P_02_0", "R_Eye_P_02_0",
-      "L_Eyebrows_01", "R_eyebrows_01", "L_B_Eyebrows_01", "R_B_Eyebrows_01", "Mouse_01",
-    ]);
-    const out = {};
-    for (const a of sd.animations) {
-      const frames = [];
-      for (const tl of a.timelines) {
-        const type = (tl.getPropertyId() >> 24) & 0xff;
-        if (type !== spine.TimelineType.attachment) continue;
-        const slotName = sd.slots[tl.slotIndex].name;
-        if (!EYE_SLOTS.has(slotName)) continue;
-        for (let i = 0; i < tl.frames.length; i++) {
-          frames.push(`${slotName}@${tl.frames[i].toFixed(2)}=${tl.attachmentNames[i] == null ? "∅" : tl.attachmentNames[i]}`);
-        }
-      }
-      out[a.name] = frames;
-    }
-    return out;
-  },
-  // 隔离渲染：仅保留指定 slot 可见（其余 alpha=0），用于定位渲染问题
-  isolateSlots: (names) => {
-    isoSet = new Set(names);
-    return true;
-  },
-  restoreSlots: () => {
-    isoSet = null;
-    for (const s of skeleton.slots) s.color.a = 1;
-    return true;
-  },
-  dumpDrawState: () => {
-    return skeleton.drawOrder.map((s) => ({
-      name: s.data.name,
-      attachment: s.attachment ? s.attachment.name : null,
-      region: s.attachment && s.attachment.region ? "OK" : null,
-      alpha: s.color.a,
-    }));
-  },
-  // 同步渲染一帧并立即读回像素，返回 ASCII 快照（确定性，不经过合成器）
-  renderSnapshot: (names) => {
-    if (names) isoSet = new Set(names);
-    else isoSet = null;
-    state.update(0);
-    state.apply(skeleton);
-    if (headBone) headBone.rotation = headRestRot + manualHeadRot;
-    if (isoSet) for (const s of skeleton.slots) s.color.a = isoSet.has(s.data.name) ? 1 : 0;
-    skeleton.updateWorldTransform();
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    renderer.begin();
-    renderer.drawSkeleton(skeleton, USE_PM);
-    renderer.end();
-    const w = canvas.width, h = canvas.height;
-    const buf = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    const B = 4; // 4x4 降采样
-    const rows = [];
-    for (let y = 0; y + B <= h; y += B) {
-      let line = "";
-      for (let x = 0; x + B <= w; x += B) {
-        let rr = 0, gg = 0, bb = 0, n = 0;
-        for (let dy = 0; dy < B; dy++) {
-          const off = ((y + dy) * w + x) * 4;
-          for (let dx = 0; dx < B; dx++) {
-            const i = off + dx * 4;
-            if (buf[i + 3] > 100) { rr += buf[i]; gg += buf[i + 1]; bb += buf[i + 2]; n++; }
-          }
-        }
-        if (!n) { line += "."; continue; }
-        const r = rr / n, g = gg / n, b = bb / n, s = r + g + b;
-        if (s < 330) line += "#";
-        else if (b > r + 25 && b > 90 && s < 560) line += "@";
-        else if (r > 235 && g > 230 && b > 220) line += "o";
-        else line += "+";
-      }
-      rows.push(line);
-    }
-    const first = rows.findIndex((l) => /[^.]/.test(l));
-    const last = rows.length - 1 - [...rows].reverse().findIndex((l) => /[^.]/.test(l));
-    if (first < 0) return { w: w / B, h: h / B, rows: ["(empty)"] };
-    return { w: w / B, h: h / B, y0: first, rows: rows.slice(first, last + 1) };
-  },
-  // 骨骼世界坐标 + 屏幕投影（CSS y 向下 / gl y 向上），用于定位骨骼与渲染的一致性
-  getBoneScreen: (names) => {
-    const cam = renderer.camera;
-    const w = canvas.width, h = canvas.height;
-    const out = {};
-    for (const n of names) {
-      const b = skeleton.findBone(n);
-      if (!b) { out[n] = null; continue; }
-      const sx = ((b.x - cam.position.x + cam.viewportWidth / 2) / cam.viewportWidth) * w;
-      const syCSS = ((cam.position.y + cam.viewportHeight / 2 - b.y) / cam.viewportHeight) * h;
-      out[n] = { world: [+b.x.toFixed(1), +b.y.toFixed(1)], cssY: +syCSS.toFixed(0), glY: +(h - syCSS).toFixed(0), cssX: +sx.toFixed(0) };
-    }
-    return out;
-  },
-  // 附件世界顶点（4 个），用于核对附件实际绘制位置
-  getAttachmentVerts: (slotName) => {
-    const slot = skeleton.findSlot(slotName);
-    if (!slot || !slot.attachment) return null;
-    const v = new Float32Array(8);
-    slot.attachment.computeWorldVertices(slot, 0, 2, v, 0, 2);
-    const cam = renderer.camera;
-    const w = canvas.width, h = canvas.height;
-    const pts = [];
-    for (let i = 0; i < 4; i++) {
-      const sx = ((v[i * 2] - cam.position.x + cam.viewportWidth / 2) / cam.viewportWidth) * w;
-      const syCSS = ((cam.position.y + cam.viewportHeight / 2 - v[i * 2 + 1]) / cam.viewportHeight) * h;
-      pts.push([+sx.toFixed(1), +syCSS.toFixed(1)]);
-    }
-    return { bone: slot.bone ? { x: +slot.bone.x.toFixed(1), y: +slot.bone.y.toFixed(1) } : null, verts: pts };
-  },
-  // 窗口 CSS 坐标 → 骨架世界坐标（runtime 自带 screenToWorld）
-  worldAt: (x, y) => {
-    const p = windowToSkeleton(x, y);
-    return { x: +p.x.toFixed(1), y: +p.y.toFixed(1) };
-  },
-};
 
 load();

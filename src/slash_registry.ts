@@ -40,31 +40,6 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
   { name: "redo", description: t("重做已撤销的改动", "Redo undone changes") },
 ];
 
-export interface SlashCommandMatch {
-  spec: SlashCommandSpec;
-  /** Which name (primary or alias) the user typed. */
-  matched: string;
-}
-
-/**
- * Return all commands whose name OR alias starts with `text` (which should
- * include the leading `/`, e.g. "/th"). Used by the completion menu.
- */
-export function filterSlashCommands(text: string): SlashCommandMatch[] {
-  if (!text.startsWith("/")) return [];
-  const matches: SlashCommandMatch[] = [];
-  for (const spec of SLASH_COMMANDS) {
-    const names = [spec.name, ...(spec.aliases ?? [])];
-    for (const n of names) {
-      if (`/${n}`.startsWith(text)) {
-        matches.push({ spec, matched: n });
-        break; // Don't include multiple aliases for the same spec
-      }
-    }
-  }
-  return matches;
-}
-
 /**
  * Resolve a typed command (without leading `/`) to its spec. Matches against
  * the primary name and any alias. Returns null if not found.

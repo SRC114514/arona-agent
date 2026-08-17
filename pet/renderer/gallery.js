@@ -17,8 +17,6 @@ async function init() {
     show(name) {
       window.SpineLayer.setEmotionPreset(String(name), false, true);
     },
-    /** Idle_01 基底参考帧（基底是 track0 常驻循环，不动 track4；原水印参数已废弃，忽略） */
-    showBase() {},
     /** 情绪确认模式：按情绪名渲染其映射预设 */
     showEmotion(_emotionName, preset) {
       window.SpineLayer.setEmotionPreset(String(preset), false, true);

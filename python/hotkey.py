@@ -36,9 +36,6 @@ KEY_CODES = {
     "shift_r": "shift",
     "shift_l": "shift",
     "f8": "f8",
-    "f7": "f7",
-    "f6": "f6",
-    "f9": "f9",
 }
 
 

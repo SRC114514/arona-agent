@@ -63,7 +63,6 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `ttsApiKey` | DashScope API key (TTS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
 | `ttsVoice` | Cloned voice_id (filled by `arona setup`) | — |
-| `ttsFormat` | TTS audio format | `pcm` |
 | `ttsSampleRate` | TTS sample rate | `22050` |
 | `sttApiKey` | DashScope API key (STT) | — |
 | `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
@@ -106,8 +105,8 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 | Category | Commands |
 |---|---|
-| Session | `/new` `/clear` · `/resume`  · `/exit` · `/export`  |
-| Display | `/thinking` · `/details` · `/compact` |
+| Session | `/new` `/clear` · `/resume`  · `/exit` · `/export` · `/compact`|
+| Display | `/thinking` · `/details` |
 | Voice | `/tts` · `/stt` |
 | Extensions | `/skill`  · `/mcp` |
 | Other | `/change-agent` · `/undo` · `/redo` · `/help` |

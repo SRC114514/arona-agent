@@ -6,7 +6,7 @@
  * - 连续无标点超过 forceLen 字时，按 forceLen 强切，避免长文本滞留。
  * - 返回本次可输出的完整句子和剩余残段（等待后续 delta 或 isEnd 收尾）。
  */
-export const SENTENCE_BOUNDARY = /[。！？!?\n]/;
+const SENTENCE_BOUNDARY = /[。！？!?\n]/;
 
 export interface SplitStreamedTextResult {
   sentences: string[];

@@ -10,8 +10,7 @@
   "use strict";
 
   // 当前角色 id（main.cjs loadFile 注入 ?agent=；缺省 arona）。实际配置经 IPC 从主进程取，
-  // agents.cjs 是 pet 侧唯一事实源，此处只用于兜底日志/调试。
-  const AGENT_ID = new URLSearchParams(location.search).get("agent") || "arona";
+  // agents.cjs 是 pet 侧唯一事实源。
   let agent = null; // init() 时从 pet:get-agent-config 获取（含 anims/bones/spineBase 等）
 
   const TRACK = { main: 0, look: 2, patPose: 3, emotion: 4, blink: 5 };
@@ -25,7 +24,6 @@
   const DEFAULT_MIX = 0.2;     // track 内 crossfade 时长
 
   // 摸头/注视参数（初值，可调）
-  const GAZE_MAX_DEG = 5;      // 空闲注视：Head_Rot ±5°（已停用，保留备取）
   const PAT_MAX_DEG = 3;       // 摸头：Head_Rot 微动幅度（用户：6° 的圆弧状摆动仍诡异，再减半）
   const HEAD_SMOOTH_NEAR = 0.3;
   const HEAD_SMOOTH_FAR = 0.6;
@@ -420,33 +418,9 @@
       }
       return parts.join("|");
     },
-    // 调试内省：骨骼父子链 + 世界旋转（定位局部坐标系与屏幕坐标系的偏转）
-    getBoneDebug(name) {
-      if (!skeleton) return null;
-      const b = skeleton.findBone(name);
-      if (!b) return null;
-      const chain = [];
-      let cur = b;
-      while (cur && chain.length < 10) {
-        chain.push({ name: cur.data.name, rot: +cur.data.rotation.toFixed(1), len: +cur.data.length.toFixed(0) });
-        cur = cur.parent;
-      }
-      return {
-        name: b.data.name,
-        worldRotDeg: +((Math.atan2(b.c, b.a) * 180) / Math.PI).toFixed(1),
-        a: +b.a.toFixed(3), b: +b.b.toFixed(3), c: +b.c.toFixed(3), d: +b.d.toFixed(3),
-        world: { x: +b.worldX.toFixed(1), y: +b.worldY.toFixed(1) },
-        local: { x: +b.x.toFixed(1), y: +b.y.toFixed(1) },
-        data: { x: +b.data.x.toFixed(1), y: +b.data.y.toFixed(1) },
-        chain,
-      };
-    },
     // 调试用：冻结 track0 身体相位（gallery 批量截图对比用；null 恢复动画）
     pinBody(t) {
       pinBodyT = t === undefined ? 0 : t;
-    },
-    unpinBody() {
-      pinBodyT = null;
     },
   };
 })();

@@ -3,7 +3,7 @@ import { join } from "path";
 import { existsSync, readFileSync } from "fs";
 import { execFileSync } from "child_process";
 
-export type Language = "zh" | "en";
+type Language = "zh" | "en";
 export type LanguageSetting = "auto" | "zh" | "en";
 
 const SETTINGS_FILE = join(homedir(), ".arona", "settings.json");
@@ -128,9 +128,4 @@ export function getLang(): Language {
 /** 手动切换语言（setup 向导改语言后即时生效）。 */
 export function setLang(l: Language): void {
   lang = l;
-}
-
-/** 是否英文模式。 */
-export function isEn(): boolean {
-  return lang === "en";
 }

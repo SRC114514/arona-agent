@@ -67,9 +67,6 @@ def emit(event, **kwargs):
 class Marker:
     """播放队列中的任务结束标记：pump 线程遇到它后通过事件循环发 play_end。"""
 
-    def __init__(self, task_id):
-        self.task_id = task_id
-
 
 class PcmPlayer:
     """pcm 音频流式播放器（连接复用后常驻，不再每段 new/close）。
@@ -161,9 +158,9 @@ class PcmPlayer:
         else:
             self.buffered.append(chunk)
 
-    def mark(self, task_id):
+    def mark(self):
         if self.pyaudio_ok and self.queue is not None:
-            self.queue.put(Marker(task_id))
+            self.queue.put(Marker())
 
     def abort(self):
         """打断：丢弃排队中未播音频、停止当前/降级播放子进程。"""
@@ -550,7 +547,7 @@ class TtsStreamServer:
             # 正常结束：pyaudio 用 Marker 发 play_end（不阻塞等播完）；
             # 降级路径直接等整段播完再发 play_end（串行）。
             if player.pyaudio_ok:
-                player.mark(task_id)
+                player.mark()
             else:
                 await asyncio.to_thread(player.finish)
                 emit("play_end")

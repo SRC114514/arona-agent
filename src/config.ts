@@ -35,14 +35,12 @@ export interface McpServerConfig {
   headers?: Record<string, string>;
 }
 
-export interface AronaConfig {
+interface AronaConfig {
   // LLM
   apiKey: string;
   apiBaseUrl: string;
   model: string;
   thinkingLevel: string;
-  // i18n
-  language: LanguageSetting;
   // Voice (Qwen / 阿里云百炼 DashScope)
   noVoice: boolean;
   // 百炼业务空间 ID（可选；留空走旧域名 dashscope.aliyuncs.com）
@@ -51,7 +49,6 @@ export interface AronaConfig {
   ttsModel: string;
   // 系统音色名 或 自定义音色(声音复刻)ID —— 填声音复刻得到的 voice_id 即用自定义音色
   ttsVoice: string;
-  ttsFormat: string;
   ttsSampleRate: number;
   sttApiKey: string;
   sttModel: string;
@@ -82,7 +79,6 @@ interface Settings {
   ttsApiKey?: string;
   ttsModel?: string;
   ttsVoice?: string;
-  ttsFormat?: string;
   ttsSampleRate?: number;
   sttApiKey?: string;
   sttModel?: string;
@@ -191,7 +187,7 @@ export function resolveModelPrefix(model: string, apiBaseUrl: string): string {
   return `openai/${model}`;
 }
 
-export function loadConfig(): AronaConfig {
+function loadConfig(): AronaConfig {
   const s = loadSettings();
 
   const apiKey = s.apiKey || "";
@@ -211,7 +207,6 @@ export function loadConfig(): AronaConfig {
     apiBaseUrl,
     model,
     thinkingLevel: s.thinkingLevel || "medium",
-    language: s.language || "auto",
 
     noVoice,
     // Skip TTS/STT fields when --no-voice is set
@@ -219,7 +214,6 @@ export function loadConfig(): AronaConfig {
     ttsApiKey: noVoice ? "" : (s.ttsApiKey || ""),
     ttsModel: noVoice ? "" : (s.ttsModel || "qwen-audio-3.0-tts-plus"),
     ttsVoice: noVoice ? "" : (s.ttsVoice || ""),
-    ttsFormat: noVoice ? "pcm" : (s.ttsFormat || "pcm"),
     ttsSampleRate: noVoice ? 22050 : (s.ttsSampleRate || 22050),
     sttApiKey: noVoice ? "" : (s.sttApiKey || ""),
     sttModel: noVoice ? "" : (s.sttModel || "qwen-audio-3.0-asr-flash-streaming"),

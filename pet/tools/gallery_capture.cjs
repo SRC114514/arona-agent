@@ -206,8 +206,7 @@ app.whenReady().then(() => {
       return;
     }
 
-    // 参考帧：Idle_01 基底（track0 常驻循环；只改水印，不动 track4）
-    await win.webContents.executeJavaScript("window.__gallery.showBase('Idle_01 基底')");
+    // 参考帧：Idle_01 基底（track0 常驻循环，不动 track4）
     await sleep(800);
     await cap("idle_base");
 

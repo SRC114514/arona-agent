@@ -7,7 +7,6 @@
 
 const ARONA = {
   id: "arona",
-  label: "Arona",
   spineBase: "../../assets/blue-archive/arona/spine/",
   skelFile: "arona_spr.skel",
   atlasFile: "arona_spr.atlas.txt",
@@ -57,7 +56,6 @@ const ARONA = {
 
 const PLANA = {
   id: "plana",
-  label: "Plana",
   spineBase: "../../assets/blue-archive/plana/spine/",
   skelFile: "plana_spr.skel",
   atlasFile: "plana_spr.atlas.txt",

@@ -164,7 +164,7 @@ ${memoryContent || "（暂无记忆）"}
 
 # Desktop Pet
 
-桌面上有一个你的形象（桌宠）在陪伴老师。**每次输出文字前，你必须先调用一次 change_emotion** 设置本段发言的情绪。一个回合内可能有多段发言（任务中穿插工具调用），每段都可以有不同的情绪——比如开始时 curious、找到时 delighted、出错时 shame。没有特别想表达的情绪时选择 none 或 saying。情绪会保持到 TTS 播放完毕，之后自动恢复默认视频。`;
+桌面上有一个你的形象（桌宠）在陪伴老师。**每次输出文字前，你必须先调用一次 change_emotion** 设置本段发言的情绪。一个回合内可能有多段发言（任务中穿插工具调用），每段都可以有不同的情绪——比如开始时 curious、找到时 delighted、出错时 shame。没有特别想表达的情绪时选择 none 或 saying。情绪会保持到 TTS 播放完毕，之后自动恢复默认待机动画。`;
 }
 
 function buildPromptEn(moodBaseline: string, memoryContent: string): string {
@@ -266,7 +266,7 @@ These short lines are spoken by TTS automatically to make tasks livelier. Long t
 
 # Desktop Pet
 
-There is a desktop pet with your likeness keeping Sensei company. **Before every text output, you MUST call change_emotion once** to set the emotion for this segment. A single turn can have multiple segments (tool calls interleaved), each with a different emotion — e.g. curious at the start, delighted when found, shame on error. Choose none or saying when there is no particular emotion. The emotion stays until TTS playback finishes, then the default video resumes automatically.`;
+There is a desktop pet with your likeness keeping Sensei company. **Before every text output, you MUST call change_emotion once** to set the emotion for this segment. A single turn can have multiple segments (tool calls interleaved), each with a different emotion — e.g. curious at the start, delighted when found, shame on error. Choose none or saying when there is no particular emotion. The emotion stays until TTS playback finishes, then the default idle animation resumes automatically.`;
 }
 
 // ============================================================
@@ -372,7 +372,7 @@ ${memoryContent || "（暂无记忆）"}
 
 # Desktop Pet
 
-桌面上有一个你的形象（桌宠）在陪伴老师。**每次输出文字前，你必须先调用一次 change_emotion** 设置本段发言的情绪。一个回合内可能有多段发言（任务中穿插工具调用），每段都可以有不同的情绪——比如开始时 curious、找到时 delighted、出错时 shame。没有特别想表达的情绪时选择 none 或 saying。情绪会保持到 TTS 播放完毕，之后自动恢复默认视频。`;
+桌面上有一个你的形象（桌宠）在陪伴老师。**每次输出文字前，你必须先调用一次 change_emotion** 设置本段发言的情绪。一个回合内可能有多段发言（任务中穿插工具调用），每段都可以有不同的情绪——比如开始时 curious、找到时 delighted、出错时 shame。没有特别想表达的情绪时选择 none 或 saying。情绪会保持到 TTS 播放完毕，之后自动恢复默认待机动画。`;
 }
 
 function buildPromptEnPlana(moodBaseline: string, memoryContent: string): string {
@@ -474,7 +474,7 @@ These short lines are spoken by TTS automatically to make tasks livelier. Long t
 
 # Desktop Pet
 
-There is a desktop pet with your likeness keeping Sensei company. **Before every text output, you MUST call change_emotion once** to set the emotion for this segment. A single turn can have multiple segments (tool calls interleaved), each with a different emotion — e.g. curious at the start, delighted when found, shame on error. Choose none or saying when there is no particular emotion. The emotion stays until TTS playback finishes, then the default video resumes automatically.`;
+There is a desktop pet with your likeness keeping Sensei company. **Before every text output, you MUST call change_emotion once** to set the emotion for this segment. A single turn can have multiple segments (tool calls interleaved), each with a different emotion — e.g. curious at the start, delighted when found, shame on error. Choose none or saying when there is no particular emotion. The emotion stays until TTS playback finishes, then the default idle animation resumes automatically.`;
 }
 
 export async function initAgent(): Promise<{

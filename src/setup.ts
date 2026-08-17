@@ -26,7 +26,6 @@ interface Settings {
   ttsApiKey?: string;
   ttsModel?: string;
   ttsVoice?: string;
-  ttsFormat?: string;
   ttsSampleRate?: number;
   sttApiKey?: string;
   sttModel?: string;
@@ -311,7 +310,6 @@ async function main() {
         ttsApiKey: ttsApiKey,
         ttsModel: existing.ttsModel || "qwen-audio-3.0-tts-plus",
         ttsVoice: ttsVoice,
-        ttsFormat: existing.ttsFormat || "pcm",
         ttsSampleRate: existing.ttsSampleRate || 22050,
         sttApiKey: ttsApiKey, // Same key for TTS and STT
         sttModel: existing.sttModel || "qwen-audio-3.0-asr-flash-streaming",
