@@ -37,7 +37,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
 - **语音**：实时流式 TTS + STT。
 - **桌面宠物**：透明无边框置顶 Electron 窗口，Spine 骨骼动画待机 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
-- **多角色群聊**：主 Agent 单窗口 + 子 Agent 窗口同屏；每轮主 Agent 回复完后子 Agent 依次轮询接话，`keep_silent` 可跳过某个角色的本轮发言。
+- **多角色群聊**：主 Agent 单窗口 + 子 Agent 窗口同屏；每轮主 Agent 回复完后子 Agent 依次接话，`keep_silent` 可跳过某个角色的本轮发言。
 
 
 ---
@@ -96,7 +96,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 
 ## 桌宠与 STT 热键
 
-- **桌宠**：透明无边框置顶窗口，以 Spine 骨骼动画 `Idle_01` 作为待机基底循环播放；Agent 每段发言前调用 `change_emotion` 切换情绪；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发全屏点击与拖尾特效；TTS 逐句播放，情绪保持到 TTS 播完自动恢复默认。
+- **桌宠**：透明无边框置顶窗口，以 Spine 骨骼动画 `Idle_01` 作为待机基底循环播放；每段发言前调用 `change_emotion` 切换情绪；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发全屏点击与拖尾特效；TTS 逐句播放，情绪保持到 TTS 播完自动恢复默认。
 
   `/change-agent` 可单选主 Agent + 多选子 Agent，多个角色以独立窗口同屏显示；子 Agent 仅可使用 `change_emotion` 与 `keep_silent` 两个纯聊天工具。
 - **STT 热键**：右 Cmd 键，长按 ≥ 2 秒触发一次性录音。

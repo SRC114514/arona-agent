@@ -52,13 +52,12 @@ function physicalLinesForRow(visibleText: string): number {
 type PetTextKind = "mid" | "final";
 
 export function createRenderer(
-  onMessageComplete?: (text: string) => void,
+  onTurnEnd?: () => void,
   onTextDelta?: (delta: string) => void,
   onPetText?: (kind: PetTextKind, data: string) => void,
   initialSpeakerLabel?: string,
 ) {
   let speakerLabel = initialSpeakerLabel;
-  let responseText = "";
   let inThinking = false;
   let inText = false;
   let textPrefixWritten = false;
@@ -190,7 +189,6 @@ export function createRenderer(
       return session.subscribe((event: any) => {
         switch (event.type) {
           case "message_start":
-            responseText = "";
             inText = false;
             inThinking = false;
             textPrefixWritten = false;
@@ -215,8 +213,7 @@ export function createRenderer(
                 }
               }
               process.stdout.write(ae.delta);
-              responseText += ae.delta;
-              // 实时 TTS：文本增量边生成边送入流式合成管道（中间过程与最终回复统一覆盖）
+              // 实时 TTS：文本增量边生成边送入非流式合成管道（按标点成句入队）
               onTextDelta?.(ae.delta);
               flushPetMid(ae.delta);
             } else if (ae.type === "thinking_delta") {
@@ -242,10 +239,8 @@ export function createRenderer(
             if (inText) {
               process.stdout.write("\n");
             }
-            // 触发逐句 TTS：此时 responseText 是本条消息的完整文本
-            if (responseText.trim()) {
-              onMessageComplete?.(responseText);
-            }
+            // 注意：不再在 message_end 触发 TTS 收尾——那会把被 change_emotion 等工具调用
+            // 切断的句子（如"好好吃饭哦"）拆成两段分别朗读。TTS 收尾改在 agent_end（onTurnEnd）。
             // 把没有标点收尾的残段挂到累计池（已通过 mid 完整成句的部分不重复）。
             // 残段本身是句子的尾巴，无完整标点，长度不可控：若超上限就单独占一行（保留原样、不切）。
             const leftover = petMidBuffer.trim();
@@ -270,6 +265,11 @@ export function createRenderer(
             drawnThinkingLines = 0;
             break;
           }
+
+          case "agent_end":
+            // 回合全部文字输出完毕：收尾 TTS 残段（跨 message 累积的句子尾巴），触发合成队列排空
+            onTurnEnd?.();
+            break;
 
           case "tool_execution_start":
             if (showToolDetails) {

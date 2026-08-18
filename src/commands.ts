@@ -46,7 +46,7 @@ ${chalk.bold.cyan("ARONA Agent - 命令列表")}
 ${chalk.bold("会话")}
   /new, /clear     开始新会话（清空上下文）
   /resume          上下键选择并恢复一个已保存的会话
-  /exit            退出（仅在有实际对话时保存会话）
+  /exit            退出
   /export          导出当前会话为 Markdown
 
 ${chalk.bold("显示")}
@@ -56,15 +56,15 @@ ${chalk.bold("显示")}
 
 ${chalk.bold("语音")}
   /tts             开关文字转语音
-  /stt             开关语音转文字（长按右 Cmd ≥2秒录音）
+  /stt             开关语音转文字
 
 ${chalk.bold("扩展")}
   /skill           列出或调用技能（/skill <名称>）
   /mcp             列出 MCP 服务器和工具
 
 ${chalk.bold("其他")}
-  /change-agent    切换主 Agent + 多选子 Agent（桌宠同屏 / 轮询回复）
-  /undo            撤销上一个回合的全部文件改动（本地快照，无需 git）
+  /change-agent    切换主 Agent + 多选子 Agent
+  /undo            撤销上一个回合的全部文件改动
   /redo            重做已撤销的改动
   /help            显示本帮助
 
@@ -78,7 +78,7 @@ ${chalk.bold.cyan("ARONA Agent - Commands")}
 ${chalk.bold("Session")}
   /new, /clear     Start a new session (clear context)
   /resume          Pick and resume a saved session with arrow keys
-  /exit            Exit (saves session only after a real conversation)
+  /exit            Exit
   /export          Export current session as Markdown
 
 ${chalk.bold("Display")}
@@ -88,15 +88,15 @@ ${chalk.bold("Display")}
 
 ${chalk.bold("Voice")}
   /tts             Toggle text-to-speech
-  /stt             Toggle speech-to-text (hold right Cmd ≥2s to record)
+  /stt             Toggle speech-to-text
 
 ${chalk.bold("Extensions")}
   /skill           List or invoke a skill (/skill <name>)
   /mcp             List MCP servers and tools
 
 ${chalk.bold("Other")}
-  /change-agent    Switch main agent + multi-select sub agents (same-screen / poll replies)
-  /undo            Undo the previous turn's file changes (local snapshot, no git)
+  /change-agent    Switch main agent + multi-select sub agents
+  /undo            Undo the previous turn's file changes
   /redo            Redo undone changes
   /help            Show this help
 
@@ -458,7 +458,7 @@ async function handleSkill(args: string, ctx: CommandContext) {
 }
 
 /**
- * /change-agent：切换主 Agent（单选）+ 子 Agent（多选，同屏/轮询）。
+ * /change-agent：切换主 Agent（单选）+ 子 Agent（多选）。
  * 交互式 TUI：主 Agent 用 [*] 单选，子 Agent 用 [*] 多选；
  * 确认后写 settings.json → 桌宠按新组合重建多窗口 → 主 Agent 变了才重启 TTS + 保存会话 + 重建会话。
  */
@@ -503,15 +503,16 @@ async function handleChangeAgent(ctx: CommandContext) {
       const marker = cursor === i ? "▶ " : "  ";
       const checked = row.id === selectedMain ? "[*]" : "[ ]";
       const suffix = row.id === current ? t("（当前）", " (current)") : "";
-      const text = `${marker}${checked} ${row.id}${suffix} — ${getAgentLabel(row.id as MainAgentId)}`;
+      // 只显示双语显示名（中文“阿洛娜”/英文“Arona”），不显示英文 id
+      const text = `${marker}${checked} ${getAgentLabel(row.id as MainAgentId)}${suffix}`;
       out.push(truncateStyled(text, maxW, (x) => cursor === i ? chalk.bold.cyan(x) : x));
     });
-    out.push(truncateStyled(t("  子 Agent（可多选，同屏 + 轮询回复）", "  Sub agents (multi-select, same-screen + poll replies)"), maxW, (x) => chalk.cyan(x)));
+    out.push(truncateStyled(t("  子 Agent（多选）", "  Sub agents (multi-select)"), maxW, (x) => chalk.cyan(x)));
     subRows.forEach((row, i) => {
       const idx = mainRows.length + i;
       const marker = cursor === idx ? "▶ " : "  ";
       const checked = selectedSubs.has(row.id) ? "[*]" : "[ ]";
-      const text = `${marker}${checked} ${row.id} — ${getAgentLabel(row.id as SubAgentId)}`;
+      const text = `${marker}${checked} ${getAgentLabel(row.id as SubAgentId)}`;
       out.push(truncateStyled(text, maxW, (x) => cursor === idx ? chalk.bold.cyan(x) : x));
     });
     out.push(truncateStyled(t("  空格：选中/取消子 Agent；主 Agent 空格直接选定", "  Space: toggle sub-agent; Space on main agent selects it"), maxW, (x) => chalk.cyan(x)));

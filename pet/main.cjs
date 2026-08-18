@@ -28,9 +28,9 @@ const AGENT_IDS = [MAIN_AGENT_ID, ...SUB_AGENT_IDS];
 
 const PREFIX = "###PET###";
 const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
-const WIN_W = 320;
+const WIN_W = 580; // 窗口总宽：左侧 320px 为 Spine 角色渲染区，右侧 260px 为文字气泡专用区（避免气泡遮脸）
 const WIN_H = 674;
-const SUB_OFFSET_X = 340; // 子窗口默认横向错开，避免完全重叠
+const SUB_OFFSET_X = 620; // 子窗口默认横向错开（> WIN_W，避免角色+气泡区重叠）
 const SUB_OFFSET_Y = 40;
 
 // --verbose（src/pet.ts 注入 ARONA_PET_VERBOSE=1 + --enable-logging）：

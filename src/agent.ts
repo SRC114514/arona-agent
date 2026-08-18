@@ -39,6 +39,16 @@ function nowStr(): string {
   }).format(new Date());
 }
 
+/**
+ * 由上下文窗口推导压缩预留 token（SDK shouldCompact: contextTokens > contextWindow - reserveTokens）。
+ * 取窗口的 ~15% 并钳制在 [4096, 200000]：
+ *   - 1M 窗口 → 150000（~85% 水位触发，与历史行为一致）
+ *   - 64K → 9600 / 128K → 19200 / 200K → 30000（小窗口不再每轮误触发压缩）
+ */
+function reserveTokensFor(contextWindow: number): number {
+  return Math.min(200000, Math.max(4096, Math.round(contextWindow * 0.15)));
+}
+
 function buildSystemPrompt(memoryContent: string): string {
   const moodBaseline = loadMoodBaseline(memoryContent) || t("（无）", "(none)");
   const isEn = getLang() === "en";
@@ -543,12 +553,14 @@ export async function initAgent(): Promise<{
   ];
 
   // 8. Create session
-  // 压缩阈值：reserveTokens=150000 → 约 85 万 token 才触发压缩（默认 16384 太晚）
+  // 压缩阈值：按上下文窗口动态推导 reserveTokens（约 85% 水位触发压缩），
+  // 避免硬编码 150000 导致小窗口模型（如 DeepSeek 64K/128K）每轮误触发压缩
+  // （多一次总结调用 + 前缀每轮变化 → 缓存永不命中）。
   const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
   settingsManager.applyOverrides({
     compaction: {
       enabled: true,
-      reserveTokens: 150000,
+      reserveTokens: reserveTokensFor(config.contextWindow),
       keepRecentTokens: 20000,
     },
   });
@@ -676,7 +688,7 @@ export async function initSubAgent(
   settingsManager.applyOverrides({
     compaction: {
       enabled: true,
-      reserveTokens: 150000,
+      reserveTokens: reserveTokensFor(config.contextWindow),
       keepRecentTokens: 20000,
     },
   });

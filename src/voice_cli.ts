@@ -6,7 +6,7 @@
 import * as readline from "readline";
 import { existsSync, readFileSync } from "fs";
 import chalk from "chalk";
-import { SETTINGS_FILE } from "./config.ts";
+import { SETTINGS_FILE, verbose } from "./config.ts";
 import { AGENT_IDS, getAgentLabel, type AgentId } from "./agent_registry.ts";
 import { cloneVoice, hasVoice, setVoiceId } from "./voices.ts";
 import { multiSelect } from "./tui_select.ts";
@@ -27,7 +27,7 @@ function readSettings(): { ttsApiKey: string; ttsModel: string } {
   return { ttsApiKey, ttsModel };
 }
 
-/** 演示模式：settings.json#demoMode === true 时，音色克隆只模拟成功、不写 voices.json。 */
+/** 演示模式：settings.json#demoMode === true 时，音色克隆静默跳过（等 5s 不写 voices.json）。 */
 function readDemoMode(): boolean {
   try {
     if (existsSync(SETTINGS_FILE)) {
@@ -62,7 +62,7 @@ function askYesNo(prompt: string): Promise<boolean> {
 
 async function cloneOne(agent: AgentId, apiKey: string, model: string, simulate: boolean): Promise<boolean> {
   if (simulate) {
-    // 演示模式：不调用 voice_clone.py、不写 voices.json，静默 5s 后显示成功。
+    // 演示模式：打印"正在克隆"与"克隆成功"，但不调用 voice_clone.py、不写 voices.json、无演示模式提示。
     console.log(chalk.cyan(t(
       `正在克隆 ${getAgentLabel(agent)} 的音色（可能需要 1-2 分钟）...`,
       `Cloning ${getAgentLabel(agent)}'s voice (may take 1-2 minutes)...`,
@@ -82,8 +82,12 @@ async function cloneOne(agent: AgentId, apiKey: string, model: string, simulate:
     const voiceId = await cloneVoice(agent, apiKey, model);
     setVoiceId(agent, voiceId);
     console.log(chalk.green(t(
-      `✓ ${getAgentLabel(agent)} 音色克隆成功（voice_id: ${voiceId}）`,
-      `✓ ${getAgentLabel(agent)} voice cloned (voice_id: ${voiceId})`,
+      verbose
+        ? `✓ ${getAgentLabel(agent)} 音色克隆成功（voice_id: ${voiceId}）`
+        : `✓ ${getAgentLabel(agent)} 音色克隆成功`,
+      verbose
+        ? `✓ ${getAgentLabel(agent)} voice cloned (voice_id: ${voiceId})`
+        : `✓ ${getAgentLabel(agent)} voice cloned`,
     )));
     return true;
   } catch (err) {
@@ -97,7 +101,9 @@ async function cloneOne(agent: AgentId, apiKey: string, model: string, simulate:
 }
 
 async function run(argv: string[]): Promise<void> {
-  const sub = argv[0];
+  // --verbose 可与角色名同栈传入（`arona voice add --verbose`）：先剔除，避免被当成角色名
+  const args = argv.filter((a) => a !== "--verbose");
+  const sub = args[0];
   if (sub !== "add") {
     console.log(chalk.yellow(t(
       "用法：arona voice add [<角色名>]",
@@ -116,7 +122,7 @@ async function run(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const name = argv[1];
+  const name = args[1];
 
   if (name) {
     // 指定单个角色
@@ -127,7 +133,7 @@ async function run(argv: string[]): Promise<void> {
       )));
       process.exit(1);
     }
-    // 演示模式不询问是否重新克隆，直接模拟成功。
+    // 演示模式不询问是否重新克隆，直接静默跳过。
     if (!demoMode && hasVoice(name)) {
       const again = await askYesNo(t(
         `角色 ${getAgentLabel(name)} 已存在音色，是否重新克隆？(y/N) `,
@@ -142,16 +148,26 @@ async function run(argv: string[]): Promise<void> {
     return;
   }
 
-  // 无参：TUI 展示全部角色（主 Agent + 子 Agent），已有音色者锁定 [*]，未补全者可勾选
-  const options = AGENT_IDS.map((id) => ({
-    id,
-    label: hasVoice(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
-    locked: hasVoice(id),
-  }));
+  // 无参：TUI 展示全部角色（主 Agent + 子 Agent）。
+  // 演示模式：阿洛娜强制显示为已克隆（锁定、不重克隆）；普拉娜/砂狼白子/小鸟游星野强制显示为未克隆（可选）。
+  const options = AGENT_IDS.map((id) => {
+    if (demoMode && id === "arona") {
+      return { id, label: `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}`, locked: true };
+    }
+    if (demoMode) {
+      return { id, label: getAgentLabel(id), locked: false };
+    }
+    return {
+      id,
+      label: hasVoice(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
+      locked: hasVoice(id),
+    };
+  });
+  const initial = new Set<string>();
   const selected = await multiSelect(
     t("选择要补全音色的角色", "Select characters to add voices"),
     options,
-    new Set<string>(),
+    initial,
     t(
       "  ↑/↓ 切换 · 空格选中 [*] · 回车克隆 · Esc 取消",
       "  ↑/↓ move · Space select [*] · Enter clone · Esc cancel",

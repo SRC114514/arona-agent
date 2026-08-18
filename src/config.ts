@@ -41,6 +41,8 @@ interface AronaConfig {
   apiBaseUrl: string;
   model: string;
   thinkingLevel: string;
+  // 上下文窗口（token 数）：用于压缩阈值推导。settings.json 直接填数字（如 1000000），不填默认 1M。
+  contextWindow: number;
   // Voice (Qwen / 阿里云百炼 DashScope)
   noVoice: boolean;
   // 百炼业务空间 ID（可选；留空走旧域名 dashscope.aliyuncs.com）
@@ -68,10 +70,12 @@ interface Settings {
   apiBaseUrl?: string;
   model?: string;
   thinkingLevel?: string;
+  // 上下文窗口（token 数），默认 1M。用于压缩阈值推导，不填 SDK 走模型注册表。
+  contextWindow?: number;
   language?: LanguageSetting;
   // 主 Agent（arona | plana）：桌宠形象 + 人格，由 agent_registry.ts 读写
   mainAgent?: string;
-  // 启用的子 Agent 列表（shiroko | hoshino）：多角色同屏 + 轮询回复，由 agent_registry.ts 读写
+  // 启用的子 Agent 列表（shiroko | hoshino），由 agent_registry.ts 读写
   subAgents?: string[];
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
@@ -209,6 +213,7 @@ function loadConfig(): AronaConfig {
     apiBaseUrl,
     model,
     thinkingLevel: s.thinkingLevel || "medium",
+    contextWindow: typeof s.contextWindow === "number" && s.contextWindow > 0 ? s.contextWindow : 1000000,
 
     noVoice,
     // Skip TTS/STT fields when --no-voice is set
