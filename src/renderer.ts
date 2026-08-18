@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { t } from "./locale.ts";
+import { getAgentLabel, getMainAgent } from "./agent_registry.ts";
 import { splitStreamedText, countTextUnits } from "./text_split.ts";
 
 let showThinking = true;
@@ -54,10 +55,13 @@ export function createRenderer(
   onMessageComplete?: (text: string) => void,
   onTextDelta?: (delta: string) => void,
   onPetText?: (kind: PetTextKind, data: string) => void,
+  initialSpeakerLabel?: string,
 ) {
+  let speakerLabel = initialSpeakerLabel;
   let responseText = "";
   let inThinking = false;
   let inText = false;
+  let textPrefixWritten = false;
 
   // ── 流式思考折叠重绘 ──────────────────────────────────────────
   let thinkingBuffer = "";          // 完整思考内容缓冲区
@@ -179,6 +183,9 @@ export function createRenderer(
   }
 
   return {
+    setSpeakerLabel(label: string | undefined) {
+      speakerLabel = label;
+    },
     subscribe: (session: any) => {
       return session.subscribe((event: any) => {
         switch (event.type) {
@@ -186,6 +193,7 @@ export function createRenderer(
             responseText = "";
             inText = false;
             inThinking = false;
+            textPrefixWritten = false;
             petMidBuffer = "";
             petShownLines = [];
             thinkingBuffer = "";
@@ -201,6 +209,10 @@ export function createRenderer(
                   inThinking = false;
                 }
                 inText = true;
+                if (speakerLabel && !textPrefixWritten) {
+                  process.stdout.write(chalk.magenta.bold(speakerLabel + "："));
+                  textPrefixWritten = true;
+                }
               }
               process.stdout.write(ae.delta);
               responseText += ae.delta;
@@ -339,7 +351,8 @@ export function renderSavedMessages(messages: any[]) {
       // 文本内容
       const text = extractText(content);
       if (text) {
-        process.stdout.write(chalk.magenta.bold(t("Arona：", "Arona: ")) + text + "\n\n");
+        const speaker = typeof msg.speaker === "string" ? getAgentLabel(msg.speaker as any) : getAgentLabel(getMainAgent());
+        process.stdout.write(chalk.magenta.bold(speaker + "：") + text + "\n\n");
       }
       // 工具调用
       const toolCalls = content.filter((b: any) => b.type === "toolCall");

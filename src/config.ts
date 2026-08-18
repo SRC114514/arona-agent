@@ -71,6 +71,8 @@ interface Settings {
   language?: LanguageSetting;
   // 主 Agent（arona | plana）：桌宠形象 + 人格，由 agent_registry.ts 读写
   mainAgent?: string;
+  // 启用的子 Agent 列表（shiroko | hoshino）：多角色同屏 + 轮询回复，由 agent_registry.ts 读写
+  subAgents?: string[];
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
   /** @deprecated 已合并进 ttsEnabled，仅读兼容（旧配置 ttsAuto:false 仍生效） */

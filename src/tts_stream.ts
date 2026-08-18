@@ -4,7 +4,7 @@ import { PYTHON_DIR, config, verbose } from "./config.ts";
 import { t, getLang } from "./locale.ts";
 import { spawnCompat, stripProxyEnv } from "./utils/spawn.ts";
 import { stripMarkdown } from "./voice.ts";
-import { getMainAgent } from "./agent_registry.ts";
+import { getMainAgent, type AgentId } from "./agent_registry.ts";
 import { getVoiceId } from "./voices.ts";
 import { splitStreamedText, countTextUnits } from "./text_split.ts";
 
@@ -12,7 +12,7 @@ import { splitStreamedText, countTextUnits } from "./text_split.ts";
  * 实时流式 TTS 管道（阿里云百炼"实时语音合成"）。
  *
  * 与常驻 Python 进程 python/tts_stream.py 通过 stdin/stdout JSON 行通信：
- *   发送：{"type":"text","data":"..."} / {"type":"end"} / {"type":"cancel"} / {"type":"exit"}
+ *   发送：{"type":"text","data":"..."} / {"type":"end"} / {"type":"cancel"} / {"type":"voice","data":"<id>"} / {"type":"exit"}
  *   接收：{"event":"ready"} / {"event":"play_start"} / {"event":"play_end"} / {"event":"error","message":...}
  *
  * 行为约定：
@@ -37,7 +37,7 @@ function trailingFenceTicks(s: string): number {
 }
 
 interface OutgoingCmd {
-  type: "text" | "end" | "cancel";
+  type: "text" | "end" | "cancel" | "voice";
   data?: string;
 }
 
@@ -53,9 +53,11 @@ export class TtsStream {
   private startPromise: Promise<boolean> | null = null;
   private readyResolve: (() => void) | null = null;
   private shuttingDown = false;
+  // 当前 TTS 音色对应角色；主 Agent 在构造时确定，子 Agent 轮询前由 setVoice 切换
+  private currentAgent: AgentId = getMainAgent();
 
   constructor(
-    private isEnabled: () => boolean,
+    private isEnabledFor: (agent: AgentId) => boolean,
     private onIdle?: () => void,
   ) {}
 
@@ -64,11 +66,26 @@ export class TtsStream {
     return this.pendingCount > 0;
   }
 
+  /** 当前 TTS 音色所属角色 */
+  get currentAgentId(): AgentId {
+    return this.currentAgent;
+  }
+
+  /**
+   * 切换当前朗读角色音色。必须在上一角色 endSegment（finish-task）之后、下一角色 pushText 之前调用，
+   * 保证语音切换落在段边界（"语音"指令在队列中位于 end 之后、text 之前）。
+   */
+  setVoice(agentId: AgentId): void {
+    if (this.currentAgent === agentId) return;
+    this.currentAgent = agentId;
+    this.enqueue({ type: "voice", data: getVoiceId(agentId) });
+  }
+
   /**
    * LLM 文本增量（text_delta）实时推送。剔除代码块后按标点切句，<50 字的句子立即送入合成。
    */
   pushText(delta: string): void {
-    if (!this.isEnabled()) return;
+    if (!this.isEnabledFor(this.currentAgent)) return;
     if (!delta) return;
     this.ingestDelta(delta);
   }
@@ -77,7 +94,7 @@ export class TtsStream {
    * 当前 assistant 消息结束：残段按同规则收尾（未闭合代码块整段丢弃），并结束当前合成段（finish-task）。
    */
   endSegment(): void {
-    if (!this.isEnabled()) return;
+    if (!this.isEnabledFor(this.currentAgent)) return;
     if (this.inCodeBlock) {
       // 消息结束仍未等到闭合围栏：其后的内容都在代码块内，整段丢弃
       this.buffer = "";
@@ -260,7 +277,7 @@ export class TtsStream {
             QWEN_WORKSPACE_ID: config.workspaceId,
             QWEN_TTS_API_KEY: config.ttsApiKey,
             QWEN_TTS_MODEL: config.ttsModel,
-            QWEN_TTS_VOICE: getVoiceId(getMainAgent()),
+            QWEN_TTS_VOICE: getVoiceId(this.currentAgent),
             QWEN_TTS_SAMPLE_RATE: String(config.ttsSampleRate),
           }),
           stdio: ["pipe", "pipe", "pipe"],

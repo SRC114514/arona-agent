@@ -14,10 +14,17 @@ const { AGENTS } = require(path.join(PET, "agents.cjs"));
 const agentId = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
 const AGENT = AGENTS[agentId];
 const MODE = process.env.GALLERY_MODE === "emotions" ? "emotions" : "presets";
-// 数字预设普查（CLAUDE.md B5）：plana = 00~20 + 99（22 个）；arona = 00~32 + 99（34 个）
-const PRESETS = AGENT.id === "plana"
-  ? [...Array.from({ length: 21 }, (_, i) => String(i).padStart(2, "0")), "99"]
-  : [...Array.from({ length: 33 }, (_, i) => String(i).padStart(2, "0")), "99"];
+// 数字预设普查（CLAUDE.md B5）：arona = 00~32 + 99（34 个）；plana = 00~20 + 99（22 个）；
+// shiroko/hoshino = 00~17 + 99（19 个，精灵图切脸式角色）
+const PRESETS = AGENT.id === "arona"
+  ? [...Array.from({ length: 33 }, (_, i) => String(i).padStart(2, "0")), "99"]
+  : AGENT.id === "plana"
+    ? [...Array.from({ length: 21 }, (_, i) => String(i).padStart(2, "0")), "99"]
+    : [...Array.from({ length: 18 }, (_, i) => String(i).padStart(2, "0")), "99"];
+// 附件签名互异断言仅对骨脸角色（arona/plana）强制；精灵图角色（shiroko/hoshino）可能出现
+// 预设共用同一 sprite（如 99 与 00 同默认脸），碰撞是预期，只警告不算失败。
+const SIGNATURE_UNIQUE_REQUIRED = AGENT.id === "arona" || AGENT.id === "plana";
+
 // 情绪确认模式：17 个情绪名 → 其映射预设（顺序 = agents.cjs 定义顺序）
 const EMOTIONS = Object.entries(AGENT.emotions);
 const OUT = MODE === "emotions" ? `/tmp/${agentId}_emotion_map` : `/tmp/${agentId}_emotions`;
@@ -225,11 +232,17 @@ app.whenReady().then(() => {
         console.log("CHECK preset", p, "FAIL track4=" + st.track4);
         failures++;
       }
-      // 附件签名断言：22 预设签名必须互不相同（B5 普查）；碰撞 = 预设未生效
+      // 附件签名断言：骨脸角色预设签名必须互不相同（B5 普查）；碰撞 = 预设未生效。
+      // 精灵图角色允许共用签名（同一 sprite 复用），仅打印 WARN。
       const sig = await win.webContents.executeJavaScript("window.SpineLayer.getAttachmentSignature()");
       if (SIGNATURES.has(sig)) {
-        console.log("CHECK preset", p, "FAIL 附件签名与 preset " + SIGNATURES.get(sig) + " 碰撞");
-        failures++;
+        const prev = SIGNATURES.get(sig);
+        if (SIGNATURE_UNIQUE_REQUIRED) {
+          console.log("CHECK preset", p, "FAIL 附件签名与 preset " + prev + " 碰撞");
+          failures++;
+        } else {
+          console.log("WARN preset", p, "附件签名与 preset " + prev + " 相同（精灵图共用 sprite，预期内）");
+        }
       } else {
         SIGNATURES.set(sig, p);
       }

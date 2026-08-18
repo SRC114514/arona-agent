@@ -10,7 +10,7 @@ import * as mcp from "./mcp.ts";
 import * as skills from "./skills.ts";
 import { setShowThinking, getShowThinking, setShowToolDetails, getShowToolDetails } from "./renderer.ts";
 import { resolveSlashCommand } from "./slash_registry.ts";
-import { AGENT_IDS, getMainAgent, getAgentLabel, setMainAgent, type AgentId } from "./agent_registry.ts";
+import { MAIN_AGENT_IDS, SUB_AGENT_IDS, getMainAgent, getSubAgents, getAgentLabel, setMainAgent, setSubAgents, type MainAgentId, type SubAgentId, type AgentId } from "./agent_registry.ts";
 import { pet } from "./pet.ts";
 import type { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
@@ -63,7 +63,7 @@ ${chalk.bold("扩展")}
   /mcp             列出 MCP 服务器和工具
 
 ${chalk.bold("其他")}
-  /change-agent    切换主 Agent（桌宠形象 + 人格，上下键选择）
+  /change-agent    切换主 Agent + 多选子 Agent（桌宠同屏 / 轮询回复）
   /undo            撤销上一个回合的全部文件改动（本地快照，无需 git）
   /redo            重做已撤销的改动
   /help            显示本帮助
@@ -95,7 +95,7 @@ ${chalk.bold("Extensions")}
   /mcp             List MCP servers and tools
 
 ${chalk.bold("Other")}
-  /change-agent    Switch the main agent (pet + persona, pick with arrow keys)
+  /change-agent    Switch main agent + multi-select sub agents (same-screen / poll replies)
   /undo            Undo the previous turn's file changes (local snapshot, no git)
   /redo            Redo undone changes
   /help            Show this help
@@ -458,17 +458,24 @@ async function handleSkill(args: string, ctx: CommandContext) {
 }
 
 /**
- * /change-agent：切换主 Agent（桌宠形象 + 人格）。
- * 交互式 TUI 选择器（沿用终端背景，不用纯色背景）：上下键循环选择 arona/plana，
- * 回车确认，Esc/q/Ctrl+C 取消。确认后走切换流程：写 settings.json → 桌宠换形象 →
- * 保存当前会话 → 重建 session（新人设生效）。
+ * /change-agent：切换主 Agent（单选）+ 子 Agent（多选，同屏/轮询）。
+ * 交互式 TUI：主 Agent 用 [*] 单选，子 Agent 用 [*] 多选；
+ * 确认后写 settings.json → 桌宠按新组合重建多窗口 → 主 Agent 变了才重启 TTS + 保存会话 + 重建会话。
  */
 async function handleChangeAgent(ctx: CommandContext) {
   const current = getMainAgent();
-  const options: { id: AgentId; label: string }[] = AGENT_IDS.map((id) => ({
-    id,
-    label: getAgentLabel(id),
-  }));
+  const currentSubs = getSubAgents();
+
+  type Row = { kind: "main" | "sub"; id: string };
+  const mainRows: Row[] = MAIN_AGENT_IDS.map((id) => ({ kind: "main", id }));
+  const subRows: Row[] = SUB_AGENT_IDS.map((id) => ({ kind: "sub", id }));
+  const rows = [...mainRows, ...subRows];
+
+  let selectedMain: string = current;
+  const selectedSubs = new Set<string>(currentSubs);
+  let cursor = Math.max(0, rows.findIndex((r) => r.id === current));
+  let drawnScreenLines = 0;
+  const cols = process.stdout.columns ?? 80;
 
   // 暂停斜杠菜单 keypress 监听器，避免上下键被菜单捕获并画菜单
   ctx.pauseMenuListener?.();
@@ -479,10 +486,6 @@ async function handleChangeAgent(ctx: CommandContext) {
   process.stdin.resume();
   process.stdin.setEncoding("utf8");
 
-  let cursor = Math.max(0, options.findIndex((o) => o.id === current));
-  let drawnScreenLines = 0;
-  const cols = process.stdout.columns ?? 80;
-
   const render = () => {
     if (drawnScreenLines > 0) {
       process.stdout.write("\x1b[" + drawnScreenLines + "A");
@@ -490,17 +493,28 @@ async function handleChangeAgent(ctx: CommandContext) {
     process.stdout.write("\r\x1b[0J");
     const maxW = cols - 1;
     const out: string[] = [];
-    out.push(chalk.bold.cyan(t("切换主 Agent（↑/↓ 选择，回车确认，Esc 取消）：", "Switch main agent (↑/↓ select, Enter confirm, Esc cancel):")));
-    options.forEach((o, i) => {
-      const marker = i === cursor ? "▶ " : "  ";
-      const suffix = o.id === current ? t("（当前）", " (current)") : "";
-      const text = `${marker}${o.id}${suffix}  —  ${o.label}`;
-      const styled = i === cursor
-        ? truncateStyled(text, maxW, (x) => chalk.bold.cyan(x))
-        : truncateStyled(text, maxW, (x) => x);
-      out.push(styled);
+    out.push(truncateStyled(
+      t("选择角色（↑/↓ 移动，空格选择，回车确认，Esc 取消）：", "Select characters (↑/↓ move, Space select, Enter confirm, Esc cancel):"),
+      maxW,
+      (x) => chalk.bold.cyan(x),
+    ));
+    out.push(truncateStyled(t("  主 Agent（单选）", "  Main agent (single)"), maxW, (x) => chalk.cyan(x)));
+    mainRows.forEach((row, i) => {
+      const marker = cursor === i ? "▶ " : "  ";
+      const checked = row.id === selectedMain ? "[*]" : "[ ]";
+      const suffix = row.id === current ? t("（当前）", " (current)") : "";
+      const text = `${marker}${checked} ${row.id}${suffix} — ${getAgentLabel(row.id as MainAgentId)}`;
+      out.push(truncateStyled(text, maxW, (x) => cursor === i ? chalk.bold.cyan(x) : x));
     });
-    out.push(chalk.cyan(t("  (回车切换，Esc/q 取消)", "  (Enter to switch, Esc/q to cancel)")));
+    out.push(truncateStyled(t("  子 Agent（可多选，同屏 + 轮询回复）", "  Sub agents (multi-select, same-screen + poll replies)"), maxW, (x) => chalk.cyan(x)));
+    subRows.forEach((row, i) => {
+      const idx = mainRows.length + i;
+      const marker = cursor === idx ? "▶ " : "  ";
+      const checked = selectedSubs.has(row.id) ? "[*]" : "[ ]";
+      const text = `${marker}${checked} ${row.id} — ${getAgentLabel(row.id as SubAgentId)}`;
+      out.push(truncateStyled(text, maxW, (x) => cursor === idx ? chalk.bold.cyan(x) : x));
+    });
+    out.push(truncateStyled(t("  空格：选中/取消子 Agent；主 Agent 空格直接选定", "  Space: toggle sub-agent; Space on main agent selects it"), maxW, (x) => chalk.cyan(x)));
     process.stdout.write(out.join("\r\n") + "\r\n");
     drawnScreenLines = out.length;
   };
@@ -508,41 +522,58 @@ async function handleChangeAgent(ctx: CommandContext) {
   render();
 
   // 真正执行切换的异步流程（确认后调用，完成后才 resolve 外层 Promise）
-  const applySwitch = async (id: AgentId) => {
-    if (id === current) {
-      console.log(chalk.cyan(t(`当前主 Agent 已是 ${id}。`, `Main agent is already ${id}.`)));
+  const applySelection = async () => {
+    const main = selectedMain as MainAgentId;
+    const subs = SUB_AGENT_IDS.filter((id) => selectedSubs.has(id));
+    const mainChanged = main !== current;
+    const subsChanged = JSON.stringify(subs) !== JSON.stringify(currentSubs);
+    if (!mainChanged && !subsChanged) {
+      console.log(chalk.cyan(t("角色选择未变化。", "No character selection change.")));
       return;
     }
-    // 1. 持久化（settings.json mainAgent 字段）
-    setMainAgent(id);
-    // 2. 桌宠换形象（pet/main.cjs 按 ARONA_AGENT env 选 agents.cjs 配置；旧进程退出后自动拉起）
-    pet.restartWithAgent(id);
-    // 3. 重启 TTS 进程：音色随主 Agent 在 spawn 时固化，杀进程让下次 pushText 以新音色重拉
-    //    （新角色无音色则 isTtsEnabled() 直接挡掉，不会重拉）
-    ctx.restartTts?.();
-    // 4. 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
-    ctx.saveCurrentSession();
-    // 5. 重建 session → buildSystemPrompt 依 getMainAgent() 选新人格模板
-    await ctx.newSession();
-    console.log(chalk.green(t(
-      `已切换主 Agent 为 ${id}（桌宠形象 + 人格已切换，新会话已开始）。`,
-      `Switched main agent to ${id} (pet + persona switched, new session started).`,
-    )));
+    // 1. 持久化（settings.json mainAgent + subAgents 字段）
+    setMainAgent(main);
+    setSubAgents(subs);
+    // 2. 桌宠多窗口按新组合重建（旧进程退出后自动拉起）
+    pet.restartWithSelection(main, subs);
+    // 3. 主 Agent 切换才需要重启 TTS（音色随主 Agent 变化）与重建会话（人格变化）
+    if (mainChanged) {
+      ctx.restartTts?.();
+      // 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
+      ctx.saveCurrentSession();
+      await ctx.newSession();
+      console.log(chalk.green(t(
+        `主 Agent 已切换为 ${getAgentLabel(main)}，子 Agent：${subs.length ? subs.map((s) => getAgentLabel(s)).join("、") : t("无", "none")}。`,
+        `Main agent switched to ${getAgentLabel(main)}; sub agents: ${subs.length ? subs.map((s) => getAgentLabel(s)).join(", ") : "none"}.`,
+      )));
+    } else {
+      console.log(chalk.green(t(
+        `子 Agent 已更新：${subs.length ? subs.map((s) => getAgentLabel(s)).join("、") : t("无", "none")}。`,
+        `Sub agents updated: ${subs.length ? subs.map((s) => getAgentLabel(s)).join(", ") : "none"}.`,
+      )));
+    }
   };
 
   let resolveFn: () => void = () => {};
   const onData = (key: string) => {
     if (key === "\x1b[A") {
-      cursor = (cursor - 1 + options.length) % options.length;
+      cursor = (cursor - 1 + rows.length) % rows.length;
       render();
     } else if (key === "\x1b[B") {
-      cursor = (cursor + 1) % options.length;
+      cursor = (cursor + 1) % rows.length;
+      render();
+    } else if (key === " ") {
+      const row = rows[cursor];
+      if (row.kind === "main") {
+        selectedMain = row.id;
+      } else {
+        if (selectedSubs.has(row.id)) selectedSubs.delete(row.id);
+        else selectedSubs.add(row.id);
+      }
       render();
     } else if (key === "\r" || key === "\n") {
-      // Enter: confirm selection
       cleanup();
-      const sel = options[cursor];
-      void applySwitch(sel.id)
+      void applySelection()
         .catch((err) => {
           console.error(chalk.red(t("切换失败：", "Switch failed: ") + (err instanceof Error ? err.message : err)));
         })

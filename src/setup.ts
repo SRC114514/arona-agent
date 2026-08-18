@@ -22,6 +22,8 @@ interface Settings {
   language?: "auto" | "zh" | "en";
   /** 主 Agent（arona | plana）：setup 保存时保留，不能覆盖 /change-agent 的选择 */
   mainAgent?: string;
+  /** 子 Agent 列表（shiroko | hoshino）：setup 保存时保留，不能覆盖 /change-agent 的选择 */
+  subAgents?: string[];
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
   /** @deprecated 已合并进 ttsEnabled，仅读兼容（旧配置 ttsAuto:false 仍生效） */
@@ -85,12 +87,12 @@ async function main() {
   const demoMode = existing.demoMode === true;
   if (verbose && demoMode) {
     console.log(chalk.yellow(t(
-      "[demoMode] 已启用：跳过 settings.json 写入 + 跳过真实音色克隆调用。",
-      "[demoMode] enabled: skip settings.json write + skip real voice cloning calls.",
+      "[demoMode] 已启用：Step 4 仍显示 TUI 选择界面，但跳过真实音色克隆与 settings.json/voices.json 写入。",
+      "[demoMode] enabled: Step 4 still shows the TUI, but skips real voice cloning and settings.json/voices.json writes.",
     )));
     console.log(chalk.gray(t(`  [verbose] settings.json demoMode = ${JSON.stringify(existing.demoMode)} (类型 ${typeof existing.demoMode})`, `  [verbose] settings.json demoMode = ${JSON.stringify(existing.demoMode)} (type ${typeof existing.demoMode})`)));
     console.log(chalk.gray(t(`  [verbose] Step 3 将执行: pip3.13 install -r "${join(PROJECT_ROOT, "requirements.txt")}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`, `  [verbose] Step 3 will run: pip3.13 install -r "${join(PROJECT_ROOT, "requirements.txt")}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`)));
-    console.log(chalk.gray(t("  [verbose] Step 4 将模拟 4s 等待并生成占位 voice_id，不调用 voice_clone.py", "  [verbose] Step 4 will simulate a 4s wait and produce a placeholder voice_id, without calling voice_clone.py")));
+    console.log(chalk.gray(t("  [verbose] Step 4 每个选中角色将模拟 5s 等待后显示成功，不调用 voice_clone.py、不写 voices.json", "  [verbose] Step 4 simulates a 5s wait per selected character then reports success, without calling voice_clone.py or writing voices.json")));
     console.log(chalk.gray(t(`  [verbose] 末尾将跳过写入: ${SETTINGS_FILE}`, `  [verbose] will skip writing at the end: ${SETTINGS_FILE}`)));
   }
 
@@ -232,33 +234,24 @@ async function main() {
     // ============================================================
     console.log(chalk.bold.cyan("\nStep 4: Voice Cloning\n"));
 
-    if (demoMode) {
-      // demoMode: skip the real python/voice_clone.py call entirely. Wait 4s
-      // and emit a synthetic success so the user can showcase the full flow.
-      await new Promise((r) => setTimeout(r, 4000));
-      const demoVoice = `demo-voice-${Date.now()}`;
-      console.log(
-        chalk.green(
-          verbose
-            ? t(`  ✓ 音色克隆成功（voice_id: ${demoVoice}）`, `  ✓ Voice cloning succeeded (voice_id: ${demoVoice})`)
-            : t("  ✓ 音色克隆成功", "  ✓ Voice cloning succeeded"),
-        ),
-      );
-    } else if (!ttsApiKey) {
+    if (!demoMode && !ttsApiKey) {
       console.log(chalk.yellow(t("  跳过音色克隆：未提供百炼 API Key。", "  Skipping voice cloning: no Bailian API Key provided.")));
       console.log(chalk.gray(t("  重新运行 arona setup 并填写百炼 API Key 以配置音色。", "  Re-run arona setup and fill in the Bailian API Key to configure the voice.")));
-    } else if (!depsOk) {
+    } else if (!demoMode && !depsOk) {
       console.log(chalk.yellow(t("  跳过音色克隆：Python 依赖未安装成功。", "  Skipping voice cloning: Python dependencies were not installed successfully.")));
       console.log(chalk.gray(t("  请先解决依赖安装问题，再重新运行 arona setup。", "  Resolve the dependency installation issue, then re-run arona setup.")));
     } else {
-      // Check dashscope package (safety fallback even after pip install)
-      let dashscopeOk = false;
-      try {
-        execSync(`${pythonPath} -c "import dashscope"`, { stdio: "pipe" });
-        dashscopeOk = true;
-      } catch {
-        console.log(chalk.yellow(t("  dashscope 包仍不可用。跳过音色克隆。", "  The dashscope package is still unavailable. Skipping voice cloning.")));
-        console.log(chalk.gray(t(`  运行 ${pythonPath} -m pip install dashscope -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple 后重新执行 arona setup。`, `  Run ${pythonPath} -m pip install dashscope -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple and re-run arona setup.`)));
+      // 非 demoMode 才检查 dashscope；demoMode 直接进入 TUI 并模拟克隆。
+      let dashscopeOk = demoMode;
+      if (!demoMode) {
+        // Check dashscope package (safety fallback even after pip install)
+        try {
+          execSync(`${pythonPath} -c "import dashscope"`, { stdio: "pipe" });
+          dashscopeOk = true;
+        } catch {
+          console.log(chalk.yellow(t("  dashscope 包仍不可用。跳过音色克隆。", "  The dashscope package is still unavailable. Skipping voice cloning.")));
+          console.log(chalk.gray(t(`  运行 ${pythonPath} -m pip install dashscope -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple 后重新执行 arona setup。`, `  Run ${pythonPath} -m pip install dashscope -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple and re-run arona setup.`)));
+        }
       }
 
       if (dashscopeOk) {
@@ -279,7 +272,7 @@ async function main() {
             locked: hasVoice(id),
           }));
           const selected = await multiSelect(
-            t("选择要克隆音色的角色", "Select characters to clone voices"),
+            t("选择要克隆音色的角色（Arona/Plana/砂狼白子/小鸟游星野）", "Select characters to clone voices (Arona/Plana/Shiroko/Hoshino)"),
             options,
             new Set<string>(), // 已有音色者 locked 强制 [*]，未克隆者默认 [ ]
             t(
@@ -304,6 +297,13 @@ async function main() {
               const voiceMp3 = VOICE_AUDIO[id];
               if (!existsSync(voiceMp3)) {
                 console.log(chalk.yellow(t(`  未找到音色文件（${voiceMp3}），跳过 ${getAgentLabel(id)}。`, `  Voice file not found (${voiceMp3}), skipping ${getAgentLabel(id)}.`)));
+                continue;
+              }
+              if (demoMode) {
+                // 演示模式：不调用 voice_clone.py、不写 voices.json，静默 5s 后显示成功。
+                console.log(chalk.cyan(t(`  正在模拟克隆 ${getAgentLabel(id)} 的音色（演示模式）...`, `  Simulating voice clone for ${getAgentLabel(id)} (demo mode)...`)));
+                await new Promise((r) => setTimeout(r, 5000));
+                console.log(chalk.green(t(`  ✓ ${getAgentLabel(id)} 音色克隆成功（演示模式，未写入）`, `  ✓ ${getAgentLabel(id)} voice cloned (demo mode, not persisted)`)));
                 continue;
               }
               console.log(chalk.cyan(t(`  正在克隆 ${getAgentLabel(id)} 的音色（可能需要 1-2 分钟）...`, `  Cloning ${getAgentLabel(id)}'s voice (may take 1-2 minutes)...`)));
@@ -339,6 +339,7 @@ async function main() {
         thinkingLevel: existing.thinkingLevel || "medium",
         language: langSetting,
         mainAgent: existing.mainAgent || "arona", // 保留 /change-agent 的选择，勿覆盖
+        subAgents: existing.subAgents || [], // 保留 /change-agent 的多选，勿覆盖
         ttsEnabled: existing.ttsEnabled ?? existing.ttsAuto ?? true, // ttsAuto 已合并，旧配置兼容
         sttEnabled: existing.sttEnabled ?? true,
         workspaceId: existing.workspaceId || "",

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import chalk from "chalk";
 import { PET_DIR, verbose } from "./config.ts";
-import { getMainAgent, type AgentId } from "./agent_registry.ts";
+import { getMainAgent, getSubAgents, type AgentId } from "./agent_registry.ts";
 import { t } from "./locale.ts";
 
 const PREFIX = "###PET###";
@@ -56,8 +56,10 @@ class PetBridge {
   private stderrRing: string[] = [];
   // 当前桌宠角色（ARONA_AGENT env 传给 pet/main.cjs）；默认跟随 settings.json mainAgent
   private agentId: AgentId = getMainAgent();
-  // 待切换角色：stop() 后等待旧进程 close 再以新角色拉起（避免双窗口闪现）
-  private pendingAgent: AgentId | null = null;
+  // 当前启用的子 Agent（ARONA_SUB_AGENTS env 传给 pet/main.cjs）；默认跟随 settings.json subAgents
+  private subAgents: AgentId[] = getSubAgents();
+  // 待切换角色组合：stop() 后等待旧进程 close 再以新组合拉起（避免双窗口闪现）
+  private pendingSelection: { main: AgentId; subs: AgentId[] } | null = null;
 
   /**
    * Electron 42+ 把二进制下载从 postinstall 挪到了首次 require，而 pet 桥是唯一
@@ -132,8 +134,12 @@ class PetBridge {
 
     try {
       // 剔除 ELECTRON_RUN_AS_NODE，否则 Electron 会退化为纯 Node 运行；
-      // 注入 ARONA_AGENT 让桌宠主进程选择角色（agents.cjs）
-      const env: NodeJS.ProcessEnv = { ...process.env, ARONA_AGENT: this.agentId };
+      // 注入 ARONA_AGENT 让桌宠主进程选择主角色，ARONA_SUB_AGENTS 选择子角色窗口（agents.cjs）
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        ARONA_AGENT: this.agentId,
+        ARONA_SUB_AGENTS: this.subAgents.join(","),
+      };
       delete env.ELECTRON_RUN_AS_NODE;
       // --no-sandbox：部分环境（权限受限的终端/容器）无法初始化 Chromium sandbox；
       // 桌宠只加载本地文件，关闭 sandbox 风险可接受
@@ -144,7 +150,7 @@ class PetBridge {
         // 同时用 env 通知 pet/main.cjs 输出主进程详细日志。
         args.push("--enable-logging");
         env.ARONA_PET_VERBOSE = "1";
-        vlog("spawn", electronPath, args.concat(join(PET_DIR, "main.cjs")), "agent=", this.agentId);
+        vlog("spawn", electronPath, args.concat(join(PET_DIR, "main.cjs")), "main=", this.agentId, "subs=", this.subAgents.join(","));
       }
       this.proc = spawn(electronPath, args.concat(join(PET_DIR, "main.cjs")), {
         env,
@@ -182,12 +188,14 @@ class PetBridge {
     });
 
     this.proc.on("close", (code, signal) => {
-      vlog("process closed", { code, signal, intentional: this.intentionalStop, pendingAgent: this.pendingAgent });
+      vlog("process closed", { code, signal, intentional: this.intentionalStop, pendingSelection: this.pendingSelection });
       this.proc = null;
-      if (this.pendingAgent) {
-        // 切换角色：旧进程已退出，以新角色重新拉起（stop 时 intentionalStop=true 不会走退避重启）
-        const agent = this.pendingAgent;
-        this.pendingAgent = null;
+      if (this.pendingSelection) {
+        // 切换角色：旧进程已退出，以新角色组合重新拉起（stop 时 intentionalStop=true 不会走退避重启）
+        const sel = this.pendingSelection;
+        this.pendingSelection = null;
+        this.agentId = sel.main;
+        this.subAgents = sel.subs;
         void this.start();
       } else if (!this.intentionalStop && (code === null || code !== 0)) {
         // 正常退出（code 0）不重启；被信号终止（code null）或异常退出才视为崩溃
@@ -251,12 +259,12 @@ class PetBridge {
     }
   }
 
-  setEmotion(name: string): void {
-    this.send({ type: "set_emotion", name });
+  setEmotion(agentId: AgentId, name: string): void {
+    this.send({ type: "set_emotion", agent: agentId, name });
   }
 
-  sendText(kind: string, data: string): void {
-    this.send({ type: "text", kind, data });
+  sendText(agentId: AgentId, kind: string, data: string): void {
+    this.send({ type: "text", agent: agentId, kind, data });
   }
 
   reset(): void {
@@ -264,17 +272,25 @@ class PetBridge {
   }
 
   /**
-   * 切换桌宠形象（pet/main.cjs 按 ARONA_AGENT env 选择 agents.cjs 配置）。
-   * 运行中：先 stop（intentional，不触发退避重启），旧进程 close 后再以新角色拉起，避免双窗口闪现。
+   * 切换桌宠主角色（子 Agent 组合保持当前值）。
+   * 运行中：先 stop（intentional，不触发退避重启），旧进程 close 后再以新组合拉起，避免双窗口闪现。
    * 未运行：直接记住角色，下次 start() 生效。
    */
   restartWithAgent(id: AgentId): void {
-    this.agentId = id;
+    this.restartWithSelection(id, this.subAgents);
+  }
+
+  /**
+   * 切换主角色 + 子角色组合（pet/main.cjs 按 ARONA_AGENT + ARONA_SUB_AGENTS 创建多窗口）。
+   */
+  restartWithSelection(main: AgentId, subs: readonly AgentId[]): void {
     if (!this.isRunning) {
+      this.agentId = main;
+      this.subAgents = [...subs];
       void this.start();
       return;
     }
-    this.pendingAgent = id;
+    this.pendingSelection = { main, subs: [...subs] };
     this.stop();
   }
 

@@ -619,6 +619,15 @@ class TtsStreamServer:
         # end 表示当前这一段结束：connection_loop 收到后会对活跃 task 执行 finish-task
         self._enqueue_cmd(("end", None))
 
+    async def handle_voice(self, voice_id: str):
+        """动态切换音色：下一个 task 生效（当前 task 不受影响）。"""
+        if voice_id:
+            self.voice = voice_id
+            print(t(
+                f"TTS Stream voice switched to {voice_id}",
+                f"TTS Stream voice switched to {voice_id}",
+            ), file=sys.stderr)
+
     async def handle_cancel(self):
         self.cancelling = True
         self._clear_pending()
@@ -674,6 +683,8 @@ async def main():
                 await server.handle_text(cmd.get("data", ""))
             elif kind == "end":
                 await server.handle_end()
+            elif kind == "voice":
+                await server.handle_voice(cmd.get("data", ""))
             elif kind == "cancel":
                 await server.handle_cancel()
             elif kind == "exit":

@@ -1,5 +1,7 @@
 // ARONA 桌宠 Electron 主进程
 // 与主 Agent 进程通过 stdin/stdout JSON lines 通信（协议行前缀 ###PET### 过滤 Electron 日志）
+// 支持多角色同屏：ARONA_AGENT = 主 Agent，ARONA_SUB_AGENTS = 逗号分隔的子 Agent 列表；
+// 每个角色一个 BrowserWindow，共享一个全屏特效窗。
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -16,12 +18,20 @@ if (process.platform === "win32") {
   app.commandLine.appendSwitch("enable-unsafe-swiftshader");
 }
 
-// 当前桌宠角色：ARONA_AGENT 环境变量（src/pet.ts 注入），非法/缺省回退 arona
-const AGENT_ID = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
-const AGENT = AGENTS[AGENT_ID];
+// 角色选择：主 Agent + 子 Agent 列表
+const MAIN_AGENT_ID = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
+const SUB_AGENT_IDS = (process.env.ARONA_SUB_AGENTS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => s && AGENTS[s]);
+const AGENT_IDS = [MAIN_AGENT_ID, ...SUB_AGENT_IDS];
 
 const PREFIX = "###PET###";
 const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
+const WIN_W = 320;
+const WIN_H = 674;
+const SUB_OFFSET_X = 340; // 子窗口默认横向错开，避免完全重叠
+const SUB_OFFSET_Y = 40;
 
 // --verbose（src/pet.ts 注入 ARONA_PET_VERBOSE=1 + --enable-logging）：
 // 主进程详细日志走 stderr 原样转发回终端，用于锁定 Windows 白屏等"进程活着但无画面"问题。
@@ -30,7 +40,8 @@ function vlog(...args) {
   if (VERBOSE) console.error("[pet:verbose]", ...args);
 }
 
-let win = null;
+/** agentId -> BrowserWindow；主 Agent 始终在列表首位 */
+const petWins = new Map();
 let fxWin = null; // 全屏透明特效窗口（点击/拖尾），覆盖所有显示器、鼠标穿透
 
 function send(msg) {
@@ -41,40 +52,66 @@ function send(msg) {
   }
 }
 
-// ---- 位置记忆 ----
-function loadPosition() {
+// ---- 位置记忆（多角色格式：{ [agentId]: { x, y } }；兼容旧 { x, y } → arona） ----
+function loadPositions() {
   try {
     const data = JSON.parse(fs.readFileSync(POS_FILE, "utf-8"));
-    if (Number.isFinite(data.x) && Number.isFinite(data.y)) {
-      // 屏幕边界检查：记忆坐标须落在任一显示器 bounds 内（中心点判定），否则视为失效。
-      // 防分辨率变化 / Mac→Win 迁移 / 负坐标导致窗口创建在屏幕外"看似没显示"。
-      const W = 320, H = 674; // 与 createWindow 尺寸一致
-      for (const d of screen.getAllDisplays()) {
-        const { x, y, width, height } = d.bounds;
-        const cx = data.x + W / 2, cy = data.y + H / 2;
-        if (cx >= x && cx <= x + width && cy >= y && cy <= y + height) return data;
-      }
-    }
+    if (data && typeof data === "object" && !Array.isArray(data)) return data;
   } catch {
     // 无记录或损坏，忽略
+  }
+  return {};
+}
+
+function loadPosition(agentId) {
+  const data = loadPositions();
+  let pos = data[agentId];
+  // 旧版单角色格式兼容迁移：{x,y} 视为 arona 的位置
+  if (!pos && agentId === MAIN_AGENT_ID && Number.isFinite(data.x) && Number.isFinite(data.y)) {
+    pos = { x: data.x, y: data.y };
+  }
+  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y)) return null;
+  // 屏幕边界检查：记忆坐标须落在任一显示器 bounds 内（中心点判定），否则视为失效。
+  // 防分辨率变化 / Mac→Win 迁移 / 负坐标导致窗口创建在屏幕外"看似没显示"。
+  const W = WIN_W, H = WIN_H;
+  for (const d of screen.getAllDisplays()) {
+    const { x, y, width, height } = d.bounds;
+    const cx = pos.x + W / 2, cy = pos.y + H / 2;
+    if (cx >= x && cx <= x + width && cy >= y && cy <= y + height) return pos;
   }
   return null;
 }
 
-function savePosition(x, y) {
+function savePosition(agentId, x, y) {
   try {
+    const data = loadPositions();
+    // 旧版 {x,y} 迁移：一旦保存新格式，就不再有顶层 x/y
+    delete data.x;
+    delete data.y;
+    data[agentId] = { x, y };
     fs.mkdirSync(path.dirname(POS_FILE), { recursive: true });
-    fs.writeFileSync(POS_FILE, JSON.stringify({ x, y }));
+    fs.writeFileSync(POS_FILE, JSON.stringify(data, null, 2));
   } catch {
     // 写入失败不影响功能
   }
 }
 
 // ---- 窗口 ----
-function createWindow() {
-  win = new BrowserWindow({
-    width: 320,
-    height: 674, // 与视频比例一致（1010x2128 ≈ 1:2.107），角色填满窗口、无黑边
+function defaultPosition(index) {
+  if (index === 0) return null;
+  // 找不到记忆坐标时使用相对主显示器的默认错开位（macOS 菜单栏下方安全区起步）
+  const primary = screen.getPrimaryDisplay().bounds;
+  return {
+    x: primary.x + 40 + SUB_OFFSET_X * (index - 1),
+    y: primary.y + 80 + SUB_OFFSET_Y * (index - 1),
+  };
+}
+
+function createPetWindow(agentId, index) {
+  const agent = AGENTS[agentId];
+  const bw = new BrowserWindow({
+    width: WIN_W,
+    height: WIN_H,
     transparent: true,
     frame: false,
     hasShadow: false,
@@ -88,56 +125,58 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  win.setAlwaysOnTop(true, "screen-saver");
+  bw.setAlwaysOnTop(true, "screen-saver");
   if (process.platform === "darwin") {
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    bw.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
-  const pos = loadPosition();
-  if (pos) win.setPosition(pos.x, pos.y);
-  vlog("window created", JSON.stringify({ pos, alwaysOnTop: win.isAlwaysOnTop(), visible: win.isVisible(), bounds: win.getBounds() }));
+  const pos = loadPosition(agentId) || defaultPosition(index);
+  if (pos) bw.setPosition(pos.x, pos.y);
+  vlog("window created", JSON.stringify({ agentId, pos, alwaysOnTop: bw.isAlwaysOnTop(), visible: bw.isVisible(), bounds: bw.getBounds() }));
 
   // PET_PAGE=spinetest → 加载 Spine 调试页（默认仍 index.html，零风险）
   const page = process.env.PET_PAGE === "spinetest" ? "spinetest.html" : "index.html";
   // ?agent=<id>：渲染层（spine_layer.js/renderer.js）据此读取对应角色配置
   const url = path.join(__dirname, "renderer", page);
-  win.loadFile(url, { search: "agent=" + AGENT_ID });
-  vlog("loadFile", url, "?agent=" + AGENT_ID);
+  bw.loadFile(url, { search: "agent=" + agentId });
+  vlog("loadFile", url, "?agent=" + agentId);
   if (process.env.PET_PAGE) {
     // 调试页：附带 devtools 便于人工查看 console / 网络加载
-    win.webContents.openDevTools({ mode: "detach" });
+    bw.webContents.openDevTools({ mode: "detach" });
   }
-  win.webContents.on("did-finish-load", () => {
-    vlog("did-finish-load", win.webContents.getURL());
-    send({ type: "ready" });
+  bw.webContents.on("did-finish-load", () => {
+    vlog("did-finish-load", bw.webContents.getURL());
+    send({ type: "ready", agent: agentId });
   });
   // 页面加载失败（资源 404 / file:// 路径错 / 加载被拦）：必然白屏，任何模式都要转发
-  win.webContents.on("did-fail-load", (_e, code, desc, url2, isMain) => {
+  bw.webContents.on("did-fail-load", (_e, code, desc, url2, isMain) => {
     if (!isMain) return;
-    console.error(`[pet:render] did-fail-load code=${code} desc=${desc} url=${url2}`);
+    console.error(`[pet:render] did-fail-load agent=${agentId} code=${code} desc=${desc} url=${url2}`);
   });
   // renderer console 转发到 stderr（src/pet.ts 已打印 [pet] 前缀）：页面 JS 错误默认静默
   // （不进 stderr），Windows 白屏等故障全靠它定位。Electron 43 规范签名为单事件对象：
   // event.{message, level, lineNumber, sourceId}（老双参数签名会打 deprecation 警告）。
-  win.webContents.on("console-message", (event) => {
+  bw.webContents.on("console-message", (event) => {
     const msg = typeof event.message === "string" ? event.message : "";
     if (!msg) return;
     const line = event.lineNumber ? `:${event.lineNumber}` : "";
-    // verbose：带 level（0=verbose 1=info 2=warning 3=error）+ 来源文件
     if (VERBOSE) {
       const src = event.sourceId ? ` (${event.sourceId}${line})` : "";
-      console.error(`[pet:render:${event.level ?? "?"}]${src} ${msg}`);
+      console.error(`[pet:render:${event.level ?? "?"}:${agentId}]${src} ${msg}`);
     } else {
-      console.error(`[pet:render]${line} ${msg}`);
+      console.error(`[pet:render:${agentId}]${line} ${msg}`);
     }
   });
   // 渲染进程崩溃上报（Windows 透明窗口崩溃的主因；reason/exitCode 可精确定位）
-  win.webContents.on("render-process-gone", (_e, details) => {
-    send({ type: "crash", kind: "render", reason: details.reason, exitCode: details.exitCode, url: win.webContents.getURL() });
-    vlog("render-process-gone", JSON.stringify(details));
+  bw.webContents.on("render-process-gone", (_e, details) => {
+    send({ type: "crash", agent: agentId, kind: "render", reason: details.reason, exitCode: details.exitCode, url: bw.webContents.getURL() });
+    vlog("render-process-gone", JSON.stringify({ agentId, ...details }));
   });
   // 窗口关闭诊断（verbose）：window-all-closed 会因任一窗口被系统/驱动关闭而触发，导致 code 0 退出
-  win.on("closed", () => vlog("win closed"));
-  startCursorTracking();
+  bw.on("closed", () => {
+    vlog("window closed", agentId);
+    petWins.delete(agentId);
+  });
+  petWins.set(agentId, bw);
 }
 
 // ---- 全屏特效窗口（点击/拖尾铺满整个屏幕） ----
@@ -187,6 +226,18 @@ function createFxWindow() {
   vlog("fx window created", JSON.stringify({ x: b.x, y: b.y, width: b.width, height: b.height }));
 }
 
+// ---- 工具：根据 webContents 找所属 agent ----
+function agentBySender(sender) {
+  for (const [agentId, bw] of petWins) {
+    if (bw.webContents === sender) return agentId;
+  }
+  return MAIN_AGENT_ID;
+}
+
+function windowByAgent(agentId) {
+  return petWins.get(agentId) || null;
+}
+
 // ---- 特效坐标转发：桌宠窗口(全局 DIP) → 特效窗口(本地 CSS px) ----
 // screenX/screenY 是相对主显示器原点的全局 DIP，减去 fxWin 左上角即得本地坐标。
 function relayFx(channel, sx, sy) {
@@ -202,85 +253,108 @@ ipcMain.on("pet:fx-up", () => {
 });
 
 // ---- 全局光标轮询（~60Hz，DIP 坐标系内运算，供渲染层瞳孔跟随） ----
-// 总是发送（不跟踪情绪状态），主进程保持无状态；renderer 自行判断是否激活
+// 对每个桌宠窗口分别发送窗口本地坐标；renderer 自行判断是否激活
 const CURSOR_POLL_MS = 16;
 let cursorTimer = null;
-let lastCursor = { x: NaN, y: NaN };
+const lastCursors = new Map();
 
 function startCursorTracking() {
   if (cursorTimer) return;
   cursorTimer = setInterval(() => {
-    if (!win || win.isDestroyed() || !win.isVisible()) return;
     const p = screen.getCursorScreenPoint();      // 全局 DIP
-    const [wx, wy] = win.getPosition();           // 窗口 DIP，同源可直接相减
-    const x = p.x - wx;
-    const y = p.y - wy;                           // 窗口本地 CSS px（可在窗口外，注视效果所需）
-    if (Math.abs(x - lastCursor.x) < 1 && Math.abs(y - lastCursor.y) < 1) return; // 静止节流
-    lastCursor = { x, y };
-    win.webContents.send("pet:cursor", x, y);
+    for (const [agentId, bw] of petWins) {
+      if (bw.isDestroyed() || !bw.isVisible()) continue;
+      const [wx, wy] = bw.getPosition();
+      const x = p.x - wx;
+      const y = p.y - wy;                         // 窗口本地 CSS px（可在窗口外，注视效果所需）
+      const last = lastCursors.get(agentId);
+      if (Math.abs(x - (last?.x ?? NaN)) < 1 && Math.abs(y - (last?.y ?? NaN)) < 1) continue; // 静止节流
+      lastCursors.set(agentId, { x, y });
+      bw.webContents.send("pet:cursor", x, y);
+    }
   }, CURSOR_POLL_MS);
 }
 
-// ---- 拖动 IPC（16ms 节流） ----
-let dragPending = null;
-let dragTimer = null;
+// ---- 拖动 IPC（16ms 节流，按窗口独立） ----
+const dragPendingMap = new Map();
+const dragTimerMap = new Map();
 
-ipcMain.on("pet:drag", (_e, dx, dy) => {
-  if (!win) return;
-  dragPending = {
-    x: (dragPending?.x ?? win.getPosition()[0]) + dx,
-    y: (dragPending?.y ?? win.getPosition()[1]) + dy,
-  };
-  if (!dragTimer) {
-    dragTimer = setTimeout(() => {
-      dragTimer = null;
-      if (dragPending && win) {
-        win.setPosition(Math.round(dragPending.x), Math.round(dragPending.y));
-        dragPending = null;
+ipcMain.on("pet:drag", (e, dx, dy) => {
+  const agentId = agentBySender(e.sender);
+  const bw = windowByAgent(agentId);
+  if (!bw) return;
+  const prev = dragPendingMap.get(agentId) || { x: bw.getPosition()[0], y: bw.getPosition()[1] };
+  const pending = { x: prev.x + dx, y: prev.y + dy };
+  dragPendingMap.set(agentId, pending);
+  if (!dragTimerMap.has(agentId)) {
+    dragTimerMap.set(agentId, setTimeout(() => {
+      dragTimerMap.delete(agentId);
+      const p = dragPendingMap.get(agentId);
+      if (p && windowByAgent(agentId)) {
+        windowByAgent(agentId).setPosition(Math.round(p.x), Math.round(p.y));
+        dragPendingMap.delete(agentId);
       }
-    }, 16);
+    }, 16));
   }
 });
 
-ipcMain.on("pet:dragend", () => {
-  if (!win) return;
-  if (dragTimer) {
-    clearTimeout(dragTimer);
-    dragTimer = null;
+ipcMain.on("pet:dragend", (e) => {
+  const agentId = agentBySender(e.sender);
+  const bw = windowByAgent(agentId);
+  if (!bw) return;
+  const timer = dragTimerMap.get(agentId);
+  if (timer) {
+    clearTimeout(timer);
+    dragTimerMap.delete(agentId);
   }
-  if (dragPending) {
-    win.setPosition(Math.round(dragPending.x), Math.round(dragPending.y));
-    dragPending = null;
+  const pending = dragPendingMap.get(agentId);
+  if (pending) {
+    bw.setPosition(Math.round(pending.x), Math.round(pending.y));
+    dragPendingMap.delete(agentId);
   }
-  const [x, y] = win.getPosition();
-  savePosition(x, y);
-  send({ type: "moved", x, y });
+  const [x, y] = bw.getPosition();
+  savePosition(agentId, x, y);
+  send({ type: "moved", agent: agentId, x, y });
 });
 
-ipcMain.on("pet:shake", () => send({ type: "shake" }));
+ipcMain.on("pet:shake", (e) => send({ type: "shake", agent: agentBySender(e.sender) }));
 
-ipcMain.handle("pet:get-agent-config", () => ({ id: AGENT_ID, ...AGENT }));
+ipcMain.handle("pet:get-agent-config", (e) => {
+  const agentId = agentBySender(e.sender);
+  return { id: agentId, ...AGENTS[agentId] };
+});
 
 // ---- stdin 协议 ----
 let buffer = "";
 
+function sendToAgent(agentId, channel, payload) {
+  const bw = windowByAgent(agentId);
+  if (!bw || bw.isDestroyed()) return false;
+  bw.webContents.send(channel, payload);
+  return true;
+}
+
 function handleMessage(msg) {
-  if (!win) return;
   vlog("stdin msg", JSON.stringify(msg));
   switch (msg.type) {
-    case "set_emotion":
-      if (AGENT.emotions[msg.name]) {
-        win.webContents.send("pet:emotion", msg.name);
+    case "set_emotion": {
+      const id = msg.agent && AGENTS[msg.agent] ? msg.agent : MAIN_AGENT_ID;
+      if (AGENTS[id].emotions[msg.name]) {
+        if (!sendToAgent(id, "pet:emotion", msg.name)) send({ type: "error", message: `no window for ${id}` });
       } else {
         send({ type: "error", message: `unknown emotion: ${msg.name}` });
       }
       break;
+    }
     case "reset":
-      win.webContents.send("pet:reset");
+      // 所有角色窗口统一恢复默认待机
+      for (const [id] of petWins) sendToAgent(id, "pet:reset", null);
       break;
-    case "text":
-      win.webContents.send("pet:text", { kind: msg.kind, data: msg.data });
+    case "text": {
+      const id = msg.agent && AGENTS[msg.agent] ? msg.agent : MAIN_AGENT_ID;
+      sendToAgent(id, "pet:text", { kind: msg.kind, data: msg.data });
       break;
+    }
     case "quit":
       app.quit();
       break;
@@ -321,9 +395,11 @@ app.whenReady().then(() => {
     }
     vlog("platform:", process.platform, "electron:", process.versions.electron, "chrome:", process.versions.chrome);
     vlog("displays:", JSON.stringify(screen.getAllDisplays().map((d) => d.bounds)));
+    vlog("agents:", JSON.stringify(AGENT_IDS));
   }
-  createWindow();
+  AGENT_IDS.forEach((id, i) => createPetWindow(id, i));
   createFxWindow();
+  startCursorTracking();
 });
 
 app.on("window-all-closed", () => {

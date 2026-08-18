@@ -37,6 +37,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
 - **语音**：实时流式 TTS + STT。
 - **桌面宠物**：透明无边框置顶 Electron 窗口，Spine 骨骼动画待机 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
+- **多角色群聊**：主 Agent 单窗口 + 子 Agent 窗口同屏；每轮主 Agent 回复完后子 Agent 依次轮询接话，`keep_silent` 可跳过某个角色的本轮发言。
 
 
 ---
@@ -60,12 +61,12 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | `thinkingLevel` | 思考等级 | `medium` |
 | `language` | 界面语言（`auto`/`zh`/`en`） | `auto` |
 | `mainAgent` | 主 Agent（`arona`/`plana`） | `arona` |
+| `subAgents` | 启用的子 Agent 数组 | `[]` |
 | `ttsEnabled` | 启用 TTS | `true` |
 | `sttEnabled` | 启用 STT | `true` |
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
 | `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
-| `ttsVoice` | （旧版字段）音色克隆 voice_id，已迁移至 `~/.arona/voices.json` | — |
 | `ttsSampleRate` | TTS 采样率 | `22050` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |
@@ -84,11 +85,11 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | 路径 | 说明 |
 |---|---|
 | `settings.json` | 本地总配置文件，字段见 [配置](#配置) |
-| `voices.json` | 每角色音色克隆 voice_id（`{ "arona": ..., "plana": ... }`） |
+| `voices.json` | 角色音色克隆 voice_id |
 | `MEMORY.md` | 持久记忆 |
 | `sessions/` | 已保存会话 |
 | `skills/` | 自定义 Skill |
-| `undo/` | undo/redo 快照（按工作目录分桶） |
+| `undo/` | undo/redo 快照 |
 | `pet.json` | 桌宠窗口位置持久化 |
 
 ---
@@ -97,9 +98,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 
 - **桌宠**：透明无边框置顶窗口，以 Spine 骨骼动画 `Idle_01` 作为待机基底循环播放；Agent 每段发言前调用 `change_emotion` 切换情绪；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发全屏点击与拖尾特效；TTS 逐句播放，情绪保持到 TTS 播完自动恢复默认。
 
-  内置双角色：`arona`（阿洛娜）与 `plana`（普拉娜），用 `/change-agent` 或 settings.json 的 `mainAgent` 字段切换
-  
-  切换前会自动保存当前会话。
+  `/change-agent` 可单选主 Agent + 多选子 Agent，多个角色以独立窗口同屏显示；子 Agent 仅可使用 `change_emotion` 与 `keep_silent` 两个纯聊天工具。
 - **STT 热键**：右 Cmd 键，长按 ≥ 2 秒触发一次性录音。
 - **macOS 权限**：全局键盘监听需「系统设置 → 隐私与安全性 → 辅助功能」为Python授权；Computer Use 截图需授予终端「屏幕录制」权限。
 

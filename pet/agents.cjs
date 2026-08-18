@@ -104,6 +104,94 @@ const PLANA = {
   noGazePresets: ["05", "07"],
 };
 
-const AGENTS = { arona: ARONA, plana: PLANA };
+// ---- 精灵图切换式角色（Shiroko / Hoshino）----
+// 与 Arona/Plana 的骨脸完全不同：仅 root / PC_Layer / halo 三骨，无 Head_Rot、无眼骨；
+// 表情 = 数字预设整张 sprite 切换（Shiroko 切 00_default slot，Hoshino 切全 11 slot）。
+// 仅 Idle_01（身体摆动）+ Eye_Close_01（眨眼），无 Look/Pat 动画。
+// 闭眼/禁跟随集合为空：没有骨脸瞳孔跟随，自然不需要这些集合。
+
+const SHIROKO = {
+  id: "shiroko",
+  // ⚠️ 资源直接放在 assets/blue-archive/shiroko/（无 spine/ 子目录，与 arona/plana 不同）
+  spineBase: "../../assets/blue-archive/shiroko/",
+  // .json = skel_to_json.cjs 导出 + gen_sway.cjs 注入衣摆微动（Idle_01 deform）；
+  // 重新生成顺序：先 skel_to_json 再 gen_sway（只跑 skel_to_json 会覆盖掉形变）
+  skelFile: "shiroko_spr.json",
+  atlasFile: "shiroko_spr.atlas.txt",
+  // bounds 1133×2287（高 95.8%）→ 保持 1.0
+  extraScale: 1,
+  anims: {
+    idle: "Idle_01",
+    blink: "Eye_Close_01",
+    // 无 pat/look 动画：摸头走 emotion 预设 + PC_Layer 微倾斜
+  },
+  bones: {},
+  // 用户 2026-08-18 对照图库重绑：数字预设 00~17+99（19 个）
+  emotions: {
+    angry: "06",
+    assured: "05",
+    curious: "02",
+    delighted: "03",
+    desire: "09",
+    dizzy: "08",
+    doubt: "10",
+    dreaming: "03",
+    enjoy: "03",
+    excited: "03",
+    jealous: "02",
+    love: "04",
+    saying: "02",
+    scared: "07",
+    shame: "08",
+    smile: "03",
+    tired: "16",
+  },
+  closedEyePresets: [],
+  noGazePresets: [],
+  // 摸头：emotion 预设 + 仅旋转脸部/头发 Mesh（tiltSlots），避免 PC_Layer 整身晃动
+  pat: { type: "emotion", emotion: "enjoy", tiltSlots: ["00_default", "Hair_Cover", "eyeclose"] },
+};
+
+const HOSHINO = {
+  id: "hoshino",
+  spineBase: "../../assets/blue-archive/hoshino/",
+  // .json = skel_to_json 导出 + meshify_region 身体网格化(6×10) + gen_sway 衣摆形变；
+  // 重新生成顺序：skel_to_json → meshify_region → gen_sway（任何前一步都会覆盖后一步产物）
+  skelFile: "hoshino_spr.json",
+  atlasFile: "hoshino_spr.atlas.txt",
+  // bounds 1161×2074（高 84.8%）→ 1.1 使身高接近 Arona
+  extraScale: 1.1,
+  anims: {
+    idle: "Idle_01",
+    blink: "Eye_Close_01",
+  },
+  bones: {},
+  // 用户 2026-08-18 对照图库重绑：数字预设 00~17+99（19 个）
+  emotions: {
+    angry: "06",
+    assured: "01",
+    curious: "04",
+    delighted: "03",
+    desire: "17",
+    dizzy: "12",
+    doubt: "17",
+    dreaming: "11",
+    enjoy: "11",
+    excited: "03",
+    jealous: "07",
+    love: "12",
+    saying: "17",
+    scared: "12",
+    shame: "12",
+    smile: "14",
+    tired: "99",
+  },
+  closedEyePresets: [],
+  noGazePresets: [],
+  // 用户需求：星野不做摸头适配
+  pat: { type: "none" },
+};
+
+const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO };
 
 module.exports = { AGENTS };

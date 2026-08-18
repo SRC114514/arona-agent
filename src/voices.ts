@@ -15,6 +15,8 @@ export const VOICES_FILE = join(ARONA_DIR, "voices.json");
 export const VOICE_AUDIO: Record<AgentId, string> = {
   arona: join(PROJECT_ROOT, "assets", "blue-archive", "arona", "voice.mp3"),
   plana: join(PROJECT_ROOT, "assets", "blue-archive", "plana", "voice.mp3"),
+  shiroko: join(PROJECT_ROOT, "assets", "blue-archive", "shiroko", "voice.mp3"),
+  hoshino: join(PROJECT_ROOT, "assets", "blue-archive", "hoshino", "voice.mp3"),
 };
 
 function loadVoices(): Record<string, string> {
@@ -64,7 +66,7 @@ export function setVoiceId(agent: AgentId, voiceId: string): void {
   writeFileSync(VOICES_FILE, JSON.stringify(voices, null, 2) + "\n");
 }
 
-/** 尚缺音色的角色 id 列表。 */
+/** 尚缺音色的全部角色列表（主 Agent + 子 Agent）。 */
 export function getMissingAgents(): AgentId[] {
   return AGENT_IDS.filter((id) => !hasVoice(id));
 }

@@ -21,6 +21,9 @@ let EMOTION_PRESET = {};
 // 当前稳定态情绪名（"spine" 基底时为 null）；同名重复路由跳过（幂等）
 let currentEmotion = null;
 
+// 角色是否禁用摇动摸头（Hoshino pat.type = "none"）；模块加载后由 init 读取配置决定
+let patDisabled = false;
+
 // 路由入口：摸头中收到新指令先结束摸头（crossfade 回 Idle），再正常路由。
 // 瞬时切换语义：setAnimation 直接 snap（本运行时高 track attachment 恒覆盖低 track），无过渡。
 function routeTo(target) {
@@ -112,6 +115,7 @@ function onMouseDown(e) {
   const w = window.innerWidth;
   const h = window.innerHeight;
   onHead =
+    !patDisabled &&
     e.clientX >= w * HEAD_BOX.xMin && e.clientX <= w * HEAD_BOX.xMax &&
     e.clientY >= h * HEAD_BOX.yMin && e.clientY <= h * HEAD_BOX.yMax;
   lastX = e.screenX;
@@ -209,6 +213,7 @@ async function init() {
   // 情绪预设映射：agents.cjs（与 main 进程白名单同源）值 = 预设动画名；
   // closedEye/noGaze 集合同样来自当前 Agent 配置
   const cfg = await window.petAPI.getAgentConfig();
+  patDisabled = cfg.pat?.type === "none";
   closedEyePresets = new Set(cfg.closedEyePresets || []);
   noGazePresets = new Set(cfg.noGazePresets || []);
   for (const [name, anim] of Object.entries(cfg.emotions || {})) {

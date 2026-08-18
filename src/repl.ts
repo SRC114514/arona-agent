@@ -19,6 +19,8 @@ import { PYTHON_DIR } from "./config.ts";
 import { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
 import { spawnCompat } from "./utils/spawn.ts";
+import { initSubAgent } from "./agent.ts";
+import { getMainAgent, getSubAgents, getAgentLabel, type AgentId, type SubAgentId } from "./agent_registry.ts";
 
 // STT 长按阈值：按下录音热键持续 ≥ 该毫秒数并在释放时才触发录音；提前松开视为误触
 const STT_HOLD_MS = 2000;
@@ -33,8 +35,9 @@ export class Repl {
   private sigintCount = 0;
   private sigintTimer: NodeJS.Timeout | null = null;
   // 实时流式 TTS 管道（python/tts_stream.py 常驻进程；text_delta 边生成边合成边播放）
+  // 音色按当前发言角色动态切换（setVoice），isEnabled 按该角色是否有克隆音色判断
   private ttsStream = new TtsStream(
-    () => voice.isTtsEnabled(),
+    (agentId) => voice.isTtsEnabledFor(agentId),
     () => {
       // TTS 播放结束：先隐藏桌宠气泡，再恢复默认待机
       this.hidePetBubble();
@@ -43,6 +46,15 @@ export class Repl {
   );
   // 回合结束标志：中间段的 play_end 不触发 pet.reset，只有回合结束后才恢复桌宠
   private turnEnded = false;
+  // 子 Agent session 集合（shiroko/hoshino；按 settings 启用）
+  private subSessions = new Map<SubAgentId, AgentSession>();
+  // 群聊文本视图：主 + 子 的纯文本对话，用于每轮无状态注入子 Agent
+  private chatHistory: string[] = [];
+  // 当前正在发言的 session / agent（中断时 abort 的是它，而不是固定主 session）
+  private activeSession: AgentSession;
+  private activeAgentId: AgentId;
+  // TTS 禁用时 5s 后隐藏气泡的定时器
+  private bubbleHideTimer: NodeJS.Timeout | null = null;
   private onExit: () => void;
   private onNewSession: () => Promise<{
     session: AgentSession;
@@ -84,6 +96,9 @@ export class Repl {
     this.onNewSession = onNewSession;
     this.resumedMessages = resumedMessages;
     this.currentSessionPath = initialSessionPath;
+    this.activeSession = session;
+    this.activeAgentId = getMainAgent();
+    this.chatHistory = this.buildChatHistory(session.messages);
 
     this.undoManager = new UndoManager(process.cwd());
     this.undoManager.load();
@@ -106,8 +121,9 @@ export class Repl {
       () => this.ttsStream.endSegment(),
       (delta) => this.ttsStream.pushText(delta),
       (kind, data) => {
-        if (pet.isRunning) pet.sendText(kind, data);
+        if (pet.isRunning) pet.sendText(this.activeAgentId, kind, data);
       },
+      getAgentLabel(getMainAgent()),
     );
     this.rendererUnsub = this.renderer.subscribe(this.session);
 
@@ -120,7 +136,7 @@ export class Repl {
       clearTimeout(this.bubbleHideTimer);
       this.bubbleHideTimer = null;
     }
-    if (pet.isRunning) pet.sendText("tts_end", "");
+    if (pet.isRunning) pet.sendText(this.activeAgentId, "tts_end", "");
   }
 
   /**
@@ -143,7 +159,7 @@ export class Repl {
     this.rl.on("SIGINT", () => {
       // 正在执行任务：第一次中断任务，第二次（紧随其后）直接退出
       if (this.isProcessing) {
-        this.session.abort().catch(() => {});
+        this.activeSession.abort().catch(() => {});
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
         this.ttsStream.cancel(); // 打断流式 TTS，中断后不再播放后续内容
@@ -194,8 +210,12 @@ export class Repl {
         this.session = result.session;
         this.modelRuntime = result.modelRuntime;
         this.loader = result.loader;
+        this.activeSession = this.session;
+        this.activeAgentId = getMainAgent();
         this.currentSessionPath = null; // 新会话清除源文件路径，退出时另存为新文件
+        this.chatHistory = []; // 新会话开始全新的群聊文本视图
         this.rendererUnsub?.();
+        this.renderer.setSpeakerLabel(getAgentLabel(getMainAgent()));
         this.rendererUnsub = this.renderer.subscribe(this.session);
       },
       runAgentTurn: (text: string) => this.runRawTurn(text),
@@ -359,7 +379,7 @@ export class Repl {
     }
     if (this.isProcessing) {
       // 任务中按热键：先中断当前 Agent，再开始录音
-      this.session.abort().catch(() => {});
+      this.activeSession.abort().catch(() => {});
       this.isProcessing = false;
       this.aborted = true; // 阻止 processInput finally 再次 prompt
       this.ttsStream.cancel(); // 打断流式 TTS（STT 接管输入前清掉残余播放）
@@ -415,6 +435,7 @@ export class Repl {
     try {
       const messages = memory.loadSession(path);
       this.session.agent.state.messages = messages;
+      this.chatHistory = this.buildChatHistory(messages);
       memory.resetConversationFlag();
       this.currentSessionPath = path; // 退出时覆盖保存回此文件
       console.clear();
@@ -526,7 +547,7 @@ export class Repl {
         if (key.name === "tab") { return; } // 菜单内 Tab 无操作
       } else if (key.name === "escape" && this.isProcessing) {
         // 菜单关闭且正在执行任务：Esc 中断当前任务（不退出 CLI）
-        this.session.abort().catch(() => {});
+        this.activeSession.abort().catch(() => {});
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
         this.ttsStream.cancel(); // 打断流式 TTS
@@ -605,10 +626,166 @@ export class Repl {
     await this.runRawTurn(this.parseInput(input));
   }
 
+  /** 从已加载消息构建群聊文本视图（用于恢复会话后子 Agent 能感知历史）。 */
+  private buildChatHistory(messages: any[]): string[] {
+    const lines: string[] = [];
+    for (const m of messages) {
+      if (m.role === "user") {
+        const text = extractTextFromMessage(m.content);
+        if (text) lines.push(`${t("Sensei：", "Sensei: ")}${text}`);
+      } else if (m.role === "assistant") {
+        const text = extractTextFromMessage(m.content);
+        if (text) {
+          const speaker = typeof m.speaker === "string" && m.speaker ? m.speaker : getMainAgent();
+          lines.push(`${getAgentLabel(speaker as AgentId)}：${text}`);
+        }
+      }
+    }
+    return lines;
+  }
+
+  /** 把 renderer 订阅切到指定角色 session，并记录当前发言者。 */
+  private setActiveAgent(agentId: AgentId, session: AgentSession): void {
+    this.activeAgentId = agentId;
+    this.activeSession = session;
+    this.renderer.setSpeakerLabel(getAgentLabel(agentId));
+    this.rendererUnsub?.();
+    this.rendererUnsub = this.renderer.subscribe(session);
+  }
+
+  /** 按 settings.json 当前启用的子 Agent 初始化/补齐子 session。 */
+  private async ensureSubSessions(): Promise<void> {
+    const enabled = getSubAgents();
+    for (const id of enabled) {
+      if (this.subSessions.has(id)) continue;
+      try {
+        const { session } = await initSubAgent(id, this.modelRuntime);
+        this.subSessions.set(id, session);
+      } catch (err) {
+        console.error(chalk.red(t(
+          `初始化子 Agent ${getAgentLabel(id)} 失败：${err instanceof Error ? err.message : err}，已跳过该角色。`,
+          `Failed to init sub-agent ${getAgentLabel(id)}: ${err instanceof Error ? err.message : err}; skipping it.`,
+        )));
+      }
+    }
+  }
+
   /**
-   * 走完整 Agent 回合生命周期（markConversation / undo checkpoint / isProcessing /
-   * pet.reset / abort），但不展开 @文件 / !命令。
-   * 供 /skill 等需要原样提交内容（含 markdown 中的 @ / !）的场景使用。
+   * 等待当前角色的 TTS 播放完毕（或禁用 TTS 时固定 5 秒）。
+   * 这是"主 Agent 回复完 → 子 Agent 轮询"的节奏控制点。
+   */
+  private async waitTurnSettled(agentId: AgentId): Promise<void> {
+    if (!voice.isTtsEnabledFor(agentId)) {
+      await new Promise((r) => setTimeout(r, 5000));
+      return;
+    }
+    // 先等最多 2s 让 play_start 到达（若文本全被长句过滤，不会播放）
+    const t0 = Date.now();
+    await new Promise<void>((resolve) => {
+      const iv = setInterval(() => {
+        if (this.ttsStream.isPending) {
+          clearInterval(iv);
+          resolve();
+          return;
+        }
+        if (Date.now() - t0 > 2000) {
+          clearInterval(iv);
+          resolve();
+        }
+      }, 50);
+    });
+    if (this.ttsStream.isPending) {
+      await new Promise<void>((resolve) => {
+        const iv = setInterval(() => {
+          if (!this.ttsStream.isPending) {
+            clearInterval(iv);
+            resolve();
+          }
+        }, 100);
+        setTimeout(() => {
+          clearInterval(iv);
+          resolve();
+        }, 30000);
+      });
+    }
+  }
+
+  /** 从 session 新增消息中提取本轮 assistant 纯文本（用于 chatHistory / 同步主 session）。 */
+  private extractNewAssistantText(stateMessages: any[], startLen: number): string {
+    const texts: string[] = [];
+    for (const m of stateMessages.slice(startLen)) {
+      if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+      const text = m.content
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text || "")
+        .join("");
+      if (text.trim()) texts.push(text);
+    }
+    return texts.join("\n").trim();
+  }
+
+  /**
+   * 运行单个 Agent 的一轮（主或子）。
+   * - 切 renderer/TTS 到该角色；
+   * - 子 Agent 先注入 chatHistory 文本视图（无状态），再用原始 input prompt；
+   * - 提取回复：主 Agent 标记 speaker 便于落盘；子 Agent 同时追加到主 session.messages（群聊）。
+   * 返回该轮文本（可能为空，例如 keep_silent）。
+   */
+  private async runOneAgent(
+    session: AgentSession,
+    agentId: AgentId,
+    input: string,
+    isSub: boolean,
+  ): Promise<string> {
+    this.setActiveAgent(agentId, session);
+    // 段边界切音色：即使目标角色无音色也要更新 currentAgent，保证 isTtsEnabledFor 判断正确
+    this.ttsStream.setVoice(agentId);
+
+    let stateMessages = session.agent.state.messages as any[];
+    if (isSub) {
+      // 无状态注入：子 Agent 不维护长历史，只把过去群聊文本视图作为 user 消息放进来
+      const transcript = this.chatHistory.join("\n\n");
+      session.agent.state.messages = [
+        {
+          role: "user",
+          content: [{ type: "text", text: transcript ? `${transcript}\n\n${t("（以上是群聊记录，请自然接话）", "(This is the group-chat log, join in naturally.)")}` : "" }],
+        },
+      ] as any;
+      stateMessages = session.agent.state.messages as any[];
+    }
+
+    const startLen = stateMessages.length;
+    try {
+      await session.prompt(input);
+    } catch (err) {
+      console.error(chalk.red(t("\n错误：", "\nError: ") + (err instanceof Error ? err.message : err)));
+      return "";
+    }
+
+    const text = this.extractNewAssistantText(stateMessages, startLen);
+    if (!text) return "";
+
+    // 主 Agent 的 assistant 消息补 speaker 标记（历史回放显示角色名）
+    if (!isSub) {
+      for (const m of stateMessages.slice(startLen)) {
+        if (m.role === "assistant") m.speaker = agentId;
+      }
+    } else {
+      // 子 Agent 回复追加进主 session.messages，形成共享群聊历史（主 Agent 下轮可见）
+      (this.session.agent.state.messages as any[]).push({
+        role: "assistant",
+        speaker: agentId,
+        content: [{ type: "text", text }],
+      });
+    }
+    this.chatHistory.push(`${getAgentLabel(agentId)}：${text}`);
+    return text;
+  }
+
+  /**
+   * 走完整多角色回合生命周期（markConversation / undo checkpoint / isProcessing /
+   * 主 Agent → settle → 子 Agent 逐个 settle / pet.reset / abort）。
+   * 不展开 @文件 / !命令；供普通输入与 /skill 共用。
    */
   private async runRawTurn(input: string) {
     memory.markConversation();
@@ -624,7 +801,27 @@ export class Repl {
     // 由 agent 调用 change_emotion 一步到位地确定本回合情绪，避免先 saying 再切换的跳变
 
     try {
-      await this.session.prompt(input);
+      await this.ensureSubSessions();
+      this.chatHistory.push(`${t("Sensei：", "Sensei: ")}${input}`);
+
+      // 1. 主 Agent 回复
+      await this.runOneAgent(this.session, getMainAgent(), input, false);
+      if (this.aborted) return;
+      await this.waitTurnSettled(getMainAgent());
+      if (this.aborted) return;
+
+      // 2. 子 Agent 逐个轮询回复（每个子 Agent 回复后等待其 TTS 播完/静音 5s）
+      for (const subId of getSubAgents()) {
+        const subSession = this.subSessions.get(subId);
+        if (!subSession) continue;
+        await this.runOneAgent(subSession, subId, input, true);
+        if (this.aborted) return;
+        await this.waitTurnSettled(subId);
+        if (this.aborted) return;
+      }
+
+      // 3. 回合结束：renderer 订阅切回主 session，方便下一轮 prompt 展示
+      this.setActiveAgent(getMainAgent(), this.session);
     } catch (err) {
       console.error(chalk.red(t("\n错误：", "\nError: ") + (err instanceof Error ? err.message : err)));
     } finally {
@@ -639,9 +836,8 @@ export class Repl {
       // 回合结束：恢复桌宠到 idle
       // - TTS 启用 + 无残余播放 → 立即 reset；有残余由 onIdle(play_end) 兜底
       // - TTS 禁用（--no-voice / 缺音色 / 切到无音色角色）→ 5s 后再撤表情和气泡
-      //   （voice.isTtsEnabled() 统一判断三种静音原因，一个入口覆盖）
       this.turnEnded = true;
-      if (voice.isTtsEnabled()) {
+      if (voice.isTtsEnabledFor(this.activeAgentId)) {
         if (!this.ttsStream.isPending) pet.reset();
       } else {
         this.scheduleBubbleHide();
@@ -684,8 +880,25 @@ export class Repl {
     }
     stopPet();
     this.session.dispose();
+    for (const subSession of this.subSessions.values()) {
+      try {
+        subSession.dispose();
+      } catch {
+        // 子 session 清理失败不影响退出
+      }
+    }
 
     this.onExit();
     process.exit(0);
   }
+}
+
+/** 从消息 content 提取纯文本（兼容 string 或 content 数组）。 */
+function extractTextFromMessage(content: any): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b: any) => b.type === "text")
+    .map((b: any) => b.text || "")
+    .join("");
 }

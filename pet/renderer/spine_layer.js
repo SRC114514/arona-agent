@@ -62,6 +62,13 @@
   let currentPreset = null;     // track4 当前情绪预设动画名（null = 无情绪）
   let presetClosedEye = false;  // 当前预设是否闭眼（闭眼预设期间禁止眨眼，防 cover 被眨眼末帧置 null 造成睁眼闪）
   let presetGaze = true;        // 当前预设是否保留瞳孔跟随（闭眼 / 禁跟随预设为 false）
+  // 精灵图角色的摸头：记录进入摸头前的情绪预设，结束摸头时还原（若无则摘除预设）
+  let patPrevPreset = null;
+  // 精灵图角色摸头微倾骨（如 PC_Layer）；骨脸角色为 null
+  let tiltBone = null;
+  let tiltRestRot = 0;
+  // 精灵图角色摸头“仅头动”用的 mesh 槽位：直接旋转脸部/头发 Mesh 顶点，避免整身晃动
+  let tiltSlots = []; // { slot, att, base, pivotX, pivotY }
   // 调试用身体冻结：非 null 时每帧把 track0 Idle_01 的 trackTime 钉在固定相位（gallery 截图用，
   // 保证不同批次截图身体姿势完全一致、可直接像素对比；桌宠正常运行不设置，零影响）
   let pinBodyT = null;
@@ -125,16 +132,92 @@
   // 2) 摸头 Head_Rot 跟随：仅 patting 时启用（用户确认摸头要"和光标大致方向同步"；
   //    空闲注视不歪头）。rotation 是角度量，附件补偿后与屏幕方向一致（实测 +rotation = 向右歪，
   //    光标左应给负 rotation；水平偏移比例映射，勿用 atan2——左侧 ±180° 断点会方向反转）。
+  // ---- 精灵图角色“仅头动”辅助：直接旋转脸部/头发 Mesh 顶点 ----
+  function refreshTiltSlot(t) {
+    const att = t.slot.attachment;
+    if (!att || !att.vertices) {
+      t.att = null;
+      t.base = null;
+      return false;
+    }
+    if (t.att === att) return true;
+    t.att = att;
+    t.base = Array.from(att.vertices);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < t.base.length; i += 2) {
+      const x = t.base[i], y = t.base[i + 1];
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    if (!isFinite(minX) || !isFinite(minY)) return false;
+    t.pivotX = (minX + maxX) / 2;
+    t.pivotY = (minY + maxY) / 2;
+    return true;
+  }
+
+  function prepareTiltSlots() {
+    tiltSlots = [];
+    if (!skeleton || !agent.pat || agent.pat.type !== "emotion" || !Array.isArray(agent.pat.tiltSlots)) return;
+    for (const name of agent.pat.tiltSlots) {
+      const slot = skeleton.findSlot(name);
+      if (!slot) continue;
+      const t = { slotName: name, slot, att: null, base: null, pivotX: 0, pivotY: 0 };
+      refreshTiltSlot(t);
+      tiltSlots.push(t);
+    }
+  }
+
+  function applySlotTilt(deg) {
+    const rad = (deg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    for (const t of tiltSlots) {
+      if (!refreshTiltSlot(t)) continue;
+      const v = t.att.vertices;
+      for (let i = 0; i < v.length; i += 2) {
+        const x = t.base[i] - t.pivotX;
+        const y = t.base[i + 1] - t.pivotY;
+        v[i] = t.pivotX + x * cos - y * sin;
+        v[i + 1] = t.pivotY + x * sin + y * cos;
+      }
+    }
+  }
+
+  function restoreSlotTilt() {
+    for (const t of tiltSlots) {
+      if (!t.att || !t.base) continue;
+      for (let i = 0; i < t.att.vertices.length; i++) t.att.vertices[i] = t.base[i];
+    }
+  }
+
   function applyManualBones() {
     const cursor = cursorPos;
-    const halfW = renderer.camera.viewportWidth / 2;
-    const halfH = renderer.camera.viewportHeight / 2;
+    if (!skeleton) return;
+    // 无头/眼骨的角色（Shiroko/Hoshino 精灵图骨架）直接短路；顶多处理 PC_Layer 微倾或 Mesh 头动
+    const hasHead = !!headBone;
+    const hasEyes = !!(eyeL && eyeR);
+    const hasTilt = !!tiltBone;
+    const hasSlotTilt = tiltSlots.length > 0;
+    if (!hasHead && !hasEyes && !hasTilt && !hasSlotTilt) {
+      return;
+    }
+    let halfW = 1;
+    let halfH = 1;
+    if (mode === "webgl" && renderer) {
+      halfW = renderer.camera.viewportWidth / 2;
+      halfH = renderer.camera.viewportHeight / 2;
+    } else if (cam2d.scale > 0) {
+      halfW = cam2d.cw / (2 * cam2d.scale);
+      halfH = cam2d.ch / (2 * cam2d.scale);
+    }
 
-    // ---- 摸头 Head_Rot 跟随（仅摸头）----
+    // ---- 摸头 Head_Rot 跟随（骨脸角色，仅摸头）----
     // 方向（用户实测定标）：光标在头左侧 → 需要正 rotation（+rotation = 头向左微歪），
     // 与数学直觉相反（本 rig 附件旋转补偿的符号约定所致），勿再"修正"符号。
     let target = 0;
-    if (cursor && patting) {
+    if (cursor && patting && hasHead) {
       const p = windowToSkeleton(cursor.x, cursor.y);
       const dx = p.x - headBone.x;
       target = clamp(-dx / halfW, -1, 1) * PAT_MAX_DEG;
@@ -143,12 +226,31 @@
     const k = d > HEAD_FAR_DEG ? HEAD_SMOOTH_FAR : HEAD_SMOOTH_NEAR;
     headRotSmoothed += (target - headRotSmoothed) * k;
     if (target === 0 && Math.abs(headRotSmoothed) < 0.05) headRotSmoothed = 0;
-    headBone.rotation = headRestRot + headRotSmoothed;
+    if (hasHead) headBone.rotation = headRestRot + headRotSmoothed;
+
+    // ---- 精灵图角色摸头微倾（仅头动：旋转脸部/头发 Mesh 顶点，不再转 PC_Layer 整身）----
+    if (hasSlotTilt) {
+      if (patting) {
+        const cw = canvas.clientWidth || window.innerWidth;
+        const tiltTarget = cursor ? clamp(-(cursor.x - cw / 2) / (cw / 2), -1, 1) * PAT_MAX_DEG : 0;
+        applySlotTilt(tiltTarget);
+      } else {
+        restoreSlotTilt();
+      }
+    } else if (hasTilt) {
+      let tiltTarget = 0;
+      if (cursor && patting) {
+        const p = windowToSkeleton(cursor.x, cursor.y);
+        const dx = p.x - tiltBone.x;
+        tiltTarget = clamp(-dx / halfW, -1, 1) * PAT_MAX_DEG;
+      }
+      tiltBone.rotation = tiltRestRot + tiltTarget;
+    }
 
     // ---- 眼球跟随（仅空闲注视；摸头闭眼时跳过——眼 cover 挂在眉毛骨上，跟眼球位移会露馅）----
     let eyeTX = 0;
     let eyeTY = 0;
-    if (cursor && gazeEnabled && !patting && eyeL && eyeR) {
+    if (cursor && gazeEnabled && !patting && hasEyes && hasHead) {
       const p = windowToSkeleton(cursor.x, cursor.y);
       let nx = (p.x - headBone.x) / halfW;
       let ny = (p.y - headBone.y) / halfH;
@@ -164,7 +266,7 @@
     const ek = ed > 2 ? HEAD_SMOOTH_FAR : HEAD_SMOOTH_NEAR;
     eyeOff.x += (eyeTX - eyeOff.x) * ek;
     eyeOff.y += (eyeTY - eyeOff.y) * ek;
-    if (eyeL) {
+    if (hasEyes) {
       // 世界偏移 → 骨局部帧：[[a,b],[c,d]] 的逆（含旋转/缩放/镜像，逐帧取当前矩阵）
       const det = eyeL.a * eyeL.d - eyeL.b * eyeL.c;
       if (Math.abs(det) > 1e-6) {
@@ -261,24 +363,35 @@
         agent.spineBase
       );
     }
-    assetManager.loadBinary(agent.skelFile);
+    // skelFile 支持两种格式：.skel 二进制（SkeletonBinary）与 .json（SkeletonJson，
+    // 由 pet/tools/skel_to_json.cjs 从 skel 导出，供 gen_sway 等离线工具注入形变动画）
+    const isJson = agent.skelFile.endsWith(".json");
+    if (isJson) assetManager.loadText(agent.skelFile);
+    else assetManager.loadBinary(agent.skelFile);
     assetManager.loadTextureAtlas(agent.atlasFile);
     const ok = await waitLoad(assetManager);
     if (!ok) throw new Error("Spine 资源加载失败: " + JSON.stringify(assetManager.errors));
 
     const atlas = assetManager.get(agent.atlasFile);
     const atlasLoader = new spine.AtlasAttachmentLoader(atlas);
-    const skelData = new spine.SkeletonBinary(atlasLoader).readSkeletonData(
-      assetManager.get(agent.skelFile)
-    );
+    const skelData = isJson
+      ? new spine.SkeletonJson(atlasLoader).readSkeletonData(
+          JSON.parse(assetManager.get(agent.skelFile))
+        )
+      : new spine.SkeletonBinary(atlasLoader).readSkeletonData(
+          assetManager.get(agent.skelFile)
+        );
     skeleton = new spine.Skeleton(skelData);
     skeleton.setToSetupPose();
     skeleton.updateWorldTransform();
 
-    headBone = skeleton.findBone(agent.bones.head);
+    headBone = agent.bones?.head ? skeleton.findBone(agent.bones.head) : null;
     headRestRot = headBone ? headBone.data.rotation : 0;
-    eyeL = skeleton.findBone(agent.bones.eyeL);
-    eyeR = skeleton.findBone(agent.bones.eyeR);
+    eyeL = agent.bones?.eyeL ? skeleton.findBone(agent.bones.eyeL) : null;
+    eyeR = agent.bones?.eyeR ? skeleton.findBone(agent.bones.eyeR) : null;
+    tiltBone = agent.pat?.tiltBone ? skeleton.findBone(agent.pat.tiltBone) : null;
+    tiltRestRot = tiltBone ? tiltBone.data.rotation : 0;
+    prepareTiltSlots();
 
     const stateData = new spine.AnimationStateData(skelData);
     stateData.defaultMix = DEFAULT_MIX;
@@ -305,6 +418,14 @@
     });
   }
 
+  // 情绪预设内部实现（不检查 patting 守卫；摸头内部路径复用）
+  function applyEmotionPreset(name, closedEye, gaze) {
+    currentPreset = name;
+    presetClosedEye = !!closedEye;
+    presetGaze = gaze !== false;
+    state.setAnimation(TRACK.emotion, name, false);
+  }
+
   // ---- 对外 API（renderer.js / visual_test.cjs 使用）----
   window.SpineLayer = {
     init,
@@ -317,8 +438,10 @@
     // 空闲注视开关（仅基底稳定态开启；情绪预设显示时关闭）
     // 注视姿态（Look_01_M 单帧 pose）由非循环 track 的"残留末帧"特性天然持有；
     // 回中动画播完显式 clearTrack（同上：防残留 track 干扰其它叠加层）
+    // 精灵图角色（无 look 动画）退化为仅记录 gazeEnabled，不播任何动画。
     setGaze(on) {
       gazeEnabled = !!on;
+      if (!agent.anims.look || !agent.anims.lookEnd) return;
       if (on) {
         state.setAnimation(TRACK.look, agent.anims.look, false);
       } else {
@@ -327,25 +450,56 @@
       }
     },
 
-    // 摸头（摇动触发）：track0 crossfade 到 Pat_01_A（闭眼嘴）+ track3 Pat_01_M（眉毛）两个静态 pose，
-    // Head_Rot 跟随光标大致方向（applyManualBones 内，仅 patting 时）。
+    // 摸头（摇动触发）：
+    // - 骨脸角色（Arona/Plana）：track0 crossfade 到 Pat_01_A + track3 Pat_01_M，
+    //   Head_Rot 跟随光标（applyManualBones 内，仅 patting 时）。
+    // - 精灵图角色（Shiroko）：无 Pat 动画，改走 pat.emotion 情绪预设 + pat.tiltBone 微倾。
+    // - pat.type = "none"（Hoshino）：不触发摸头。
     // 摸头期间清掉注视 pose（track2），闭眼 cover 不被注视位移干扰。
-    // 决策点：摸头期间 track4 情绪预设保留不动（"情绪脸+摸头身体"，无 PNG 遮盖冲突，Phase C 目视验收）。
     startPat() {
+      const patType = agent.pat?.type || "anim";
+      if (patType === "none") return;
       if (patting) return;
+
+      if (patType === "emotion") {
+        // 记录当前情绪预设，进入"摸头脸"后结束摸头时还原
+        patPrevPreset = currentPreset;
+        // pat.emotion 是情绪键（如 "enjoy"），需经 agent.emotions 解析成数字预设动画名
+        const patEmotionName = agent.pat.emotion;
+        const patPreset = (patEmotionName && agent.emotions && agent.emotions[patEmotionName]) || patEmotionName;
+        patting = true;
+        gazeEnabled = false;
+        state.clearTrack(TRACK.look);
+        applyEmotionPreset(patPreset, false, false);
+        return;
+      }
+
       patting = true;
       gazeEnabled = false;
       state.clearTrack(TRACK.look);
-      state.setAnimation(TRACK.main, agent.anims.pat, false);
-      state.setAnimation(TRACK.patPose, agent.anims.patPose, false);
+      if (agent.anims.pat) state.setAnimation(TRACK.main, agent.anims.pat, false);
+      if (agent.anims.patPose) state.setAnimation(TRACK.patPose, agent.anims.patPose, false);
     },
-    // 结束摸头：crossfade 回 Idle_01，恢复空闲注视（按当前预设的 gaze 标志），头部随平滑系数回正
+    // 结束摸头：
+    // - 骨脸：crossfade 回 Idle_01，恢复空闲注视（按当前预设的 gaze 标志），头部随平滑系数回正
+    // - 精灵图：还原摸头前的情绪预设（无则摘除），PC_Layer 随 applyManualBones 归零
     endPat() {
       if (!patting) return;
       patting = false;
+      const patType = agent.pat?.type || "anim";
+      if (patType === "emotion") {
+        if (patPrevPreset !== null) {
+          applyEmotionPreset(patPrevPreset, presetClosedEye, presetGaze);
+        } else {
+          window.SpineLayer.clearEmotionPreset();
+        }
+        patPrevPreset = null;
+        gazeEnabled = presetGaze;
+        return;
+      }
       gazeEnabled = presetGaze;
       state.clearTrack(TRACK.patPose);
-      if (gazeEnabled) state.setAnimation(TRACK.look, agent.anims.look, false);
+      if (gazeEnabled && agent.anims.look) state.setAnimation(TRACK.look, agent.anims.look, false);
       state.setAnimation(TRACK.main, agent.anims.idle, true);
     },
 
@@ -362,15 +516,12 @@
     },
 
     // ---- 情绪预设（track4）----
-    // 数字预设 = 游戏原生情绪（脸+光环 attachment 集），非循环、残留末帧永久持有，
+    // 数字预设 = 游戏原生情绪（脸+光环 attachment 集，或精灵图整脸切换），非循环、残留末帧永久持有，
     // 与 Idle_01 低 track 无竞争（Idle 无 attachment timeline）。瞬时切换，无过渡。
     // closedEye：闭眼预设期间禁止眨眼；gaze：是否保留瞳孔跟随（renderer 从 EMOTION_PRESET 传入）。
     setEmotionPreset(name, closedEye, gaze) {
-      if (patting) return; // 摸头中不接受情绪切换（与旧 setEmotionPose 语义一致）
-      currentPreset = name;
-      presetClosedEye = !!closedEye;
-      presetGaze = gaze !== false;
-      state.setAnimation(TRACK.emotion, name, false);
+      if (patting) return; // 摸头中不接受外部情绪切换（内部摸头路径用 applyEmotionPreset）
+      applyEmotionPreset(name, closedEye, gaze);
     },
     // 摘除情绪预设（回基底脸）。
     // ⚠️ R2 陷阱（后续维护者勿踩）：严禁用 clearTrack 摘除——本运行时 clearTrack 直接摘
@@ -386,6 +537,38 @@
     },
 
     // 状态内省（visual_test.cjs 断言用）；init 完成前 state 为 null，返回空态不抛错
+    getBoneNames() {
+      if (!skeleton) return [];
+      return skeleton.bones.map((b) => b.data.name);
+    },
+    getBones() {
+      if (!skeleton) return [];
+      return skeleton.bones.map((b) => ({
+        name: b.data.name,
+        parent: b.data.parent ? b.data.parent.name : null,
+        rotation: +b.data.rotation.toFixed(2),
+        x: +b.data.x.toFixed(1),
+        y: +b.data.y.toFixed(1),
+        length: +b.data.length.toFixed(1),
+      }));
+    },
+    getSlots() {
+      if (!skeleton) return [];
+      return skeleton.slots.map((s) => {
+        const a = s.attachment;
+        return {
+          name: s.data.name,
+          bone: s.data.boneData.name,
+          attachment: a ? a.name : null,
+          type: a ? a.constructor.name : null,
+          x: a && typeof a.x === "number" ? +a.x.toFixed(2) : null,
+          y: a && typeof a.y === "number" ? +a.y.toFixed(2) : null,
+          rotation: a && typeof a.rotation === "number" ? +a.rotation.toFixed(2) : null,
+          scaleX: a && typeof a.scaleX === "number" ? +a.scaleX.toFixed(3) : null,
+          scaleY: a && typeof a.scaleY === "number" ? +a.scaleY.toFixed(3) : null,
+        };
+      });
+    },
     getState() {
       if (!state) return { track0: null, track4: null, track5: null, preset: null, patting: false, gaze: false, headRot: 0, eyeOff: { x: 0, y: 0 } };
       const t0 = state.getCurrent(TRACK.main);

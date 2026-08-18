@@ -8,16 +8,20 @@ import {
   type ToolDefinition,
   type AgentSession,
 } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { config, ARONA_DIR } from "./config.ts";
 import { loadMemory, loadMoodBaseline } from "./memory.ts";
 import { computerUseTools } from "./tools/computer_use.ts";
 import { voiceTools } from "./tools/voice_tools.ts";
 import { saveMemoryTool } from "./tools/memory_tool.ts";
-import { changeEmotionTool } from "./tools/emotion_tool.ts";
+import { makeChangeEmotionTool } from "./tools/emotion_tool.ts";
+import { keepSilentTool } from "./tools/keep_silent_tool.ts";
 import { createSkillTools } from "./tools/skill_tools.ts";
 import { connectMcpServers } from "./mcp.ts";
 import { InMemoryCredentialStore } from "./in_memory_credentials.ts";
-import { getMainAgent } from "./agent_registry.ts";
+import { getMainAgent, type SubAgentId, type AgentId } from "./agent_registry.ts";
 import { t, getLang } from "./locale.ts";
 
 // Asia/Shanghai 当前时间，注入到 system prompt 供情境台词使用；语言随界面
@@ -527,7 +531,7 @@ export async function initAgent(): Promise<{
     ...computerUseTools,
     ...(config.noVoice ? [] : voiceTools),
     saveMemoryTool,
-    changeEmotionTool,
+    makeChangeEmotionTool(getMainAgent()),
     ...createSkillTools(loader),
     ...mcpTools,
   ];
@@ -562,4 +566,134 @@ export async function initAgent(): Promise<{
   });
 
   return { session, modelRuntime, loader, customTools };
+}
+
+// ============================================================
+// 子 Agent（白子 / 星野）—— 纯聊天角色，仅 change_emotion + keep_silent
+// ============================================================
+
+/** 读取用户本地角色提示词文件（~/Desktop/Projects/<id>_prompt.txt）；不存在时返回空串。 */
+function loadSubPersonaText(id: SubAgentId): string {
+  try {
+    const p = join(homedir(), "Desktop", "Projects", `${id}_prompt.txt`);
+    return readFileSync(p, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+const SUB_PERSONA_FALLBACK_ZH: Record<SubAgentId, string> = {
+  shiroko: "你是砂狼白子，阿拜多斯对策委员会的突击队长。沉默寡言、冷若冰霜，但内心细腻，对老师充满信任。",
+  hoshino: "你是小鸟游星野，阿拜多斯对策委员会的会长。平时懒散爱用大叔语气，关键时刻可靠，对老师充满信任。",
+};
+
+const SUB_PERSONA_FALLBACK_EN: Record<SubAgentId, string> = {
+  shiroko: "You are Shiroko, the assault leader of the Abydos Foreclosure Task Force. Terse and cool on the surface, warm and loyal inside, and fully trusting of Sensei.",
+  hoshino: "You are Hoshino, the chairwoman of the Abydos Foreclosure Task Force. Usually lazy and speaks like an old man, but dependable in a crisis and fully trusting of Sensei.",
+};
+
+/** 子 Agent 系统提示：保留角色原文要点 + 群聊规则 + 工具用法 + 记忆。 */
+function buildSubSystemPrompt(id: SubAgentId, memoryContent: string): string {
+  const isEn = getLang() === "en";
+  const persona = loadSubPersonaText(id) || (isEn ? SUB_PERSONA_FALLBACK_EN[id] : SUB_PERSONA_FALLBACK_ZH[id]);
+  const rules = isEn ? `
+# Group Chat Rules
+
+- You are one of several desktop-pet characters chatting with Sensei (the user).
+- After the main agent finishes replying, each enabled sub-agent takes a turn. Keep your reply SHORT (one or two sentences), natural, in-character, and add nothing but your own spoken line.
+- Do not repeat or summarize the main agent's reply.
+- Your reply may be read aloud by TTS; keep each sentence under 50 characters/words when possible.
+- If you have nothing to add, call keep_silent instead of writing filler text.
+- Before every text output you MUST call change_emotion once to set the emotion for that segment (use none or saying when nothing stands out).
+
+# Tools
+
+- change_emotion: set the desktop pet emotion for this segment.
+- keep_silent: stay silent this turn; call it when you have nothing to say. Do not write any text after calling it.
+` : `
+# 群聊规则
+
+- 你是多个桌宠角色之一，正在陪老师聊天。
+- 主 Agent 回复完毕后，每个启用的子 Agent 依次发言。回复保持简短（一两句），贴角色，只说自己的台词。
+- 不要复读或总结主 Agent 的话。
+- 你的回复可能被 TTS 朗读，尽量每句 <50 字。
+- 无话可说就调用 keep_silent，不要写废话。
+- 每次输出文字前 MUST 调用一次 change_emotion 设置本段情绪（没有突出情绪时用 none 或 saying）。
+
+# 工具
+
+- change_emotion：设置本段发言的桌宠情绪。
+- keep_silent：本轮保持沉默；无话可说时调用。调用后不要再输出任何文字。
+`;
+  const memoryBlock = isEn
+    ? `# Persistent Memory (shared with the main agent)
+
+${memoryContent || "(no memory yet)"}`
+    : `# 持久记忆（与主 Agent 共享）
+
+${memoryContent || "（暂无记忆）"}`;
+  return `# Identity
+
+${persona.trim()}
+
+# Current time
+
+${nowStr()} (Asia/Shanghai)
+
+${rules}
+${memoryBlock}`;
+}
+
+/**
+ * 初始化一个子 Agent session。
+ * 与主 session 共享 ModelRuntime，但使用独立 in-memory SessionManager、独立 persona loader，
+ * 工具白名单仅 change_emotion + keep_silent（内置 read/bash/edit/write 等全部被过滤）。
+ */
+export async function initSubAgent(
+  agentId: SubAgentId,
+  modelRuntime: ModelRuntime,
+): Promise<{ session: AgentSession; loader: DefaultResourceLoader; customTools: ToolDefinition[] }> {
+  const cliModel = resolveCliModel({ cliModel: config.model, modelRuntime });
+  if (cliModel.error) {
+    console.warn(`Model resolution warning (${agentId}): ${cliModel.error}`);
+  }
+
+  const memoryContent = loadMemory();
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: ARONA_DIR,
+    systemPromptOverride: () => buildSubSystemPrompt(agentId, memoryContent),
+    appendSystemPromptOverride: () => [],
+  });
+  await loader.reload();
+
+  const customTools: ToolDefinition[] = [
+    makeChangeEmotionTool(agentId),
+    keepSilentTool,
+  ];
+
+  const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
+  settingsManager.applyOverrides({
+    compaction: {
+      enabled: true,
+      reserveTokens: 150000,
+      keepRecentTokens: 20000,
+    },
+  });
+
+  const { session } = await createAgentSession({
+    cwd: process.cwd(),
+    agentDir: ARONA_DIR,
+    model: cliModel.model,
+    thinkingLevel: config.thinkingLevel as any,
+    modelRuntime,
+    resourceLoader: loader,
+    // 仅暴露两个纯聊天工具；built-in 工具全部不启用
+    tools: ["change_emotion", "keep_silent"],
+    customTools,
+    sessionManager: SessionManager.inMemory(),
+    settingsManager,
+  });
+
+  return { session, loader, customTools };
 }

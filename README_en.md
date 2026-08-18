@@ -35,6 +35,7 @@ arona voice add [<character-name>]   # omit the name to enter the TUI for missin
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
 - **Voice**: Real-time streaming TTS + STT.
 - **Desktop pet**: transparent frameless always-on-top Electron window, Spine skeleton idle animation + emotion switching + cursor-following pupils + drag/head-pat easter egg + full-screen click/trail FX.
+- **Multi-character group chat**: main agent plus sub agents in separate always-on-top windows on the same screen. After the main agent replies, each enabled sub agent takes a turn in order; `keep_silent` lets a character skip its turn.
 
 ---
 
@@ -57,12 +58,12 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `thinkingLevel` | Thinking level | `medium` |
 | `language` | Interface language (`auto`/`zh`/`en`) | `auto` |
 | `mainAgent` | Main agent (`arona`/`plana`) | `arona` |
+| `subAgents` | Enabled sub agents array | `[]` |
 | `ttsEnabled` | Enable TTS | `true` |
 | `sttEnabled` | Enable STT | `true` |
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
 | `ttsApiKey` | DashScope API key (TTS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
-| `ttsVoice` | (Legacy) Cloned voice_id; migrated to `~/.arona/voices.json` | — |
 | `ttsSampleRate` | TTS sample rate | `22050` |
 | `sttApiKey` | DashScope API key (STT) | — |
 | `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
@@ -81,7 +82,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 | Path | Description |
 |---|---|
 | `settings.json` | Main config file; see the [Configuration](#configuration) section for fields |
-| `voices.json` | Per-character cloned voice_id (`{ "arona": ..., "plana": ... }`) |
+| `voices.json` | Per-character cloned voice_id |
 | `MEMORY.md` | Persistent memory |
 | `sessions/` | Saved sessions |
 | `skills/` | Custom skills |
@@ -94,9 +95,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 - **Desktop pet**: transparent frameless always-on-top window with a looping Spine skeleton idle animation (`Idle_01`) as its base. Before each message segment the agent calls `change_emotion`; Drag to move the window; shaking the head region left-right triggers a "head-pat" easter egg; clicks/drags also fire full-screen click and trail FX. TTS plays sentence by sentence, and the emotion persists until TTS finishes, then reverts to the default automatically. 
 
-  Two characters are built in: `arona` (Arona) and `plana` (Plana) — switch with `/change-agent` (arrow-key picker) or the `mainAgent` field in settings.json.
-  
-  The current session is saved automatically before switching.
+  `/change-agent` provides a grouped picker: single-select main agent + multi-select sub agents; Sub agents only have `change_emotion` and `keep_silent` tools.
 - **STT hotkey**: right Cmd key — press and hold for ≥ 2 seconds to start a one-shot recording.
 - **macOS permissions**: global keyboard monitoring requires Accessibility permission for Python (System Settings → Privacy & Security → Accessibility); Computer Use screenshots require Screen Recording permission for the terminal.
 
