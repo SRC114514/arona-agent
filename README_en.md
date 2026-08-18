@@ -24,8 +24,8 @@ arona
 # Launch with TTS/STT disabled
 arona --no-voice
 
-# Verbose logging mode (pet/subprocess logs forwarded verbatim; for diagnosing display issues like white screens)
-arona --verbose
+# Clone/re-clone a character's voice (arona=Arona, plana=Plana)
+arona voice add [<character-name>]   # omit the name to enter the TUI for missing voices
 ```
 
 ---
@@ -62,7 +62,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
 | `ttsApiKey` | DashScope API key (TTS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
-| `ttsVoice` | Cloned voice_id (filled by `arona setup`) | — |
+| `ttsVoice` | (Legacy) Cloned voice_id; migrated to `~/.arona/voices.json` | — |
 | `ttsSampleRate` | TTS sample rate | `22050` |
 | `sttApiKey` | DashScope API key (STT) | — |
 | `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
@@ -81,6 +81,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 | Path | Description |
 |---|---|
 | `settings.json` | Main config file; see the [Configuration](#configuration) section for fields |
+| `voices.json` | Per-character cloned voice_id (`{ "arona": ..., "plana": ... }`) |
 | `MEMORY.md` | Persistent memory |
 | `sessions/` | Saved sessions |
 | `skills/` | Custom skills |

@@ -10,7 +10,7 @@ import * as mcp from "./mcp.ts";
 import * as skills from "./skills.ts";
 import { setShowThinking, getShowThinking, setShowToolDetails, getShowToolDetails } from "./renderer.ts";
 import { resolveSlashCommand } from "./slash_registry.ts";
-import { AGENT_IDS, getMainAgent, setMainAgent, type AgentId } from "./agent_registry.ts";
+import { AGENT_IDS, getMainAgent, getAgentLabel, setMainAgent, type AgentId } from "./agent_registry.ts";
 import { pet } from "./pet.ts";
 import type { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
@@ -35,6 +35,8 @@ export interface CommandContext {
   setSttHookEnabled?: (enabled: boolean) => void;
   // /undo /redo 撤销/重做管理器（本地快照,不依赖 git）
   undoManager?: UndoManager;
+  // /change-agent 切换角色后重启 TTS 进程（音色随主 Agent，spawn 时固化，需重拉）
+  restartTts?: () => void;
 }
 
 const HELP_TEXT = t(
@@ -161,6 +163,13 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
     case "tts":
       if (config.noVoice) {
         console.log(chalk.cyan(t("语音功能已禁用（--no-voice）。", "Voice features disabled (--no-voice).")));
+        return true;
+      }
+      if (!voice.hasCurrentVoice()) {
+        console.log(chalk.yellow(t(
+          "当前角色未克隆音色，TTS 强制静音。运行 arona voice add 补全音色后即可启用。",
+          "The current agent has no cloned voice, so TTS is force-muted. Run `arona voice add` to add a voice first.",
+        )));
         return true;
       }
       voice.setTtsEnabled(!voice.isTtsEnabled());
@@ -458,7 +467,7 @@ async function handleChangeAgent(ctx: CommandContext) {
   const current = getMainAgent();
   const options: { id: AgentId; label: string }[] = AGENT_IDS.map((id) => ({
     id,
-    label: id === "arona" ? t("阿洛娜", "Arona") : id === "plana" ? t("普拉娜", "Plana") : id,
+    label: getAgentLabel(id),
   }));
 
   // 暂停斜杠菜单 keypress 监听器，避免上下键被菜单捕获并画菜单
@@ -508,9 +517,12 @@ async function handleChangeAgent(ctx: CommandContext) {
     setMainAgent(id);
     // 2. 桌宠换形象（pet/main.cjs 按 ARONA_AGENT env 选 agents.cjs 配置；旧进程退出后自动拉起）
     pet.restartWithAgent(id);
-    // 3. 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
+    // 3. 重启 TTS 进程：音色随主 Agent 在 spawn 时固化，杀进程让下次 pushText 以新音色重拉
+    //    （新角色无音色则 isTtsEnabled() 直接挡掉，不会重拉）
+    ctx.restartTts?.();
+    // 4. 保存当前会话（resume 会话覆盖原文件；新会话仅当有有效对话）——重建会话会丢弃旧 session，先落盘防丢失
     ctx.saveCurrentSession();
-    // 4. 重建 session → buildSystemPrompt 依 getMainAgent() 选新人格模板
+    // 5. 重建 session → buildSystemPrompt 依 getMainAgent() 选新人格模板
     await ctx.newSession();
     console.log(chalk.green(t(
       `已切换主 Agent 为 ${id}（桌宠形象 + 人格已切换，新会话已开始）。`,

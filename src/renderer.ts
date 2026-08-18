@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import { t } from "./locale.ts";
-import { splitStreamedText } from "./text_split.ts";
+import { splitStreamedText, countTextUnits } from "./text_split.ts";
 
 let showThinking = true;
 let showToolDetails = true;
@@ -49,18 +49,6 @@ function physicalLinesForRow(visibleText: string): number {
 }
 
 type PetTextKind = "mid" | "final";
-
-/** 气泡字数：中文/日文等每个字符算 1，英文单词算 1，标点不计。 */
-function bubbleTextLength(text: string): number {
-  // 去掉所有标点（保留字母、数字、空格、CJK）
-  const noPunct = text.replace(/[^\p{L}\p{N}\s]/gu, "");
-  const cjkMatches = noPunct.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g);
-  const cjkCount = cjkMatches ? cjkMatches.length : 0;
-  // 把 CJK 替换成空格后，按空白切分出英文/数字单词
-  const latinPart = noPunct.replace(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g, " ");
-  const words = latinPart.trim().split(/\s+/).filter(Boolean).length;
-  return cjkCount + words;
-}
 
 export function createRenderer(
   onMessageComplete?: (text: string) => void,
@@ -156,6 +144,18 @@ export function createRenderer(
 
   // 气泡状态
   let petMidBuffer = "";
+  // 已上气泡的内容（按顺序累计，行用 "\n" 分隔）；超出 PET_MAX_BUBBLE_LEN 字时挤掉最早的
+  let petShownLines: string[] = [];
+
+  /** 把 lines 按"最早的优先保留、最后一条优先被挤掉"裁到总字数 < maxUnits。 */
+  function trimBubbleLines(lines: string[], maxUnits: number): string[] {
+    let total = lines.reduce((s, l) => s + countTextUnits(l), 0);
+    while (total > maxUnits && lines.length > 1) {
+      total -= countTextUnits(lines[0]);
+      lines.shift();
+    }
+    return lines;
+  }
 
   function flushPetMid(delta: string) {
     petMidBuffer += delta;
@@ -165,10 +165,16 @@ export function createRenderer(
     for (const sent of sentences) {
       const clean = sent.trim();
       if (!clean) continue;
-      // 只要是完整短句就上气泡，不再限定“工具阶段”
-      if (bubbleTextLength(clean) <= PET_MAX_BUBBLE_LEN) {
-        onPetText?.("mid", clean);
+      const units = countTextUnits(clean);
+      if (units === 0) continue;
+      // 单句本身就超过上限：仍显示一句（不切，按真实样子），不参与后续滚动
+      if (units >= PET_MAX_BUBBLE_LEN) {
+        petShownLines = [clean];
+      } else {
+        petShownLines.push(clean);
+        petShownLines = trimBubbleLines(petShownLines, PET_MAX_BUBBLE_LEN);
       }
+      onPetText?.("mid", petShownLines.join("\n"));
     }
   }
 
@@ -181,6 +187,7 @@ export function createRenderer(
             inText = false;
             inThinking = false;
             petMidBuffer = "";
+            petShownLines = [];
             thinkingBuffer = "";
             drawnThinkingLines = 0;
             break;
@@ -227,14 +234,26 @@ export function createRenderer(
             if (responseText.trim()) {
               onMessageComplete?.(responseText);
             }
-            // 只把没有标点收尾的残段作为 final 气泡；已通过 mid 显示的句子不重复
+            // 把没有标点收尾的残段挂到累计池（已通过 mid 完整成句的部分不重复）。
+            // 残段本身是句子的尾巴，无完整标点，长度不可控：若超上限就单独占一行（保留原样、不切）。
             const leftover = petMidBuffer.trim();
-            if (leftover && bubbleTextLength(leftover) <= PET_MAX_BUBBLE_LEN) {
-              onPetText?.("final", leftover);
+            if (leftover) {
+              const units = countTextUnits(leftover);
+              if (units > 0) {
+                if (units >= PET_MAX_BUBBLE_LEN) {
+                  petShownLines = [leftover];
+                } else {
+                  petShownLines.push(leftover);
+                  petShownLines = trimBubbleLines(petShownLines, PET_MAX_BUBBLE_LEN);
+                }
+                onPetText?.("final", petShownLines.join("\n"));
+              }
             }
             inThinking = false;
             inText = false;
             petMidBuffer = "";
+            // 注意：petShownLines 不清空——final 是回合末尾，气泡要保留到 tts_end 再隐藏
+            // （hidPetBubble 在 tts 播放结束时才触发）
             thinkingBuffer = "";
             drawnThinkingLines = 0;
             break;

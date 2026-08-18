@@ -101,6 +101,7 @@ export class Repl {
     // onTextDelta: 文本增量实时送入流式 TTS（中间过程与最终回复统一覆盖）
     // onMessageComplete: 每条消息结束时结束当前合成段（残段收尾 + finish-task）
     // onPetText: 桌宠文字气泡（仅桌宠运行时发送）；情绪仍由 LLM change_emotion 工具驱动
+    // --no-voice 模式下没有 play_end 兜底隐藏气泡：final 上屏时挂 5s 定时器
     this.renderer = createRenderer(
       () => this.ttsStream.endSegment(),
       (delta) => this.ttsStream.pushText(delta),
@@ -115,7 +116,24 @@ export class Repl {
 
   /** 通知桌宠隐藏气泡（TTS 播放结束 / 打断时调用） */
   private hidePetBubble(): void {
+    if (this.bubbleHideTimer) {
+      clearTimeout(this.bubbleHideTimer);
+      this.bubbleHideTimer = null;
+    }
     if (pet.isRunning) pet.sendText("tts_end", "");
+  }
+
+  /**
+   * TTS 禁用时的兜底：5s 后同时隐藏气泡 + 恢复 idle 表情。
+   * 涵盖 --no-voice / 缺音色 / 切到无音色角色三种静音原因（voice.isTtsEnabled() 统一判断）。
+   */
+  private scheduleBubbleHide(): void {
+    if (this.bubbleHideTimer) clearTimeout(this.bubbleHideTimer);
+    this.bubbleHideTimer = setTimeout(() => {
+      this.bubbleHideTimer = null;
+      this.hidePetBubble();
+      if (pet.isRunning) pet.reset();
+    }, 5000);
   }
 
   private setupSignals() {
@@ -204,6 +222,7 @@ export class Repl {
         else this.stopHotkeyHook();
       },
       undoManager: this.undoManager,
+      restartTts: () => this.ttsStream.restartVoice(),
     };
   }
 
@@ -445,7 +464,13 @@ export class Repl {
     if (config.noVoice) {
       console.log(chalk.cyan(t("  语音：已禁用（--no-voice）", "  Voice: disabled (--no-voice)")));
     } else {
-      console.log(chalk.cyan(t(`  TTS：${voice.isTtsEnabled() ? "开" : "关"}`, `  TTS: ${voice.isTtsEnabled() ? "on" : "off"}`)));
+      // 当前主 Agent 无音色时强制显示"未配置声音"（权重大于 settings.ttsEnabled），
+      // 流式 TTS 在 isTtsEnabled() 里已被挡掉，不会启动
+      if (!voice.hasCurrentVoice()) {
+        console.log(chalk.cyan(t("  TTS：关（未配置声音）", "  TTS: off (no voice configured)")));
+      } else {
+        console.log(chalk.cyan(t(`  TTS：${voice.isTtsEnabled() ? "开" : "关"}`, `  TTS: ${voice.isTtsEnabled() ? "on" : "off"}`)));
+      }
       console.log(chalk.cyan(t(`  STT：${voice.isSttEnabled() ? "开" : "关"}`, `  STT: ${voice.isSttEnabled() ? "on" : "off"}`)));
       // STT 开启时打印热键提示：长按右 Cmd ≥2秒录音；任务中按会先 abort 再录音
       if (voice.isSttEnabled()) {
@@ -611,9 +636,16 @@ export class Repl {
         console.warn(chalk.yellow(t(`撤销快照记录失败：${err instanceof Error ? err.message : err}`, `Failed to record undo snapshot: ${err instanceof Error ? err.message : err}`)));
       }
       this.isProcessing = false;
-      // 回合结束：无 TTS 残余播放则立即恢复桌宠；仍有播放由 play_end 空闲回调恢复
+      // 回合结束：恢复桌宠到 idle
+      // - TTS 启用 + 无残余播放 → 立即 reset；有残余由 onIdle(play_end) 兜底
+      // - TTS 禁用（--no-voice / 缺音色 / 切到无音色角色）→ 5s 后再撤表情和气泡
+      //   （voice.isTtsEnabled() 统一判断三种静音原因，一个入口覆盖）
       this.turnEnded = true;
-      if (!this.ttsStream.isPending) pet.reset();
+      if (voice.isTtsEnabled()) {
+        if (!this.ttsStream.isPending) pet.reset();
+      } else {
+        this.scheduleBubbleHide();
+      }
       // 若被 Esc/Ctrl+C 中断，中断处理已重绘提示符，跳过重复 prompt
       if (this.aborted) {
         this.aborted = false;

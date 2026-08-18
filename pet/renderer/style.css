@@ -46,6 +46,7 @@ body:active {
   font-size: 13px;
   line-height: 1.45;
   text-align: center;
+  white-space: pre-line;
   word-break: break-all;
   pointer-events: none;
   z-index: 10;

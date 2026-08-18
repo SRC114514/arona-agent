@@ -577,6 +577,10 @@ class TtsStreamServer:
             if cmd is None:
                 break
             kind, data = cmd
+            # 无活跃任务的 end 无事可做：直接忽略，避免无谓建立 WS 连接
+            # （整条回复的句子都被长句过滤跳过时，Node 侧只会发 end）
+            if kind == "end" and not self.task_active:
+                continue
             try:
                 ws = await self._ensure_ws()
                 if kind == "text":

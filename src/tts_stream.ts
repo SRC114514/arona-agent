@@ -4,6 +4,9 @@ import { PYTHON_DIR, config, verbose } from "./config.ts";
 import { t, getLang } from "./locale.ts";
 import { spawnCompat, stripProxyEnv } from "./utils/spawn.ts";
 import { stripMarkdown } from "./voice.ts";
+import { getMainAgent } from "./agent_registry.ts";
+import { getVoiceId } from "./voices.ts";
+import { splitStreamedText, countTextUnits } from "./text_split.ts";
 
 /**
  * 实时流式 TTS 管道（阿里云百炼"实时语音合成"）。
@@ -12,14 +15,26 @@ import { stripMarkdown } from "./voice.ts";
  *   发送：{"type":"text","data":"..."} / {"type":"end"} / {"type":"cancel"} / {"type":"exit"}
  *   接收：{"event":"ready"} / {"event":"play_start"} / {"event":"play_end"} / {"event":"error","message":...}
  *
- * 行为约定（与旧版 enqueueTts 一致）：
- *   - LLM text_delta 边生成边按句切分（。！？\n 为边界）推送合成，中间过程与最终回复统一覆盖
- *   - "长段跳过"：句子长度 >= 50 字不朗读（仅 <50 字的短句实时朗读）
+ * 行为约定：
+ *   - LLM text_delta 边生成边按句切分推送合成（共享 text_split.ts：标点边界 + 连续标点归同句，不强切）
+ *   - 围栏代码块（```...```）整块剔除不朗读（跨 delta 状态机，未闭合时挂起等待闭合标记）
+ *   - 句内 markdown（行内代码/加粗/链接等）在成句后剔除
+ *   - 长句跳过：字数 >= 50 不朗读；字数 = 中文每字 1、英文单词 1、符号不计（countTextUnits）
  *   - 音频固定 pcm，Python 侧 pyaudio 边收边播；pyaudio 不可用自动降级缓冲播放
  */
-const MAX_SENTENCE_LEN = 50; // 与旧版一致：>= 50 字跳过
-const SENTENCE_BOUNDARY = /[。！？!?\n]/;
+const MAX_SENTENCE_LEN = 50; // 字数（countTextUnits 口径）>= 50 的句子不朗读
+const TTS_FORCE_SPLIT_LEN = 9999; // 仅标点切句、不强切（超长无标点文本按长句规则整句跳过）
 const READY_TIMEOUT_MS = 10000;
+
+/** 统计字符串尾部连续反引号数（最多计 2 个：可能是被 delta 切断的 ``` 围栏标记）。 */
+function trailingFenceTicks(s: string): number {
+  let n = 0;
+  for (let i = s.length - 1; i >= 0 && n < 2; i--) {
+    if (s[i] === "`") n++;
+    else break;
+  }
+  return n;
+}
 
 interface OutgoingCmd {
   type: "text" | "end" | "cancel";
@@ -31,7 +46,8 @@ export class TtsStream {
   private stdoutBuffer = "";
   private ready = false;
   private pendingCount = 0; // 活跃播放段数（play_start +1 / play_end -1），>0 表示还有声音在播
-  private buffer = ""; // 未成句的残段（等待后续 delta 补全）
+  private buffer = ""; // 未处理文本（切句残段 + 可能被 delta 切断的围栏/未闭合代码块内容）
+  private inCodeBlock = false; // 跨 delta 的 ``` 围栏状态：true = 正处于代码块内，暂不切句
   private nodeQueue: OutgoingCmd[] = [];
   private draining = false;
   private startPromise: Promise<boolean> | null = null;
@@ -49,21 +65,28 @@ export class TtsStream {
   }
 
   /**
-   * LLM 文本增量（text_delta）实时推送。按句切分后，<50 字的句子立即送入合成。
+   * LLM 文本增量（text_delta）实时推送。剔除代码块后按标点切句，<50 字的句子立即送入合成。
    */
   pushText(delta: string): void {
     if (!this.isEnabled()) return;
     if (!delta) return;
-    this.buffer += delta;
-    this.flushSentences(false);
+    this.ingestDelta(delta);
   }
 
   /**
-   * 当前 assistant 消息结束：残段按同规则收尾，并结束当前合成段（finish-task）。
+   * 当前 assistant 消息结束：残段按同规则收尾（未闭合代码块整段丢弃），并结束当前合成段（finish-task）。
    */
   endSegment(): void {
     if (!this.isEnabled()) return;
-    this.flushSentences(true);
+    if (this.inCodeBlock) {
+      // 消息结束仍未等到闭合围栏：其后的内容都在代码块内，整段丢弃
+      this.buffer = "";
+      this.inCodeBlock = false;
+    } else {
+      const leftover = this.buffer.trim();
+      this.buffer = "";
+      if (leftover) this.emitSentence(leftover);
+    }
     this.enqueue({ type: "end" });
   }
 
@@ -72,6 +95,7 @@ export class TtsStream {
    */
   cancel(): void {
     this.buffer = "";
+    this.inCodeBlock = false;
     // 丢弃排队中未发送的文本/结束指令（保留可能的 cancel）
     this.nodeQueue = this.nodeQueue.filter((c) => c.type === "cancel");
     this.pendingCount = 0;
@@ -80,26 +104,45 @@ export class TtsStream {
     }
   }
 
-  /** 退出时停止常驻进程 */
-  shutdown(): void {
-    this.shuttingDown = true;
+  /**
+   * 切换角色后重启 TTS 进程（音色在 spawn 时按当前主 Agent 固化，需杀进程重拉）。
+   * 不置 shuttingDown——下次 pushText 自动以新角色音色重新拉起。
+   */
+  restartVoice(): void {
+    this.cancel();
     if (this.proc && !this.proc.killed) {
       try {
-        this.proc.stdin.write(JSON.stringify({ type: "exit" }) + "\n");
+        this.proc.kill("SIGTERM");
       } catch {
         // 忽略
       }
-      // 兜底：0.5s 后仍未退出则强杀
-      setTimeout(() => {
+    }
+    // proc.on("close") 已重置 proc/ready/startPromise，无需手动清。
+  }
+
+  /** 退出时停止常驻进程 */
+  shutdown(): void {
+    this.shuttingDown = true;
+    const proc = this.proc;
+    this.proc = null;
+    this.ready = false;
+    if (proc && !proc.killed) {
+      try {
+        proc.stdin.write(JSON.stringify({ type: "exit" }) + "\n");
+      } catch {
+        // 忽略
+      }
+      // 兜底：0.5s 后仍未退出则强杀。必须闭包捕获局部 proc——this.proc 已置 null，
+      // 旧写法引用 this.proc 永远杀不到（python 卡死时会残留僵尸进程占用麦克风/声道）
+      const killer = setTimeout(() => {
         try {
-          this.proc?.kill("SIGTERM");
+          proc.kill("SIGTERM");
         } catch {
           // 忽略
         }
       }, 500);
+      killer.unref?.(); // 不阻塞进程退出；stdin 断开后 python 侧 read_stdin 会自行退出
     }
-    this.proc = null;
-    this.ready = false;
   }
 
   // ------------------------------------------------------------
@@ -140,34 +183,50 @@ export class TtsStream {
     }
   }
 
-  /** 切分句子并推送可朗读内容（长句跳过）。isEnd=true 时残段也按规则收尾。 */
-  private flushSentences(isEnd: boolean): void {
-    if (!this.buffer) return;
-    let rest = this.buffer;
-    const sentences: string[] = [];
-    let idx = 0;
-    while (idx < rest.length) {
-      if (SENTENCE_BOUNDARY.test(rest[idx])) {
-        const sent = rest.slice(0, idx + 1).trim();
-        if (sent) sentences.push(sent);
-        rest = rest.slice(idx + 1);
-        idx = 0;
+  /**
+   * 处理一段新到达的增量：先用围栏状态机剔除代码块，再把安全文本按标点切句。
+   * - 完整 ```...``` 块整块丢弃（代码不朗读）；块内容可能跨多个 delta，未闭合前全部挂起。
+   * - 尾部 1-2 个连续反引号可能是被 delta 切断的围栏起始/结束，暂留 buffer 等下一 delta 判定。
+   */
+  private ingestDelta(delta: string): void {
+    let rest = this.buffer + delta;
+    let safe = "";
+    for (;;) {
+      const fence = rest.indexOf("```");
+      if (!this.inCodeBlock) {
+        if (fence === -1) {
+          const hold = trailingFenceTicks(rest);
+          safe += rest.slice(0, rest.length - hold);
+          rest = rest.slice(rest.length - hold);
+          break;
+        }
+        safe += rest.slice(0, fence) + " "; // 补空格，避免删除代码块后前后词粘连
+        rest = rest.slice(fence + 3);
+        this.inCodeBlock = true;
       } else {
-        idx++;
+        if (fence === -1) break; // 未闭合：内容原样挂在 buffer，等闭合围栏到达后重扫
+        rest = rest.slice(fence + 3);
+        this.inCodeBlock = false;
       }
     }
-    this.buffer = rest; // 无边界残段留待下一 delta
+    // 英文句末句号不在切句边界集（。！？!?\n）内：把后跟空白的句末 "." / "..." 归一为
+    // 中文句号再切句，否则英文句子会与后续文本粘连成超长句被整段跳过。
+    // 小数点/版本号（"3.12"、"qwen-audio-3.0"）后跟非空白，不受影响。
+    safe = safe.replace(/\.+(?=\s)/g, "。");
+    const { sentences, rest: rem } = splitStreamedText(safe, TTS_FORCE_SPLIT_LEN);
     for (const s of sentences) this.emitSentence(s);
-    if (isEnd && rest.trim()) {
-      this.buffer = "";
-      this.emitSentence(rest.trim());
-    }
+    this.buffer = rem + rest;
   }
 
-  /** 句级过滤：<50 字才朗读（保持"长段跳过"语义） */
+  /**
+   * 句级过滤：剔除句内 markdown 后按字数判断。字数口径 = 中文每字 1、英文单词 1、
+   * 符号不计（countTextUnits）；字数为 0（纯符号）或 >= 50 的句子不朗读。
+   */
   private emitSentence(sentence: string): void {
     const clean = stripMarkdown(sentence).trim();
-    if (!clean || clean.length >= MAX_SENTENCE_LEN) return;
+    if (!clean) return;
+    const units = countTextUnits(clean);
+    if (units === 0 || units >= MAX_SENTENCE_LEN) return;
     this.enqueue({ type: "text", data: clean });
   }
 
@@ -201,7 +260,7 @@ export class TtsStream {
             QWEN_WORKSPACE_ID: config.workspaceId,
             QWEN_TTS_API_KEY: config.ttsApiKey,
             QWEN_TTS_MODEL: config.ttsModel,
-            QWEN_TTS_VOICE: config.ttsVoice,
+            QWEN_TTS_VOICE: getVoiceId(getMainAgent()),
             QWEN_TTS_SAMPLE_RATE: String(config.ttsSampleRate),
           }),
           stdio: ["pipe", "pipe", "pipe"],

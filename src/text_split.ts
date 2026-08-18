@@ -8,9 +8,25 @@
  */
 const SENTENCE_BOUNDARY = /[。！？!?\n]/;
 
+/** CJK 表意文字（含扩展 A 区与兼容区）：字数统计中每个字符算 1 字。 */
+const CJK_RE = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g;
+
 export interface SplitStreamedTextResult {
   sentences: string[];
   rest: string;
+}
+
+/**
+ * 统计"朗读/气泡字数"：中文字符每个算 1，英文/数字按空白切分的连续串每个算 1
+ * （一个英文单词算一个字），中英文标点与符号不计入。
+ */
+export function countTextUnits(text: string): number {
+  // 去掉所有标点符号（仅保留字母、数字、空白与 CJK）
+  const noPunct = text.replace(/[^\p{L}\p{N}\s]/gu, "");
+  const cjkCount = (noPunct.match(CJK_RE) || []).length;
+  const latinPart = noPunct.replace(CJK_RE, " ");
+  const words = latinPart.trim().split(/\s+/).filter(Boolean).length;
+  return cjkCount + words;
 }
 
 export function splitStreamedText(buffer: string, forceLen: number): SplitStreamedTextResult {

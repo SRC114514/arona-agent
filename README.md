@@ -26,8 +26,8 @@ arona
 # 禁用TTS+STT并启动
 arona --no-voice
 
-# 详细日志模式（桌宠/子进程日志原样输出，排查白屏等显示问题用）
-arona --verbose
+# 补全/重新克隆某角色音色
+arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全的角色
 ```
 
 ---
@@ -65,7 +65,7 @@ arona --verbose
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
 | `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
-| `ttsVoice` | 音色克隆voice_id（`arona setup` 填充） | — |
+| `ttsVoice` | （旧版字段）音色克隆 voice_id，已迁移至 `~/.arona/voices.json` | — |
 | `ttsSampleRate` | TTS 采样率 | `22050` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |
@@ -84,6 +84,7 @@ arona --verbose
 | 路径 | 说明 |
 |---|---|
 | `settings.json` | 本地总配置文件，字段见 [配置](#配置) |
+| `voices.json` | 每角色音色克隆 voice_id（`{ "arona": ..., "plana": ... }`） |
 | `MEMORY.md` | 持久记忆 |
 | `sessions/` | 已保存会话 |
 | `skills/` | 自定义 Skill |

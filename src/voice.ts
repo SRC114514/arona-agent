@@ -1,11 +1,23 @@
 import { runPython } from "./utils/python.ts";
 import { config } from "./config.ts";
+import { getMainAgent } from "./agent_registry.ts";
+import { hasVoice } from "./voices.ts";
 
 let ttsEnabled = config.noVoice ? false : config.ttsEnabled;
 let sttEnabled = config.noVoice ? false : config.sttEnabled;
 
+/** 当前主 Agent 是否已有克隆音色（读 voices.json，arona 缺省回退旧 settings.ttsVoice）。 */
+export function hasCurrentVoice(): boolean {
+  return hasVoice(getMainAgent());
+}
+
 export function isTtsEnabled(): boolean {
-  return ttsEnabled;
+  if (config.noVoice) return false;
+  if (!ttsEnabled) return false;
+  // 当前主 Agent 无克隆音色 → 强制静音（忽略 settings.json 的 ttsEnabled，权重大于配置文件）。
+  // 不影响 STT。
+  if (!hasCurrentVoice()) return false;
+  return true;
 }
 
 export function setTtsEnabled(enabled: boolean): void {

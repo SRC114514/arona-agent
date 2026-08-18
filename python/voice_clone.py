@@ -22,6 +22,9 @@ import time
 
 def fail(msg):
     print(json.dumps({"error": msg}))
+    # 同步写 stderr：Node 侧 runPython 在非零退出码时只保留 stderr，stdout 会被丢弃，
+    # 不写 stderr 的话克隆失败的真实原因（如音频质量/网络）到不了调用方。
+    print(f"voice_clone error: {msg}", file=sys.stderr)
     sys.exit(1)
 
 

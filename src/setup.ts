@@ -9,7 +9,9 @@ import {
   PROJECT_ROOT,
   resolveModelPrefix,
 } from "./config.ts";
-import { runPython } from "./utils/python.ts";
+import { AGENT_IDS, getAgentLabel } from "./agent_registry.ts";
+import { VOICE_AUDIO, cloneVoice, setVoiceId, getMissingAgents, hasVoice } from "./voices.ts";
+import { multiSelect } from "./tui_select.ts";
 import { t, getLang, setLang } from "./locale.ts";
 
 interface Settings {
@@ -18,6 +20,8 @@ interface Settings {
   model?: string;
   thinkingLevel?: string;
   language?: "auto" | "zh" | "en";
+  /** 主 Agent（arona | plana）：setup 保存时保留，不能覆盖 /change-agent 的选择 */
+  mainAgent?: string;
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
   /** @deprecated 已合并进 ttsEnabled，仅读兼容（旧配置 ttsAuto:false 仍生效） */
@@ -25,7 +29,6 @@ interface Settings {
   workspaceId?: string;
   ttsApiKey?: string;
   ttsModel?: string;
-  ttsVoice?: string;
   ttsSampleRate?: number;
   sttApiKey?: string;
   sttModel?: string;
@@ -126,6 +129,16 @@ async function main() {
     output: process.stdout,
   });
 
+  // Ctrl+C（SIGINT）强制退出：不保存任何配置，需重新运行 arona setup 填写。
+  // 不监听会走 readline 默认清行继续，最后把半成品写进 settings.json（历史踩坑）。
+  rl.on("SIGINT", () => {
+    console.log(chalk.yellow(t(
+      "\n  已取消，配置未保存。请重新运行 arona setup。",
+      "\n  Cancelled, configuration not saved. Re-run arona setup.",
+    )));
+    process.exit(130);
+  });
+
   const ask = (prompt: string): Promise<string> =>
     new Promise((resolve) => {
       rl.question(prompt, (answer) => resolve(answer.trim()));
@@ -215,21 +228,19 @@ async function main() {
     }
 
     // ============================================================
-    // Step 4: Automatic Voice Cloning
+    // Step 4: Voice Cloning（多角色多选）
     // ============================================================
     console.log(chalk.bold.cyan("\nStep 4: Voice Cloning\n"));
-
-    let ttsVoice = existing.ttsVoice || "";
 
     if (demoMode) {
       // demoMode: skip the real python/voice_clone.py call entirely. Wait 4s
       // and emit a synthetic success so the user can showcase the full flow.
       await new Promise((r) => setTimeout(r, 4000));
-      ttsVoice = `demo-voice-${Date.now()}`;
+      const demoVoice = `demo-voice-${Date.now()}`;
       console.log(
         chalk.green(
           verbose
-            ? t(`  ✓ 音色克隆成功（voice_id: ${ttsVoice}）`, `  ✓ Voice cloning succeeded (voice_id: ${ttsVoice})`)
+            ? t(`  ✓ 音色克隆成功（voice_id: ${demoVoice}）`, `  ✓ Voice cloning succeeded (voice_id: ${demoVoice})`)
             : t("  ✓ 音色克隆成功", "  ✓ Voice cloning succeeded"),
         ),
       );
@@ -251,42 +262,65 @@ async function main() {
       }
 
       if (dashscopeOk) {
-        const voiceMp3 = join(PROJECT_ROOT, "assets", "blue-archive", "voice.mp3");
-        if (!existsSync(voiceMp3)) {
-          console.log(chalk.yellow(t(`  未找到 voice.mp3（${voiceMp3}）。跳过音色克隆。`, `  voice.mp3 not found (${voiceMp3}). Skipping voice cloning.`)));
+        // 关闭 readline，让多选 TUI 独占 stdin raw mode（此后不再用 rl.question）。
+        rl.close();
+
+        // 已有音色的角色锁定 [*]（迁移已在模块加载时完成，此处读到的 voices.json 已是新格式）。
+        const missing = getMissingAgents();
+        if (missing.length === 0) {
+          console.log(chalk.green(t(
+            "  所有角色已有音色，无需克隆。如需重新克隆请运行 arona voice add <角色名>。",
+            "  All characters already have voices. Use `arona voice add <name>` to re-clone.",
+          )));
         } else {
-          console.log(chalk.cyan(t("  正在克隆音色（可能需要 1-2 分钟）...", "  Cloning voice (may take 1-2 minutes)...")));
+          const options = AGENT_IDS.map((id) => ({
+            id,
+            label: hasVoice(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
+            locked: hasVoice(id),
+          }));
+          const selected = await multiSelect(
+            t("选择要克隆音色的角色", "Select characters to clone voices"),
+            options,
+            new Set<string>(), // 已有音色者 locked 强制 [*]，未克隆者默认 [ ]
+            t(
+              "  ↑/↓ 切换 · 空格选中 [*] · 回车克隆 · Esc 取消",
+              "  ↑/↓ move · Space select [*] · Enter clone · Esc cancel",
+            ),
+          );
 
-          try {
-            const result = await runPython(
-              "voice_clone.py",
-              [],
-              undefined,
-              {
-                QWEN_TTS_API_KEY: ttsApiKey,
-                QWEN_TTS_MODEL: existing.ttsModel || "qwen-audio-3.0-tts-plus",
-                ARONA_VOICE_AUDIO: voiceMp3,
-                ARONA_VOICE_PREFIX: "arona",
-              },
-              300000, // 5 min timeout
-            );
-
-            const parsed = JSON.parse(result);
-            if (parsed.voice_id) {
-              ttsVoice = parsed.voice_id;
-              if (verbose) {
-                console.log(chalk.green(t(`  ✓ 音色克隆成功（voice_id: ${ttsVoice}）`, `  ✓ Voice cloning succeeded (voice_id: ${ttsVoice})`)));
-              } else {
-                console.log(chalk.green(t("  ✓ 音色克隆成功", "  ✓ Voice cloning succeeded")));
+          if (selected === null) {
+            // Esc / Ctrl+C：放弃整个 setup，不保存配置（半成品配置不能覆写 settings.json）
+            console.log(chalk.yellow(t(
+              "  已取消，配置未保存。请重新运行 arona setup。",
+              "  Cancelled, configuration not saved. Re-run arona setup.",
+            )));
+            return;
+          } else if (selected.size === 0) {
+            console.log(chalk.cyan(t("  未选择任何角色，跳过音色克隆（TTS 将保持静音）。", "  No character selected, skipping voice cloning (TTS stays muted).")));
+          } else {
+            const model = existing.ttsModel || "qwen-audio-3.0-tts-plus";
+            for (const id of AGENT_IDS) {
+              if (!selected.has(id)) continue;
+              const voiceMp3 = VOICE_AUDIO[id];
+              if (!existsSync(voiceMp3)) {
+                console.log(chalk.yellow(t(`  未找到音色文件（${voiceMp3}），跳过 ${getAgentLabel(id)}。`, `  Voice file not found (${voiceMp3}), skipping ${getAgentLabel(id)}.`)));
+                continue;
               }
-            } else if (parsed.error) {
-              console.log(chalk.red(t(`  ✗ 音色克隆失败：${parsed.error}`, `  ✗ Voice cloning failed: ${parsed.error}`)));
-              console.log(chalk.gray(t("  稍后可重新运行 arona setup 重试。", "  You can re-run arona setup later to retry.")));
+              console.log(chalk.cyan(t(`  正在克隆 ${getAgentLabel(id)} 的音色（可能需要 1-2 分钟）...`, `  Cloning ${getAgentLabel(id)}'s voice (may take 1-2 minutes)...`)));
+              try {
+                const voiceId = await cloneVoice(id, ttsApiKey, model);
+                setVoiceId(id, voiceId);
+                if (verbose) {
+                  console.log(chalk.green(t(`  ✓ ${getAgentLabel(id)} 音色克隆成功（voice_id: ${voiceId}）`, `  ✓ ${getAgentLabel(id)} voice cloned (voice_id: ${voiceId})`)));
+                } else {
+                  console.log(chalk.green(t(`  ✓ ${getAgentLabel(id)} 音色克隆成功`, `  ✓ ${getAgentLabel(id)} voice cloned`)));
+                }
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                console.log(chalk.red(t(`  ✗ ${getAgentLabel(id)} 音色克隆失败：${msg}`, `  ✗ ${getAgentLabel(id)} voice cloning failed: ${msg}`)));
+                console.log(chalk.gray(t("  稍后可运行 arona voice add 重试。", "  You can run `arona voice add` later to retry.")));
+              }
             }
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            console.log(chalk.red(t(`  ✗ 音色克隆失败：${msg}`, `  ✗ Voice cloning failed: ${msg}`)));
-            console.log(chalk.gray(t("  稍后可重新运行 arona setup 重试。", "  You can re-run arona setup later to retry.")));
           }
         }
       }
@@ -304,12 +338,12 @@ async function main() {
         model: resolvedModel,
         thinkingLevel: existing.thinkingLevel || "medium",
         language: langSetting,
+        mainAgent: existing.mainAgent || "arona", // 保留 /change-agent 的选择，勿覆盖
         ttsEnabled: existing.ttsEnabled ?? existing.ttsAuto ?? true, // ttsAuto 已合并，旧配置兼容
         sttEnabled: existing.sttEnabled ?? true,
         workspaceId: existing.workspaceId || "",
         ttsApiKey: ttsApiKey,
         ttsModel: existing.ttsModel || "qwen-audio-3.0-tts-plus",
-        ttsVoice: ttsVoice,
         ttsSampleRate: existing.ttsSampleRate || 22050,
         sttApiKey: ttsApiKey, // Same key for TTS and STT
         sttModel: existing.sttModel || "qwen-audio-3.0-asr-flash-streaming",

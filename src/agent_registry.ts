@@ -4,9 +4,20 @@
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { SETTINGS_FILE } from "./config.ts";
+import { t } from "./locale.ts";
 
 export const AGENT_IDS = ["arona", "plana"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
+
+/** 角色的中英双语显示名（供 TUI / 命令文案复用）。 */
+export function getAgentLabel(id: AgentId): string {
+  switch (id) {
+    case "arona":
+      return t("阿洛娜", "Arona");
+    case "plana":
+      return t("普拉娜", "Plana");
+  }
+}
 
 /** 校验 agent id（含类型收窄） */
 function isValidAgentId(id: string): id is AgentId {
