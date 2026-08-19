@@ -90,6 +90,54 @@ export function loadMoodBaseline(memoryContent: string): string {
 }
 
 // ============================================================
+// 运行时记忆增量（MEMORY.md 变更检测 → 注入下一轮 user 消息末尾）
+// ============================================================
+
+// 上次注入时的记忆内容基线。null 表示尚未建立基线。
+let memoryBaseline: string | null = null;
+
+/**
+ * 记录当前 MEMORY.md 内容为基线（不注入）。
+ * session 创建时（initAgent / initSubAgent）调用：system prompt 开头的初始记忆
+ * 快照已包含基线内容，避免首次 getMemoryDelta() 重复注入。
+ */
+export function snapshotMemory(): void {
+  memoryBaseline = existsSync(MEMORY_FILE) ? readFileSync(MEMORY_FILE, "utf-8") : "";
+}
+
+/**
+ * 检测 MEMORY.md 自基线以来是否变化，返回应注入到下一轮 user 消息末尾的增量；无变化返回 null。
+ * - 纯追加（save_memory 走 appendToMemory 追加）：返回新增后缀，token 开销最小。
+ * - 检测到非纯追加（手动编辑/重写）：退化为返回最新全量内容，保证不丢信息。
+ * - 有变化时只注入一次，之后前缀稳定，缓存不重复失效。
+ */
+export function getMemoryDelta(): string | null {
+  const current = existsSync(MEMORY_FILE) ? readFileSync(MEMORY_FILE, "utf-8") : "";
+  if (memoryBaseline === null) {
+    // 未建立基线（理论上 snapshotMemory 已在 init 时调用）：以当前内容为基线，不注入
+    memoryBaseline = current;
+    return null;
+  }
+  if (current === memoryBaseline) return null;
+
+  // 找最长公共前缀（append-only 时 LCP 就是旧内容，差异 = 新增后缀）
+  let i = 0;
+  const maxLen = Math.min(memoryBaseline.length, current.length);
+  while (i < maxLen && memoryBaseline[i] === current[i]) i++;
+
+  const isPureAppend = i >= memoryBaseline.length && current.length > memoryBaseline.length;
+  const added = current.slice(i).trim();
+  memoryBaseline = current; // 无论注入与否都更新基线，避免同内容重复注入
+
+  if (!added) return null;
+  if (!isPureAppend) {
+    // 手动编辑/重写：LCP 截断不可靠，退化为全量最新内容
+    return `# 记忆更新（MEMORY.md 内容已变更）\n\n${current}`;
+  }
+  return `# 记忆更新（新增）\n\n${added}`;
+}
+
+// ============================================================
 // Session management (conditional save)
 // ============================================================
 

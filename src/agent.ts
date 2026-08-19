@@ -12,16 +12,18 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { config, ARONA_DIR } from "./config.ts";
-import { loadMemory, loadMoodBaseline } from "./memory.ts";
+import { loadMemory, loadMoodBaseline, snapshotMemory } from "./memory.ts";
 import { computerUseTools } from "./tools/computer_use.ts";
 import { voiceTools } from "./tools/voice_tools.ts";
 import { saveMemoryTool } from "./tools/memory_tool.ts";
 import { makeChangeEmotionTool } from "./tools/emotion_tool.ts";
 import { keepSilentTool } from "./tools/keep_silent_tool.ts";
+import { webSearchTool, webExtractTool, premiumTavilyTools } from "./tools/tavily_tools.ts";
 import { createSkillTools } from "./tools/skill_tools.ts";
 import { connectMcpServers } from "./mcp.ts";
 import { InMemoryCredentialStore } from "./in_memory_credentials.ts";
 import { getMainAgent, type SubAgentId, type AgentId } from "./agent_registry.ts";
+import { speakerContextExtension } from "./speaker_context.ts";
 import { t, getLang } from "./locale.ts";
 
 // Asia/Shanghai 当前时间，注入到 system prompt 供情境台词使用；语言随界面
@@ -153,9 +155,13 @@ ${memoryContent || "（暂无记忆）"}
 - \`小习惯\` — 工作/工具偏好（"写 Rust 喜欢先看 lifetime"、"不喜欢 commit 时自动 push"）
 - \`我们之间\` — 互动记忆、心情基线、共同事件
 
+# 群聊发言者标记
+
+对话历史中，assistant 消息会带「角色名：」前缀标明发言者（如「阿洛娜：」「砂狼白子：」），用户输入是 Sensei 说的。你回复时不要加任何名字前缀。
+
 # Capabilities
 
-你帮老师处理编码、研究、电脑任务、对话。已注册工具：文件读写（内置 read 可直接读图片 png/jpg 等给多模态模型）、bash、grep/find/ls、Computer Use（截图/点击/键入/滚动）、TTS（自动）、transcribe（STT 兜底）、change_emotion（桌宠情绪）、save_memory、load_skills（列出/加载技能）、还有 MCP 工具。
+你帮老师处理编码、研究、电脑任务、对话。已注册工具：文件读写（内置 read 可直接读图片 png/jpg 等给多模态模型）、bash、grep/find/ls、Computer Use（截图/点击/键入/滚动）、TTS（自动）、transcribe（STT 兜底）、change_emotion（桌宠情绪）、save_memory、load_skills（列出/加载技能）、web_search（Tavily 实时搜索）、web_extract（抓取网页正文）、web_crawl/web_map/web_research（配置 tavilyApiKey 后可用：整站爬取/站点结构/深度研究）、还有 MCP 工具。
 
 ### Behavior Guidelines
 
@@ -255,9 +261,13 @@ ${memoryContent || "(no memory yet)"}
 - \`Habits\` — work/tool preferences ("likes to check lifetimes first when writing Rust", "dislikes auto-push on commit")
 - \`Us\` — interaction memories, mood baseline, shared events
 
+# Group Chat Speaker Markers
+
+In the conversation history, assistant messages carry a \`Name:\` prefix showing who said them (e.g. "Arona:", "Shiroko:"). User inputs are Sensei speaking. When you reply, do NOT add any name prefix.
+
 # Capabilities
 
-You help Sensei with coding, research, computer tasks, and conversation. Registered tools: file read/write (the built-in read can read images like png/jpg for multimodal models), bash, grep/find/ls, Computer Use (screenshot/click/type/scroll), TTS (automatic), transcribe (STT fallback), change_emotion (desktop pet emotion), save_memory, load_skills (list/load skills), plus MCP tools.
+You help Sensei with coding, research, computer tasks, and conversation. Registered tools: file read/write (the built-in read can read images like png/jpg for multimodal models), bash, grep/find/ls, Computer Use (screenshot/click/type/scroll), TTS (automatic), transcribe (STT fallback), change_emotion (desktop pet emotion), save_memory, load_skills (list/load skills), web_search (real-time search via Tavily), web_extract (fetch page content), web_crawl/web_map/web_research (site crawl / site map / deep research; available once a tavilyApiKey is configured), plus MCP tools.
 
 ### Behavior Guidelines
 
@@ -361,9 +371,13 @@ ${memoryContent || "（暂无记忆）"}
 - \`小习惯\` — 工作/工具偏好（"写 Rust 喜欢先看 lifetime"、"不喜欢 commit 时自动 push"）
 - \`我们之间\` — 互动记忆、心情基线、共同事件
 
+# 群聊发言者标记
+
+对话历史中，assistant 消息会带「角色名：」前缀标明发言者（如「阿洛娜：」「砂狼白子：」），用户输入是 Sensei 说的。你回复时不要加任何名字前缀。
+
 # Capabilities
 
-你帮老师处理编码、研究、电脑任务、对话。已注册工具：文件读写（内置 read 可直接读图片 png/jpg 等给多模态模型）、bash、grep/find/ls、Computer Use（截图/点击/键入/滚动）、TTS（自动）、transcribe（STT 兜底）、change_emotion（桌宠情绪）、save_memory、load_skills（列出/加载技能）、还有 MCP 工具。
+你帮老师处理编码、研究、电脑任务、对话。已注册工具：文件读写（内置 read 可直接读图片 png/jpg 等给多模态模型）、bash、grep/find/ls、Computer Use（截图/点击/键入/滚动）、TTS（自动）、transcribe（STT 兜底）、change_emotion（桌宠情绪）、save_memory、load_skills（列出/加载技能）、web_search（Tavily 实时搜索）、web_extract（抓取网页正文）、web_crawl/web_map/web_research（配置 tavilyApiKey 后可用：整站爬取/站点结构/深度研究）、还有 MCP 工具。
 
 ### Behavior Guidelines
 
@@ -463,9 +477,13 @@ ${memoryContent || "(no memory yet)"}
 - \`Habits\` — work/tool preferences ("likes to check lifetimes first when writing Rust", "dislikes auto-push on commit")
 - \`Us\` — interaction memories, mood baseline, shared events
 
+# Group Chat Speaker Markers
+
+In the conversation history, assistant messages carry a \`Name:\` prefix showing who said them (e.g. "Arona:", "Shiroko:"). User inputs are Sensei speaking. When you reply, do NOT add any name prefix.
+
 # Capabilities
 
-You help Sensei with coding, research, computer tasks, and conversation. Registered tools: file read/write (the built-in read can read images like png/jpg for multimodal models), bash, grep/find/ls, Computer Use (screenshot/click/type/scroll), TTS (automatic), transcribe (STT fallback), change_emotion (desktop pet emotion), save_memory, load_skills (list/load skills), plus MCP tools.
+You help Sensei with coding, research, computer tasks, and conversation. Registered tools: file read/write (the built-in read can read images like png/jpg for multimodal models), bash, grep/find/ls, Computer Use (screenshot/click/type/scroll), TTS (automatic), transcribe (STT fallback), change_emotion (desktop pet emotion), save_memory, load_skills (list/load skills), web_search (real-time search via Tavily), web_extract (fetch page content), web_crawl/web_map/web_research (site crawl / site map / deep research; available once a tavilyApiKey is configured), plus MCP tools.
 
 ### Behavior Guidelines
 
@@ -523,6 +541,8 @@ export async function initAgent(): Promise<{
 
   // 3. Load memory
   const memoryContent = loadMemory();
+  // 记忆增量基线 = system prompt 开头的初始快照，后续 MEMORY.md 变更走 getMemoryDelta() 注入
+  snapshotMemory();
 
   // 4. Create ResourceLoader with custom system prompt
   const loader = new DefaultResourceLoader({
@@ -530,6 +550,9 @@ export async function initAgent(): Promise<{
     agentDir: ARONA_DIR,
     systemPromptOverride: () => buildSystemPrompt(memoryContent),
     appendSystemPromptOverride: () => [],
+    // 群聊发言者标注：发送边界给带 speaker 的历史 assistant 消息加「角色名：」前缀，
+    // 让模型区分谁说的（speaker 字段不会发给模型，必须编码进文本）
+    extensionFactories: [speakerContextExtension],
   });
   await loader.reload();
 
@@ -543,6 +566,10 @@ export async function initAgent(): Promise<{
     saveMemoryTool,
     makeChangeEmotionTool(getMainAgent()),
     ...createSkillTools(loader),
+    webSearchTool,
+    webExtractTool,
+    // /crawl /map /research 端点强制要求 API Key：无 key 时对 Agent 隐藏
+    ...(config.tavilyApiKey ? premiumTavilyTools : []),
     ...mcpTools,
   ];
 
@@ -614,6 +641,7 @@ function buildSubSystemPrompt(id: SubAgentId, memoryContent: string): string {
 - You are one of several desktop-pet characters chatting with Sensei (the user).
 - After the main agent finishes replying, each enabled sub-agent takes a turn. Keep your reply SHORT (one or two sentences), natural, in-character, and add nothing but your own spoken line.
 - Do not repeat or summarize the main agent's reply.
+- In the conversation history, assistant messages carry a \`Name:\` prefix showing who said them (e.g. "Arona:", "Shiroko:", "Hoshino:"); user inputs are Sensei speaking. When you reply, do NOT add any name prefix.
 - Your reply may be read aloud by TTS; keep each sentence under 50 characters/words when possible.
 - If you have nothing to add, call keep_silent instead of writing filler text.
 - Before every text output you MUST call change_emotion once to set the emotion for that segment (use none or saying when nothing stands out).
@@ -622,12 +650,16 @@ function buildSubSystemPrompt(id: SubAgentId, memoryContent: string): string {
 
 - change_emotion: set the desktop pet emotion for this segment.
 - keep_silent: stay silent this turn; call it when you have nothing to say. Do not write any text after calling it.
+- web_search: real-time web search; use it when Sensei asks about latest/external information or when you want to look something up.
+- web_extract: fetch a page's body text; use it when you already have a URL and want to read the full content.
+- web_crawl / web_map / web_research: site crawling, site mapping, and deep research — only available when a Tavily API key is configured.
 ` : `
 # 群聊规则
 
 - 你是多个桌宠角色之一，正在陪老师聊天。
 - 主 Agent 回复完毕后，每个启用的子 Agent 依次发言。回复保持简短（一两句），贴角色，只说自己的台词。
 - 不要复读或总结主 Agent 的话。
+- 对话历史中，assistant 消息带「角色名：」前缀标明发言者（如「阿洛娜：」「砂狼白子：」「小鸟游星野：」）；用户输入是 Sensei 说的。你发言时不要加名字前缀。
 - 你的回复可能被 TTS 朗读，尽量每句 <50 字。
 - 无话可说就调用 keep_silent，不要写废话。
 - 每次输出文字前 MUST 调用一次 change_emotion 设置本段情绪（没有突出情绪时用 none 或 saying）。
@@ -636,6 +668,9 @@ function buildSubSystemPrompt(id: SubAgentId, memoryContent: string): string {
 
 - change_emotion：设置本段发言的桌宠情绪。
 - keep_silent：本轮保持沉默；无话可说时调用。调用后不要再输出任何文字。
+- web_search：实时网页搜索；老师问最新/外部信息、或你想查东西时调用。
+- web_extract：抓取网页正文；已有 URL、想读全文时调用。
+- web_crawl / web_map / web_research：整站爬取、站点结构、深度研究——仅在配置了 Tavily API Key 时可用。
 `;
   const memoryBlock = isEn
     ? `# Persistent Memory (shared with the main agent)
@@ -671,17 +706,25 @@ export async function initSubAgent(
   }
 
   const memoryContent = loadMemory();
+  // 与主 session 同基线：子 Agent system prompt 也用同一份初始记忆快照
+  snapshotMemory();
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: ARONA_DIR,
     systemPromptOverride: () => buildSubSystemPrompt(agentId, memoryContent),
     appendSystemPromptOverride: () => [],
+    // 与主 session 相同的群聊发言者标注扩展（子 Agent 复制主 session 全量后同样需要区分谁说的）
+    extensionFactories: [speakerContextExtension],
   });
   await loader.reload();
 
   const customTools: ToolDefinition[] = [
     makeChangeEmotionTool(agentId),
     keepSilentTool,
+    webSearchTool,
+    webExtractTool,
+    // /crawl /map /research 端点强制要求 API Key：无 key 时对 Agent 隐藏
+    ...(config.tavilyApiKey ? premiumTavilyTools : []),
   ];
 
   const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
@@ -700,8 +743,11 @@ export async function initSubAgent(
     thinkingLevel: config.thinkingLevel as any,
     modelRuntime,
     resourceLoader: loader,
-    // 仅暴露两个纯聊天工具；built-in 工具全部不启用
-    tools: ["change_emotion", "keep_silent"],
+    // 仅暴露纯聊天工具 + Tavily 搜索；built-in 工具全部不启用
+    tools: [
+      "change_emotion", "keep_silent", "web_search", "web_extract",
+      ...(config.tavilyApiKey ? ["web_crawl", "web_map", "web_research"] : []),
+    ],
     customTools,
     sessionManager: SessionManager.inMemory(),
     settingsManager,

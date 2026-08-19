@@ -687,7 +687,7 @@ export class Repl {
     }
   }
 
-  /** 从 session 新增消息中提取本轮 assistant 纯文本（用于子 Agent 注入主回复 / 同步主 session）。 */
+  /** 从 session 新增消息中提取本轮 assistant 纯文本（用于 TTS / 回填主 session）。 */
   private extractNewAssistantText(stateMessages: any[], startLen: number): string {
     const texts: string[] = [];
     for (const m of stateMessages.slice(startLen)) {
@@ -704,9 +704,11 @@ export class Repl {
   /**
    * 运行单个 Agent 的一轮（主或子）。
    * - 切 renderer/TTS 到该角色；
-   * - 子 Agent 为 stateful 会话：只追加本轮输入（Sensei 输入 + 主 Agent 本轮回复），
-   *   不再整段覆盖注入全量群聊历史——子 Agent 只记自己参与的轮次，前缀稳定可命中缓存；
-   * - 提取回复：主 Agent 标记 speaker 便于落盘；子 Agent 同时追加到主 session.messages（群聊）。
+   * - 主 Agent：直接 prompt 用户输入（全量群聊历史已在 session 里）；
+   * - 子 Agent：每轮把主 session 的全量群聊日志复制为自己的上下文（与主 Agent 看到的完全一致，
+   *   用户输入/主回复/其他子回复都在内，无需拼接注入），只追加一条固定"轮到你了"触发消息；
+   * - 提取回复：主 Agent 标记 speaker（历史回放 + 发送边界标注发言者）；
+   *   子 Agent 回填主 session（speaker 标记），形成共享群聊历史。
    * 返回该轮文本（可能为空，例如 keep_silent）。
    */
   private async runOneAgent(
@@ -714,20 +716,23 @@ export class Repl {
     agentId: AgentId,
     input: string,
     isSub: boolean,
-    mainReply?: string,
   ): Promise<string> {
     this.setActiveAgent(agentId, session);
     // 段边界切音色：即使目标角色无音色也要更新 currentAgent，保证 isTtsEnabledFor 判断正确
     this.ttsStream.setVoice(agentId);
 
+    if (isSub) {
+      // 子 Agent：复制主 session 全量群聊日志作为上下文（浅拷贝，元素引用共享）。
+      // 主/子聊天记录完全一致 → 各 Agent 前缀稳定，各自命中各自缓存（system prompt 人设不同 → 不同缓存条目）。
+      session.agent.state.messages = [...(this.session.agent.state.messages as any[])];
+    }
+
     const stateMessages = session.agent.state.messages as any[];
     const startLen = stateMessages.length;
 
-    // 子 Agent：stateful 会话，session.prompt 正常追加到自己的 messages（不重置）。
+    // 子 Agent 的触发消息：固定短句（上下文在复制来的全量日志里，这里只负责"叫醒"它发言）
     const promptText = isSub
-      ? (mainReply
-          ? `${t("Sensei：", "Sensei: ")}${input}\n\n${t(`（主 Agent 本轮回复：${mainReply}）`, `(Main agent's reply this turn: ${mainReply})`)}`
-          : `${t("Sensei：", "Sensei: ")}${input}`)
+      ? t("（现在轮到你，请简短发言）", "(It's your turn now, speak briefly)")
       : input;
 
     try {
@@ -740,13 +745,13 @@ export class Repl {
     const text = this.extractNewAssistantText(stateMessages, startLen);
     if (!text) return "";
 
-    // 主 Agent 的 assistant 消息补 speaker 标记（历史回放显示角色名）
     if (!isSub) {
+      // 主 Agent 的 assistant 消息补 speaker 标记（历史回放显示角色名 + speaker_context 扩展标注发言者）
       for (const m of stateMessages.slice(startLen)) {
         if (m.role === "assistant") m.speaker = agentId;
       }
     } else {
-      // 子 Agent 回复追加进主 session.messages，形成共享群聊历史（主 Agent 下轮可见）
+      // 子 Agent 回复回填主 session，形成共享群聊历史（主 Agent 及其他子 Agent 下轮可见）
       (this.session.agent.state.messages as any[]).push({
         role: "assistant",
         speaker: agentId,
@@ -777,8 +782,13 @@ export class Repl {
     try {
       await this.ensureSubSessions();
 
-      // 1. 主 Agent 回复（返回其纯文本，供子 Agent 注入上下文）
-      const mainReply = await this.runOneAgent(this.session, getMainAgent(), input, false);
+      // 0. 记忆增量检测：MEMORY.md 运行时变更 → 追加到下一轮主 Agent 的 user 消息末尾
+      //    （子 Agent 复制主 session 全量后自动继承，无需单独注入）
+      const memoryDelta = memory.getMemoryDelta();
+      const mainInput = memoryDelta ? `${input}\n\n${memoryDelta}` : input;
+
+      // 1. 主 Agent 回复
+      await this.runOneAgent(this.session, getMainAgent(), mainInput, false);
       if (this.aborted) return;
       await this.waitTurnSettled(getMainAgent());
       if (this.aborted) return;
@@ -787,7 +797,7 @@ export class Repl {
       for (const subId of getSubAgents()) {
         const subSession = this.subSessions.get(subId);
         if (!subSession) continue;
-        await this.runOneAgent(subSession, subId, input, true, mainReply);
+        await this.runOneAgent(subSession, subId, input, true);
         if (this.aborted) return;
         await this.waitTurnSettled(subId);
         if (this.aborted) return;

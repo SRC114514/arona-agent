@@ -33,7 +33,7 @@ arona voice add [<character-name>]   # omit the name to enter the TUI for missin
 ## Key Features
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
-- **Voice**: Real-time streaming TTS + STT.
+- **Voice**: Non-streaming TTS (whole-sentence synthesis for natural prosody) + STT.
 - **Desktop pet**: transparent frameless always-on-top Electron window, Spine skeleton idle animation + emotion switching + cursor-following pupils + drag/head-pat easter egg + full-screen click/trail FX.
 - **Multi-character group chat**: main agent plus sub agents in separate always-on-top windows on the same screen. After the main agent replies, each enabled sub agent takes a turn in order; `keep_silent` lets a character skip its turn.
 
@@ -56,6 +56,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `apiBaseUrl` | API base URL (empty = auto-matched by model name) | — |
 | `model` | Model name | `openai/gpt-4o` |
 | `thinkingLevel` | Thinking level | `medium` |
+| `contextWindow` | Context window | `1000000` |
 | `language` | Interface language (`auto`/`zh`/`en`) | `auto` |
 | `mainAgent` | Main agent (`arona`/`plana`) | `arona` |
 | `subAgents` | Enabled sub agents array | `[]` |
@@ -64,12 +65,13 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
 | `ttsApiKey` | DashScope API key (TTS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
-| `ttsSampleRate` | TTS sample rate | `22050` |
+| `ttsSampleRate` | TTS sample rate (deprecated: non-streaming TTS uses fixed 24000) | `22050` |
 | `sttApiKey` | DashScope API key (STT) | — |
 | `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
 | `sttFormat` | STT audio format | `pcm` |
 | `sttSampleRate` | STT sample rate | `16000` |
 | `cuaApiKey` | Computer Use (cua) API key | — |
+| `tavilyApiKey` | Tavily search API key (omit to use the free shared pool for web_search/web_extract, rate-limited) | — |
 | `pythonPath` | Python interpreter path | `python3` |
 | `mcpServers` | MCP server config (JSON object) | `{}` |
 
@@ -93,7 +95,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 ## Desktop Pet & STT Hotkey
 
-- **Desktop pet**: transparent frameless always-on-top window with a looping Spine skeleton idle animation (`Idle_01`) as its base. Before each message segment the agent calls `change_emotion`; Drag to move the window; shaking the head region left-right triggers a "head-pat" easter egg; clicks/drags also fire full-screen click and trail FX. TTS plays sentence by sentence, and the emotion persists until TTS finishes, then reverts to the default automatically. 
+- **Desktop pet**: transparent frameless always-on-top window with a looping Spine skeleton idle animation (`Idle_01`) as its base. Before each message segment the agent calls `change_emotion`; Drag to move the window; shaking the head region left-right triggers a "head-pat" easter egg; clicks/drags also fire full-screen click and trail FX. TTS plays sentence by sentence, and the emotion persists until TTS finishes, then reverts to the default automatically. The speech bubble appears on the character's right side (never covering the face). 
 
   `/change-agent` provides a grouped picker: single-select main agent + multi-select sub agents; Sub agents only have `change_emotion` and `keep_silent` tools.
 - **STT hotkey**: right Cmd key — press and hold for ≥ 2 seconds to start a one-shot recording.

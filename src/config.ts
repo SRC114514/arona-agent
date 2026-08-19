@@ -60,6 +60,8 @@ interface AronaConfig {
   sttEnabled: boolean;
   // Cua
   cuaApiKey: string;
+  // Tavily（网页搜索；留空走 keyless 共享池，免费限流）
+  tavilyApiKey: string;
   // Misc
   pythonPath: string;
   mcpServers: Record<string, McpServerConfig>;
@@ -91,6 +93,8 @@ interface Settings {
   sttFormat?: string;
   sttSampleRate?: number;
   cuaApiKey?: string;
+  // Tavily API Key（可选）：不填则 web_search/web_extract 走 keyless 共享池
+  tavilyApiKey?: string;
   pythonPath?: string;
   mcpServers?: Record<string, McpServerConfig>;
 }
@@ -231,6 +235,7 @@ function loadConfig(): AronaConfig {
     sttEnabled: noVoice ? false : (s.sttEnabled ?? true),
 
     cuaApiKey: s.cuaApiKey || "",
+    tavilyApiKey: s.tavilyApiKey || "",
 
     pythonPath: s.pythonPath || (process.platform === "win32" ? "python" : "python3"),
     mcpServers: s.mcpServers || {},
