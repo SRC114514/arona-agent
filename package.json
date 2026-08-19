@@ -1,7 +1,7 @@
 {
   "name": "arona-agent",
-  "version": "1.0.0",
-  "description": "ARONA - Terminal AI Agent with desktop pet, Computer Use, voice cloning, TTS/STT, and persistent memory",
+  "version": "1.0.2",
+  "description": "Terminal AI Agent with desktop pet Arona — eye-tracking pupils, voice cloning, Computer Use, TTS/STT, MCP.",
   "license": "MIT",
   "type": "module",
   "bin": {

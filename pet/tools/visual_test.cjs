@@ -156,10 +156,12 @@ app.whenReady().then(() => {
       nodeIntegration: false,
     },
   });
-  ipcMain.handle("pet:get-agent-config", () => ({ id: AGENT_ID, ...AGENT }));
+  // isMain:false：回归只测摸头路径，明确禁用 dizzy 检测，合成手势不受新逻辑干扰
+  ipcMain.handle("pet:get-agent-config", () => ({ id: AGENT_ID, isMain: false, ...AGENT }));
   ipcMain.on("pet:drag", () => {});
   ipcMain.on("pet:dragend", () => {});
   ipcMain.on("pet:shake", () => {});
+  ipcMain.on("pet:dizzy", () => {});
   // 忽略真实鼠标输入：测试期间用户鼠标划过窗口会触发真实 mousemove，干扰合成手势
   // （合成事件走 document.dispatchEvent，不受影响）
   win.webContents.on("console-message", (event) => console.log("[R]", event && event.message));

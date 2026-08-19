@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import { t } from "./locale.ts";
 import { getAgentLabel, getMainAgent } from "./agent_registry.ts";
-import { splitStreamedText, countTextUnits } from "./text_split.ts";
+import { countTextUnits } from "./text_split.ts";
 
 let showThinking = true;
 let showToolDetails = true;
@@ -12,7 +12,6 @@ export function setShowToolDetails(v: boolean) { showToolDetails = v; }
 export function getShowToolDetails() { return showToolDetails; }
 
 const THINKING_TAIL_LINES = 3; // 流式与历史回放统一：只显示思考尾部 N 行
-const PET_BUBBLE_FORCE_SPLIT_LEN = 9999; // 气泡只显示完整句子，不做强切，禁止截断
 const PET_MAX_BUBBLE_LEN = 50;
 
 // ── 显示宽度 & 行数工具（CJK/全角算 2，ANSI 控制符算 0）────────────
@@ -52,8 +51,7 @@ function physicalLinesForRow(visibleText: string): number {
 type PetTextKind = "mid" | "final";
 
 export function createRenderer(
-  onTurnEnd?: () => void,
-  onTextDelta?: (delta: string) => void,
+  onTurnEnd?: (text: string) => void,
   onPetText?: (kind: PetTextKind, data: string) => void,
   initialSpeakerLabel?: string,
 ) {
@@ -145,10 +143,9 @@ export function createRenderer(
     thinkingBuffer = "";
   }
 
-  // 气泡状态
-  let petMidBuffer = "";
-  // 已上气泡的内容（按顺序累计，行用 "\n" 分隔）；超出 PET_MAX_BUBBLE_LEN 字时挤掉最早的
-  let petShownLines: string[] = [];
+  // 回合文本累积：只保留最后一个 assistant message 的文本（TTS 与气泡都在 agent_end 收尾）
+  let curMsgText = ""; // 当前 message 的 text_delta 累积
+  let lastText = ""; // 最近一个 message 的完整文本（候选：中间段会被后续覆盖）
 
   /** 把 lines 按"最早的优先保留、最后一条优先被挤掉"裁到总字数 < maxUnits。 */
   function trimBubbleLines(lines: string[], maxUnits: number): string[] {
@@ -158,27 +155,6 @@ export function createRenderer(
       lines.shift();
     }
     return lines;
-  }
-
-  function flushPetMid(delta: string) {
-    petMidBuffer += delta;
-    if (!onPetText) return;
-    const { sentences, rest } = splitStreamedText(petMidBuffer, PET_BUBBLE_FORCE_SPLIT_LEN);
-    petMidBuffer = rest;
-    for (const sent of sentences) {
-      const clean = sent.trim();
-      if (!clean) continue;
-      const units = countTextUnits(clean);
-      if (units === 0) continue;
-      // 单句本身就超过上限：仍显示一句（不切，按真实样子），不参与后续滚动
-      if (units >= PET_MAX_BUBBLE_LEN) {
-        petShownLines = [clean];
-      } else {
-        petShownLines.push(clean);
-        petShownLines = trimBubbleLines(petShownLines, PET_MAX_BUBBLE_LEN);
-      }
-      onPetText?.("mid", petShownLines.join("\n"));
-    }
   }
 
   return {
@@ -192,8 +168,7 @@ export function createRenderer(
             inText = false;
             inThinking = false;
             textPrefixWritten = false;
-            petMidBuffer = "";
-            petShownLines = [];
+            curMsgText = "";
             thinkingBuffer = "";
             drawnThinkingLines = 0;
             break;
@@ -213,9 +188,8 @@ export function createRenderer(
                 }
               }
               process.stdout.write(ae.delta);
-              // 实时 TTS：文本增量边生成边送入非流式合成管道（按标点成句入队）
-              onTextDelta?.(ae.delta);
-              flushPetMid(ae.delta);
+              // 文本只累积到当前 message，TTS 与气泡都在 agent_end 一次性收尾（只读最后一段）
+              curMsgText += ae.delta;
             } else if (ae.type === "thinking_delta") {
               if (showThinking) {
                 if (!inThinking) {
@@ -239,37 +213,36 @@ export function createRenderer(
             if (inText) {
               process.stdout.write("\n");
             }
-            // 注意：不再在 message_end 触发 TTS 收尾——那会把被 change_emotion 等工具调用
-            // 切断的句子（如"好好吃饭哦"）拆成两段分别朗读。TTS 收尾改在 agent_end（onTurnEnd）。
-            // 把没有标点收尾的残段挂到累计池（已通过 mid 完整成句的部分不重复）。
-            // 残段本身是句子的尾巴，无完整标点，长度不可控：若超上限就单独占一行（保留原样、不切）。
-            const leftover = petMidBuffer.trim();
-            if (leftover) {
-              const units = countTextUnits(leftover);
-              if (units > 0) {
-                if (units >= PET_MAX_BUBBLE_LEN) {
-                  petShownLines = [leftover];
-                } else {
-                  petShownLines.push(leftover);
-                  petShownLines = trimBubbleLines(petShownLines, PET_MAX_BUBBLE_LEN);
-                }
-                onPetText?.("final", petShownLines.join("\n"));
-              }
-            }
+            // 暂存最近一个 message 的完整文本作为"最后一段"候选；中间段会被后续覆盖。
+            // TTS 与气泡都不在此处收尾——agent_end 时才决定朗读/上屏哪一段。
+            lastText = curMsgText.trim();
+            curMsgText = "";
             inThinking = false;
             inText = false;
-            petMidBuffer = "";
-            // 注意：petShownLines 不清空——final 是回合末尾，气泡要保留到 tts_end 再隐藏
-            // （hidPetBubble 在 tts 播放结束时才触发）
             thinkingBuffer = "";
             drawnThinkingLines = 0;
             break;
           }
 
-          case "agent_end":
-            // 回合全部文字输出完毕：收尾 TTS 残段（跨 message 累积的句子尾巴），触发合成队列排空
-            onTurnEnd?.();
+          case "agent_end": {
+            // 回合全部文字输出完毕：只取最后一个 message 的文本收尾 TTS（中间过程性发言不朗读），
+            // 气泡与 TTS 同步，一次性上屏最后一段（只发 final）。
+            if (lastText) {
+              onTurnEnd?.(lastText);
+              if (onPetText) {
+                const units = countTextUnits(lastText);
+                if (units > 0) {
+                  if (units >= PET_MAX_BUBBLE_LEN) {
+                    onPetText("final", lastText);
+                  } else {
+                    onPetText("final", trimBubbleLines([lastText], PET_MAX_BUBBLE_LEN).join("\n"));
+                  }
+                }
+              }
+            }
+            lastText = "";
             break;
+          }
 
           case "tool_execution_start":
             if (showToolDetails) {

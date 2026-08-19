@@ -8,7 +8,9 @@ contextBridge.exposeInMainWorld("petAPI", {
   drag: (dx, dy) => ipcRenderer.send("pet:drag", dx, dy),
   dragEnd: () => ipcRenderer.send("pet:dragend"),
   shake: () => ipcRenderer.send("pet:shake"),
-  onCursor: (cb) => ipcRenderer.on("pet:cursor", (_e, x, y) => cb(x, y)),
+  dizzy: () => ipcRenderer.send("pet:dizzy"),
+  // gx/gy：全局屏幕坐标（按住期间 renderer 用于晃动检测补采样，出窗不断流）
+  onCursor: (cb) => ipcRenderer.on("pet:cursor", (_e, x, y, gx, gy) => cb(x, y, gx, gy)),
   // 点击/拖尾特效：桌宠窗口发全局屏幕坐标 → 主进程 → 全屏特效窗口收
   fxDown: (x, y) => ipcRenderer.send("pet:fx-down", x, y),
   fxMove: (x, y) => ipcRenderer.send("pet:fx-move", x, y),

@@ -16,32 +16,28 @@ import { splitStreamedText, countTextUnits } from "./text_split.ts";
  *   接收：{"event":"ready"} / {"event":"play_start"} / {"event":"play_end"} / {"event":"error","message":...}
  *
  * 行为约定：
- *   - LLM text_delta 边生成边按句切分（共享 text_split.ts：只按终止标点切，不强切）
- *   - 句子进入严格串行队列：合成（HTTP+下载）→ 播放 → 下一句
- *   - 残段跨 assistant message 累积，回合结束（endTurn）才收尾——避免"好好吃饭哦"这类句子
- *     被 change_emotion 等工具调用切成两段、末字被单独朗读
+ *   - 只有回合最后一个 assistant message 的文本走 TTS：renderer 累积 text_delta，
+ *     agent_end 时把最后一段完整文本传给 endTurn(text) 一次性处理（中间穿插工具调用的
+ *     过程性发言不朗读）——避免被 change_emotion 等工具调用切成多段的句子被拆读
+ *   - 整段字数判断：countTextUnits(整段) >= MAX_TURN_LEN 则整段跳过不朗读（长回复静音）
  *   - 围栏代码块（```...```）整块剔除；句内 markdown 成句后剔除
- *   - 长句跳过：字数 >= 50 不朗读（countTextUnits 口径）
+ *   - 句子进入严格串行队列：合成（HTTP+下载）→ 播放 → 下一句
  *   - 音色每句动态取 getVoiceId(currentAgent)，setVoice 仅切换当前角色、无需重启进程
+ *   - 覆盖主 + 子 Agent：同一实例通过 setVoice 切角色
  */
-const MAX_SENTENCE_LEN = 50; // 字数（countTextUnits 口径）>= 50 的句子不朗读
+// 整段字数阈值（countTextUnits 口径）：>= 50 的回复不朗读
+const MAX_SENTENCE_LEN = 50;
 const TTS_FORCE_SPLIT_LEN = 9999; // 仅标点切句、不强切
 
-/** 统计字符串尾部连续反引号数（最多计 2 个：可能是被 delta 切断的 ``` 围栏标记）。 */
-function trailingFenceTicks(s: string): number {
-  let n = 0;
-  for (let i = s.length - 1; i >= 0 && n < 2; i--) {
-    if (s[i] === "`") n++;
-    else break;
-  }
-  return n;
+/** 剔除整段文本中的 ``` 代码围栏（文本已完整，无需跨 delta 状态机）。 */
+function stripCodeBlocks(s: string): string {
+  // 先删成对围栏块，再清掉残留的单个 ```（未闭合/游离标记）
+  return s.replace(/```[\s\S]*?```/g, " ").replace(/```/g, " ");
 }
 
 export class TtsStream {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private pendingCount = 0; // 活跃播放段数（play_start +1 / play_end -1）
-  private buffer = ""; // 未处理文本（切句残段 + 可能被 delta 切断的围栏内容）
-  private inCodeBlock = false; // 跨 delta 的 ``` 围栏状态
   private queue: string[] = []; // 待合成句子队列
   private busy = false; // 当前是否有句子在合成/播放
   private shuttingDown = false;
@@ -65,43 +61,44 @@ export class TtsStream {
 
   /** 切换当前朗读角色音色（非流式下每句 spawn 时动态取 voice，无需重启进程）。 */
   setVoice(agentId: AgentId): void {
-    this.currentAgent = agentId;
-  }
-
-  /**
-   * LLM 文本增量（text_delta）实时推送。剔除代码块后按标点切句，<50 字的句子进入合成队列。
-   * 残段不在此成句——跨 message 累积，回合结束（endTurn）才收尾。
-   */
-  pushText(delta: string): void {
-    if (!this.isEnabledFor(this.currentAgent)) return;
-    if (!delta) return;
-    this.ingestDelta(delta);
-  }
-
-  /**
-   * 回合结束：残段按同规则收尾（未闭合代码块整段丢弃），并触发队列排空。
-   * 由 renderer 在 agent_end 事件时调用（而非 message_end，避免句中被工具调用截断）。
-   */
-  endTurn(): void {
-    if (!this.isEnabledFor(this.currentAgent)) return;
-    if (this.inCodeBlock) {
-      this.buffer = "";
-      this.inCodeBlock = false;
-    } else {
-      const leftover = this.buffer.trim();
-      this.buffer = "";
-      if (leftover) this.emitSentence(leftover);
+    if (this.currentAgent !== agentId) {
+      this.currentAgent = agentId;
+      if (verbose) console.error(`[tts] setVoice ${agentId}`);
     }
+  }
+
+  /**
+   * 回合结束：处理最后一段回复文本（由 renderer 在 agent_end 时调用）。
+   * - 空文本（keep_silent / 无最终发言）→ 不朗读
+   * - 整段字数 >= MAX_SENTENCE_LEN → 整段跳过（长回复静音）
+   * - 否则切句入队，串行合成播放
+   */
+  endTurn(text: string): void {
+    if (!this.isEnabledFor(this.currentAgent)) return;
+    if (!text || !text.trim()) {
+      if (verbose) console.error("[tts] endTurn: no final text, skip");
+      return;
+    }
+    const full = stripCodeBlocks(text).trim();
+    if (!full) return;
+    const units = countTextUnits(stripMarkdown(full));
+    if (units === 0 || units >= MAX_SENTENCE_LEN) {
+      if (verbose) console.error(`[tts] skip whole turn units=${units} "${full.slice(0, 40)}"`);
+      return;
+    }
+    const { sentences, rest } = splitStreamedText(full, TTS_FORCE_SPLIT_LEN);
+    for (const s of sentences) this.emitSentence(s);
+    const tail = rest.trim();
+    if (tail) this.emitSentence(tail);
     void this.drain();
   }
 
   /** 打断当前合成与队列（新输入 / Esc / Ctrl+C / STT 触发时调用）。 */
   cancel(): void {
-    this.buffer = "";
-    this.inCodeBlock = false;
     this.queue = [];
     this.pendingCount = 0;
     this.killProc();
+    if (verbose) console.error("[tts] cancel (queue cleared)");
   }
 
   /** 切换角色后清空残余（非流式音色动态取，无需杀进程重拉）。 */
@@ -120,45 +117,19 @@ export class TtsStream {
   // ------------------------------------------------------------
 
   /**
-   * 处理一段新到达的增量：先用围栏状态机剔除代码块，再把安全文本按标点切句。
-   * - 完整 ```...``` 块整块丢弃（代码不朗读）；块内容可能跨多个 delta，未闭合前全部挂起。
-   * - 尾部 1-2 个连续反引号可能是被 delta 切断的围栏起始/结束，暂留 buffer 等下一 delta 判定。
-   */
-  private ingestDelta(delta: string): void {
-    let rest = this.buffer + delta;
-    let safe = "";
-    for (;;) {
-      const fence = rest.indexOf("```");
-      if (!this.inCodeBlock) {
-        if (fence === -1) {
-          const hold = trailingFenceTicks(rest);
-          safe += rest.slice(0, rest.length - hold);
-          rest = rest.slice(rest.length - hold);
-          break;
-        }
-        safe += rest.slice(0, fence) + " "; // 补空格，避免删除代码块后前后词粘连
-        rest = rest.slice(fence + 3);
-        this.inCodeBlock = true;
-      } else {
-        if (fence === -1) break; // 未闭合：内容原样挂在 buffer，等闭合围栏到达后重扫
-        rest = rest.slice(fence + 3);
-        this.inCodeBlock = false;
-      }
-    }
-    const { sentences, rest: rem } = splitStreamedText(safe, TTS_FORCE_SPLIT_LEN);
-    for (const s of sentences) this.emitSentence(s);
-    this.buffer = rem + rest;
-  }
-
-  /**
    * 句级过滤：剔除句内 markdown 后按字数判断。字数口径 = 中文每字 1、英文单词 1、
-   * 符号不计（countTextUnits）；字数为 0（纯符号）或 >= 50 的句子不朗读。
+   * 符号不计（countTextUnits）；字数为 0（纯符号）的句子不朗读。
+   * （整段已 < MAX_SENTENCE_LEN，单句必然 < 阈值，此处过滤为纯防御）
    */
   private emitSentence(sentence: string): void {
     const clean = stripMarkdown(sentence).trim();
     if (!clean) return;
     const units = countTextUnits(clean);
-    if (units === 0 || units >= MAX_SENTENCE_LEN) return;
+    if (units === 0 || units >= MAX_SENTENCE_LEN) {
+      if (verbose) console.error(`[tts] skip sentence units=${units} "${clean.slice(0, 40)}"`);
+      return;
+    }
+    if (verbose) console.error(`[tts] queue push units=${units} "${clean.slice(0, 40)}"`);
     this.queue.push(clean);
     void this.drain();
   }
@@ -172,7 +143,9 @@ export class TtsStream {
     try {
       while (this.queue.length > 0 && !this.shuttingDown) {
         const sentence = this.queue.shift()!;
+        if (verbose) console.error(`[tts] speakOne start "${sentence.slice(0, 40)}"`);
         const ok = await this.speakOne(sentence);
+        if (verbose) console.error(`[tts] speakOne end ok=${ok} remaining=${this.queue.length}`);
         if (!ok) {
           aborted = true;
           break;
@@ -193,6 +166,12 @@ export class TtsStream {
   private speakOne(text: string): Promise<boolean> {
     return new Promise((resolve) => {
       this._killRequested = false;
+      let settled = false;
+      const doResolve = (val: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
       let stdoutBuffer = "";
       const proc = spawnCompat(config.pythonPath, ["-u", join(PYTHON_DIR, "tts_say.py")], {
         env: stripProxyEnv({
@@ -223,13 +202,17 @@ export class TtsStream {
           switch (evt.event) {
             case "play_start":
               this.pendingCount++;
+              if (verbose) console.error(`[tts] play_start pending=${this.pendingCount}`);
               break;
             case "play_end":
               if (this.pendingCount > 0) this.pendingCount--;
-              resolve(true); // 播放完成
+              if (verbose) console.error(`[tts] play_end pending=${this.pendingCount}`);
+              doResolve(true); // 播放完成
               break;
             case "error":
               console.warn(t(`TTS: ${evt.message ?? "unknown error"}`, `TTS: ${evt.message ?? "unknown error"}`));
+              if (verbose) console.error(`[tts] error: ${evt.message}`);
+              // 合成失败不中断队列，靠 close 再 resolve(true) 继续下一句
               break;
             default:
               break;
@@ -238,7 +221,6 @@ export class TtsStream {
       });
 
       proc.stderr.on("data", (data) => {
-        // 非 --verbose 启动时静默 Python stderr
         if (!verbose) return;
         const msg = data.toString().trim();
         if (msg) console.error(`[python:tts_say]`, msg);
@@ -246,11 +228,12 @@ export class TtsStream {
 
       proc.on("close", () => {
         if (this.proc === proc) this.proc = null;
-        resolve(!this._killRequested);
+        // 若已通过 play_end 结算，则 close 不再改写结果；否则按是否被 kill 决定
+        doResolve(!this._killRequested);
       });
       proc.on("error", () => {
         if (this.proc === proc) this.proc = null;
-        resolve(!this._killRequested);
+        doResolve(!this._killRequested);
       });
 
       try {

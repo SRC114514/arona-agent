@@ -6,6 +6,9 @@ import { PET_DIR, verbose } from "./config.ts";
 import { getMainAgent, getSubAgents, type AgentId } from "./agent_registry.ts";
 import { t } from "./locale.ts";
 
+/** 桌宠要注入到下一轮用户消息的手势事件类型（摸头 / dizzy） */
+export type PetGestureType = "pat" | "dizzy";
+
 const PREFIX = "###PET###";
 const MAX_RESTARTS = 3;
 const STDERR_RING_SIZE = 100; // 崩溃时 dump 的 stderr 最近行数
@@ -13,7 +16,8 @@ const STDERR_RING_SIZE = 100; // 崩溃时 dump 的 stderr 最近行数
 // pet 桥是项目里唯一 require("electron") 的地方，这里用国内镜像在 import 之前手动预下载，
 // 避免首次启动时 CLI 卡在慢速的 GitHub Releases 下载上。
 const ELECTRON_DIR = join(PET_DIR, "..", "node_modules", "electron");
-const ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/";
+// 国内源实测：华为云 mirrors.huaweicloud.com/electron/ 可用（v<版本>/*.zip → 200）；npmmirror 亦可。
+const ELECTRON_MIRROR = "https://mirrors.huaweicloud.com/electron/";
 
 // --verbose 调试日志：原样转发 Electron stdout/stderr、spawn 参数、协议消息，
 // 用于锁定 Windows 白屏等"进程活着但无画面"类问题（正常模式这些日志被静默/过滤）。
@@ -60,6 +64,8 @@ class PetBridge {
   private subAgents: AgentId[] = getSubAgents();
   // 待切换角色组合：stop() 后等待旧进程 close 再以新组合拉起（避免双窗口闪现）
   private pendingSelection: { main: AgentId; subs: AgentId[] } | null = null;
+  // 最近一次桌宠手势（摸头/dizzy）：只保留最新一次，供下一条用户消息注入一次后即消费清空
+  private latestGesture: PetGestureType | null = null;
 
   /**
    * Electron 42+ 把二进制下载从 postinstall 挪到了首次 require，而 pet 桥是唯一
@@ -73,20 +79,15 @@ class PetBridge {
     if (!existsSync(join(ELECTRON_DIR, "package.json"))) return "missing";
     if (isElectronInstalled()) return true;
 
-    const border = "─".repeat(46);
-    console.log();
-    console.log(chalk.bold.magenta(border));
-    console.log(chalk.bold.magenta(t("  正在安装 Electron，请耐心等待…", "  Installing Electron, please wait…")));
-    console.log(chalk.gray(t("  首次使用需下载桌面运行时（约 100MB）", "  First run downloads the desktop runtime (~100MB)")));
-    console.log(chalk.gray(t(`  正在从国内镜像下载：${ELECTRON_MIRROR}`, `  Downloading from CN mirror: ${ELECTRON_MIRROR}`)));
-    console.log(chalk.bold.magenta(border));
-    console.log();
+    // 下载期间只显示一行提示，忽略 --verbose；install.js 的进度/冗余输出全部静默（stdio 不继承）
+    console.log(chalk.cyan(t("  正在使用国内源下载Electron……", "  Downloading Electron from CN mirror…")));
 
     const ok = await new Promise<boolean>((resolve) => {
       const child = spawn(process.execPath, [join(ELECTRON_DIR, "install.js")], {
         // 注入国内镜像；用户若已自定义 ELECTRON_MIRROR 则尊重其配置
         env: { ...process.env, ELECTRON_MIRROR: process.env.ELECTRON_MIRROR ?? ELECTRON_MIRROR },
-        stdio: "inherit",
+        // 默认静默（只显示一行提示）；--verbose 时转发 install.js 全量输出便于排障
+        stdio: verbose ? "inherit" : "ignore",
       });
       child.on("error", (err) => {
         console.warn(chalk.yellow(t(`桌宠：无法启动 Electron 安装器（${err.message}）。`, `Pet: failed to launch Electron installer (${err.message}).`)));
@@ -245,8 +246,23 @@ class PetBridge {
       console.error(chalk.red(`[pet:crash] ${msg.kind ?? "process"} reason=${msg.reason ?? "?"} exitCode=${msg.exitCode ?? "?"} url=${msg.url ?? ""}`));
       // verbose：附带原始 detail（main.cjs 在 ARONA_PET_VERBOSE 下会补全字段）
       vlog("crash detail:", JSON.stringify(msg));
+    } else if (msg.type === "shake") {
+      // 摸头：记录最新手势。仅主 Agent 事件（sub 无摸头），无需区分 agent。
+      this.latestGesture = "pat";
+    } else if (msg.type === "dizzy") {
+      this.latestGesture = "dizzy";
     }
-    // moved / shake 目前仅作日志用途，无需处理
+    // moved 目前仅作日志用途，无需处理
+  }
+
+  /**
+   * 取走待注入的手势且只保留最近一次：消费即清空，避免重复注入。
+   * 返回 null 表示没有待注入手势（用户没有摸头/dizzy，正常只发普通消息）。
+   */
+  takeGesture(): PetGestureType | null {
+    const g = this.latestGesture;
+    this.latestGesture = null;
+    return g;
   }
 
   private send(msg: Record<string, unknown>): void {

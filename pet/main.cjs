@@ -147,9 +147,27 @@ function createPetWindow(agentId, index) {
     vlog("did-finish-load", bw.webContents.getURL());
     send({ type: "ready", agent: agentId });
   });
+  // ---- GL 驱动消息缓冲 / 报错解锁（2026-08-20）----
+  // Windows SwiftShader 下 Chromium 把 GL 驱动性能提示（如
+  // "GPU stall due to ReadPixels"，Chromium gl_utils.cc 的 Performance 级消息）
+  // 作为 console 消息打到渲染进程。非 verbose 时是纯噪音——平时静默缓冲；
+  // 一旦程序真报错（error 级 console / did-fail-load / render-process-gone），
+  // 补打缓冲行并解锁后续不过滤，保住排障信息。VERBOSE 全量输出不走此逻辑。
+  const GL_DRIVER_MSG = "GL Driver Message";
+  let glDroppedBuf = []; // 被过滤的 GL 驱动消息（环形，上限 20）
+  let glUnlocked = false; // 报错后不再过滤
+  const unlockGlLogs = () => {
+    if (glUnlocked) return;
+    glUnlocked = true;
+    if (glDroppedBuf.length) {
+      for (const m of glDroppedBuf) console.error(`[pet:render:${agentId}] ${m}`);
+      glDroppedBuf = [];
+    }
+  };
   // 页面加载失败（资源 404 / file:// 路径错 / 加载被拦）：必然白屏，任何模式都要转发
   bw.webContents.on("did-fail-load", (_e, code, desc, url2, isMain) => {
     if (!isMain) return;
+    unlockGlLogs();
     console.error(`[pet:render] did-fail-load agent=${agentId} code=${code} desc=${desc} url=${url2}`);
   });
   // renderer console 转发到 stderr（src/pet.ts 已打印 [pet] 前缀）：页面 JS 错误默认静默
@@ -162,12 +180,24 @@ function createPetWindow(agentId, index) {
     if (VERBOSE) {
       const src = event.sourceId ? ` (${event.sourceId}${line})` : "";
       console.error(`[pet:render:${event.level ?? "?"}:${agentId}]${src} ${msg}`);
-    } else {
-      console.error(`[pet:render:${agentId}]${line} ${msg}`);
+      return;
     }
+    // 非 verbose：严格判断——GL 驱动性能提示平时静默，仅报错后放行
+    if (event.level === 3) {
+      unlockGlLogs(); // 报错：补打被缓冲的 GL 消息，之后不再过滤
+      console.error(`[pet:render:${agentId}]${line} ${msg}`);
+      return;
+    }
+    if (!glUnlocked && msg.includes(GL_DRIVER_MSG)) {
+      if (glDroppedBuf.length >= 20) glDroppedBuf.shift();
+      glDroppedBuf.push(msg);
+      return;
+    }
+    console.error(`[pet:render:${agentId}]${line} ${msg}`);
   });
   // 渲染进程崩溃上报（Windows 透明窗口崩溃的主因；reason/exitCode 可精确定位）
   bw.webContents.on("render-process-gone", (_e, details) => {
+    unlockGlLogs();
     send({ type: "crash", agent: agentId, kind: "render", reason: details.reason, exitCode: details.exitCode, url: bw.webContents.getURL() });
     vlog("render-process-gone", JSON.stringify({ agentId, ...details }));
   });
@@ -252,8 +282,9 @@ ipcMain.on("pet:fx-up", () => {
   if (fxWin && !fxWin.isDestroyed()) fxWin.webContents.send("fx:up");
 });
 
-// ---- 全局光标轮询（~60Hz，DIP 坐标系内运算，供渲染层瞳孔跟随） ----
-// 对每个桌宠窗口分别发送窗口本地坐标；renderer 自行判断是否激活
+// ---- 全局光标轮询（~60Hz，DIP 坐标系内运算，供渲染层瞳孔跟随 + 按住期间晃动检测补采样） ----
+// 对每个桌宠窗口分别发送窗口本地坐标 + 全局坐标（gx/gy：renderer 按住期间用于晃动检测——
+// 光标快速甩动划出窗口时 mousemove 断流，本轮询不断流，轻微出窗仍能采到晃动）
 const CURSOR_POLL_MS = 16;
 let cursorTimer = null;
 const lastCursors = new Map();
@@ -270,7 +301,7 @@ function startCursorTracking() {
       const last = lastCursors.get(agentId);
       if (Math.abs(x - (last?.x ?? NaN)) < 1 && Math.abs(y - (last?.y ?? NaN)) < 1) continue; // 静止节流
       lastCursors.set(agentId, { x, y });
-      bw.webContents.send("pet:cursor", x, y);
+      bw.webContents.send("pet:cursor", x, y, p.x, p.y);
     }
   }, CURSOR_POLL_MS);
 }
@@ -318,10 +349,12 @@ ipcMain.on("pet:dragend", (e) => {
 });
 
 ipcMain.on("pet:shake", (e) => send({ type: "shake", agent: agentBySender(e.sender) }));
+ipcMain.on("pet:dizzy", (e) => send({ type: "dizzy", agent: agentBySender(e.sender) }));
 
 ipcMain.handle("pet:get-agent-config", (e) => {
   const agentId = agentBySender(e.sender);
-  return { id: agentId, ...AGENTS[agentId] };
+  // isMain：renderer 据此让"仅主 Agent 响应"的交互（大幅晃动 dizzy）跳过子窗口
+  return { id: agentId, isMain: agentId === MAIN_AGENT_ID, ...AGENTS[agentId] };
 });
 
 // ---- stdin 协议 ----

@@ -154,19 +154,23 @@ def main():
         cmd = json.loads(line)
     except Exception:
         emit("error", message=t("TTS: 无效的 stdin JSON", "TTS: invalid stdin JSON"))
+        sys.stdout.flush()
         return
     text = (cmd.get("text") or "").strip()
     voice = cmd.get("voice") or ""
     if not text:
         emit("error", message=t("TTS: 空文本", "TTS: empty text"))
+        sys.stdout.flush()
         return
     try:
         audio = synthesize(text, voice)
         emit("play_start")
         play_wav(audio)
         emit("play_end")
+        sys.stdout.flush()
     except Exception as e:
         emit("error", message=str(e))
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ arona
 # Launch with TTS/STT disabled
 arona --no-voice
 
-# Clone/re-clone a character's voice (arona=Arona, plana=Plana)
+# Clone/re-clone a character's voice
 arona voice add [<character-name>]   # omit the name to enter the TUI for missing voices
 ```
 
@@ -34,8 +34,8 @@ arona voice add [<character-name>]   # omit the name to enter the TUI for missin
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
 - **Voice**: Non-streaming TTS (whole-sentence synthesis for natural prosody) + STT.
-- **Desktop pet**: transparent frameless always-on-top Electron window, Spine skeleton idle animation + emotion switching + cursor-following pupils + drag/head-pat easter egg + full-screen click/trail FX.
-- **Multi-character group chat**: main agent plus sub agents in separate always-on-top windows on the same screen. After the main agent replies, each enabled sub agent takes a turn in order; `keep_silent` lets a character skip its turn.
+- **Desktop pet**: transparent frameless always-on-top Electron window + emotion switching + cursor-following pupils + head-pat easter egg + full-screen click/trail FX.
+- **Multi-character group chat**: main agent + sub agents on the same screen. After the main agent replies, sub agents take turns in order.
 
 ---
 
@@ -48,11 +48,11 @@ arona voice add [<character-name>]   # omit the name to enter the TUI for missin
 
 ## Configuration
 
-All configuration lives in the JSON file `~/.arona/settings.json`, generated interactively by `arona setup`. Some additional parameters must be entered manually.
+All configuration lives in the JSON file `~/.arona/settings.json`, mostly generated interactively by `arona setup`. Some advanced parameters must be entered manually.
 
 | Field | Description | Default |
 |---|---|---|
-| `apiKey` | LLM API key | — |
+| `apiKey` | API key | — |
 | `apiBaseUrl` | API base URL (empty = auto-matched by model name) | — |
 | `model` | Model name | `openai/gpt-4o` |
 | `thinkingLevel` | Thinking level | `medium` |
@@ -63,17 +63,16 @@ All configuration lives in the JSON file `~/.arona/settings.json`, generated int
 | `ttsEnabled` | Enable TTS | `true` |
 | `sttEnabled` | Enable STT | `true` |
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
-| `ttsApiKey` | DashScope API key (TTS) | — |
+| `ttsApiKey` | DashScope API key | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
-| `ttsSampleRate` | TTS sample rate (deprecated: non-streaming TTS uses fixed 24000) | `22050` |
-| `sttApiKey` | DashScope API key (STT) | — |
-| `sttModel` | ASR model | `qwen-audio-3.0-asr-flash-streaming` |
+| `sttApiKey` | DashScope API key | — |
+| `sttModel` | STT model | `qwen-audio-3.0-asr-flash-streaming` |
 | `sttFormat` | STT audio format | `pcm` |
 | `sttSampleRate` | STT sample rate | `16000` |
-| `cuaApiKey` | Computer Use (cua) API key | — |
-| `tavilyApiKey` | Tavily search API key (omit to use the free shared pool for web_search/web_extract, rate-limited) | — |
-| `pythonPath` | Python interpreter path | `python3` |
-| `mcpServers` | MCP server config (JSON object) | `{}` |
+| `cuaApiKey` | Cua API key | — |
+| `tavilyApiKey` | Tavily API key | — |
+| `pythonPath` | Python path | `python3` |
+| `mcpServers` | MCP server JSON | `{}` |
 
 Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is added automatically based on the model name prefix or the `apiBaseUrl` domain.
 
@@ -88,18 +87,16 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 | `MEMORY.md` | Persistent memory |
 | `sessions/` | Saved sessions |
 | `skills/` | Custom skills |
-| `undo/` | Undo/redo snapshots (bucketed by working directory) |
+| `undo/` | Undo/redo snapshots |
 | `pet.json` | Desktop pet window position |
 
 ---
 
-## Desktop Pet & STT Hotkey
+## Key functions
 
-- **Desktop pet**: transparent frameless always-on-top window with a looping Spine skeleton idle animation (`Idle_01`) as its base. Before each message segment the agent calls `change_emotion`; Drag to move the window; shaking the head region left-right triggers a "head-pat" easter egg; clicks/drags also fire full-screen click and trail FX. TTS plays sentence by sentence, and the emotion persists until TTS finishes, then reverts to the default automatically. The speech bubble appears on the character's right side (never covering the face). 
-
-  `/change-agent` provides a grouped picker: single-select main agent + multi-select sub agents; Sub agents only have `change_emotion` and `keep_silent` tools.
-- **STT hotkey**: right Cmd key — press and hold for ≥ 2 seconds to start a one-shot recording.
-- **macOS permissions**: global keyboard monitoring requires Accessibility permission for Python (System Settings → Privacy & Security → Accessibility); Computer Use screenshots require Screen Recording permission for the terminal.
+- **Desktop pet**: transparent frameless always-on-top window; drag to move; shake the head region left-right to trigger the "head-pat" easter egg; clicks/drags also fire FX.
+- **STT hotkey**: right Cmd key — hold for ≥ 2 seconds to start a one-shot recording.
+- **macOS permissions**: global keyboard listening requires Accessibility permission for Python (System Settings → Privacy & Security → Accessibility); Computer Use screenshots require Screen Recording permission for the terminal.
 
 ---
 
@@ -107,10 +104,10 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 
 | Category | Commands |
 |---|---|
-| Session | `/new` `/clear` · `/resume`  · `/exit` · `/export` · `/compact`|
+| Session | `/new` `/clear` · `/resume` · `/exit` · `/export` · `/compact` |
 | Display | `/thinking` · `/details` |
 | Voice | `/tts` · `/stt` |
-| Extensions | `/skill`  · `/mcp` |
+| Extensions | `/skill` · `/mcp` |
 | Other | `/change-agent` · `/undo` · `/redo` · `/help` |
 
 ---
@@ -132,7 +129,7 @@ This project is open-sourced under the [MIT License](LICENSE).
 
 This project is an independently developed unofficial project and is not directly affiliated with or endorsed by Nexon Games Co., Ltd., YOSTAR LIMITED, or the official Blue Archive game team.
 
-- The core project code is released under the MIT License. However, no license is granted​ by this project (or any third party) for any files within the assets/blue-archive/ directory. These files pertain to the intellectual property of Blue Archive and include, but are not limited to, character illustrations, artwork, audio files, text content, and related derivative assets. No warranty of legality or usability is provided for these assets.
+- The core project code is released under the MIT License. However, no license is granted by this project (or any third party) for any files within the assets/blue-archive/ directory. These files pertain to the intellectual property of Blue Archive and include, but are not limited to, character illustrations, artwork, audio files, text content, and related derivative assets. No warranty of legality or usability is provided for these assets.
 - The use, reproduction, and distribution of such content must strictly comply with the [rules](https://bluearchive.jp/fankit/guidelines) published by Nexon Games Co., Ltd. and YOSTAR LIMITED, as well as all applicable laws and regulations.
 - This project does not provide access to these third-party files. Users must obtain legitimate copies independently from the official channels of the rights holders and assume full responsibility for their use.
 - This project must not be used for distribution that infringes upon the rights of the copyright holders; any such infringement is the sole responsibility of the user.

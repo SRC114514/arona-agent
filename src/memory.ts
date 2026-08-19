@@ -171,28 +171,39 @@ interface SessionHeader {
   preview: string;
 }
 
+/**
+ * 从首条 user 消息提取会话预览。
+ * 剥离 repl.ts 注入的桌宠手势场景块（全角括号 `（…）` 包裹、后随空行），
+ * 避免"摸头/dizzy 提示词"污染会话命名（用户首条消息常是手势触发）。
+ * 仅影响预览命名，不改动存储内容。
+ */
+function firstUserPreview(messages: any[]): string {
+  const firstUserMsg = messages.find((m) => m.role === "user");
+  if (!firstUserMsg) return "(empty)";
+  const content =
+    typeof firstUserMsg.content === "string"
+      ? firstUserMsg.content
+      : Array.isArray(firstUserMsg.content)
+        ? firstUserMsg.content
+            .filter((c: any) => c.type === "text")
+            .map((c: any) => c.text)
+            .join(" ")
+        : "";
+  // 剥离开头的注入块：`（…）\n\n<用户真实输入>`
+  const cleaned = content.replace(/^（[^）]*）[ \t]*\n*/u, "");
+  let preview = cleaned.slice(0, 50).replace(/\n/g, " ");
+  if (cleaned.length > 50) preview += "...";
+  return preview;
+}
+
 export function saveSession(messages: any[], model: string): string | null {
   if (!hasConversation) {
     console.log(t("无对话可保存。", "No conversation to save."));
     return null;
   }
 
-  // Find first user message for preview
-  const firstUserMsg = messages.find((m) => m.role === "user");
-  let preview = "(empty)";
-  if (firstUserMsg) {
-    const content =
-      typeof firstUserMsg.content === "string"
-        ? firstUserMsg.content
-        : Array.isArray(firstUserMsg.content)
-          ? firstUserMsg.content
-              .filter((c: any) => c.type === "text")
-              .map((c: any) => c.text)
-              .join(" ")
-          : "";
-    preview = content.slice(0, 50).replace(/\n/g, " ");
-    if (content.length > 50) preview += "...";
-  }
+  // Find first user message for preview (剥离桌宠手势注入块，见 firstUserPreview)
+  const preview = firstUserPreview(messages);
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const safePreview = preview.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_").slice(0, 30);
@@ -228,22 +239,8 @@ export function saveSessionToPath(filepath: string, messages: any[], model: stri
     header = JSON.parse(content.split("\n")[0]) as SessionHeader;
     header.model = model; // 模型可能已切换，更新之
   } catch {
-    // 原文件不存在或损坏，生成新 header
-    const firstUserMsg = messages.find((m) => m.role === "user");
-    let preview = "(empty)";
-    if (firstUserMsg) {
-      const content =
-        typeof firstUserMsg.content === "string"
-          ? firstUserMsg.content
-          : Array.isArray(firstUserMsg.content)
-            ? firstUserMsg.content
-                .filter((c: any) => c.type === "text")
-                .map((c: any) => c.text)
-                .join(" ")
-            : "";
-      preview = content.slice(0, 50).replace(/\n/g, " ");
-      if (content.length > 50) preview += "...";
-    }
+    // 原文件不存在或损坏，生成新 header（剥离桌宠手势注入块，见 firstUserPreview）
+    const preview = firstUserPreview(messages);
     header = {
       type: "arona-session",
       version: 1,

@@ -35,9 +35,9 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 ## 核心特性
 
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
-- **语音**：非流式 TTS（整句合成，语气完整）+ STT。
-- **桌面宠物**：透明无边框置顶 Electron 窗口，Spine 骨骼动画待机 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
-- **多角色群聊**：主 Agent 单窗口 + 子 Agent 窗口同屏；每轮主 Agent 回复完后子 Agent 依次接话，`keep_silent` 可跳过某个角色的本轮发言。
+- **语音**：非流式 TTS + STT。
+- **桌宠**：透明无边框置顶 Electron 窗口 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
+- **多角色群聊**：主 Agent 单窗口、子 Agent 同屏；每轮主 Agent 回复完后子 Agent 依次接话。
 
 
 ---
@@ -68,13 +68,12 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
 | `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
-| `ttsSampleRate` | TTS 采样率（已废弃：非流式 TTS 固定 24000） | `22050` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |
 | `sttFormat` | STT 音频格式 | `pcm` |
 | `sttSampleRate` | STT 采样率 | `16000` |
 | `cuaApiKey` | Cua API Key | — |
-| `tavilyApiKey` | Tavily 搜索 API Key（不填则 web_search/web_extract 走免费共享池，有限流） | — |
+| `tavilyApiKey` | Tavily API Key | — |
 | `pythonPath` | Python 路径 | `python3` |
 | `mcpServers` | MCP 服务器 JSON | `{}` |
 
@@ -98,9 +97,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 
 ## 桌宠与 STT 热键
 
-- **桌宠**：透明无边框置顶窗口，以 Spine 骨骼动画 `Idle_01` 作为待机基底循环播放；每段发言前调用 `change_emotion` 切换情绪；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发全屏点击与拖尾特效；TTS 逐句播放，情绪保持到 TTS 播完自动恢复默认；文字气泡显示在角色右侧（不遮脸）。
-
-  `/change-agent` 可单选主 Agent + 多选子 Agent，多个角色以独立窗口同屏显示；子 Agent 仅可使用 `change_emotion` 与 `keep_silent` 两个纯聊天工具。
+- **桌宠**：透明无边框置顶窗口；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发特效
 - **STT 热键**：右 Cmd 键，长按 ≥ 2 秒触发一次性录音。
 - **macOS 权限**：全局键盘监听需「系统设置 → 隐私与安全性 → 辅助功能」为Python授权；Computer Use 截图需授予终端「屏幕录制」权限。
 

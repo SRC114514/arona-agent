@@ -30,8 +30,8 @@ async function main() {
 
   let { session, modelRuntime, loader } = await initAgent();
 
-  // 启动桌宠（异步不阻塞 REPL；失败时降级为纯 CLI）
-  void startPet();
+  // 启动桌宠（首次需下载 Electron 二进制，须等下载完成再进入 REPL，避免卡在后台静默下载）
+  await startPet();
 
   // Handle session resume from command line arg
   // 只加载消息到 session，渲染交给 Repl.start() 处理（确保 logo 在历史记录之前）

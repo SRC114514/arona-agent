@@ -33,12 +33,13 @@ body:active {
 }
 
 
-/* 桌宠文字气泡：定位到角色右侧（窗口右侧 260px 气泡专用区），不遮脸；
-   左缘贴近角色渲染区（320px + 10px 间距），高于 Spine、鼠标穿透；只显示 mid/final 短消息 */
+/* 桌宠文字气泡：定位到角色头部右侧，贴近角色（不遮脸、不高高飘在右上）；
+   top 取头部高度（头 CSS y 40~195），left 紧邻渲染区右缘（320 + 10px 间距）；
+   高于 Spine、鼠标穿透；只显示 mid/final 短消息 */
 #pet-bubble {
   position: absolute;
-  left: 330px;
-  top: 20px;
+  left: 310px;
+  top: 90px;
   transform: none;
   max-width: 220px;
   padding: 8px 12px;

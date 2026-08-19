@@ -12,7 +12,7 @@ import * as voice from "./voice.ts";
 import { TtsStream } from "./tts_stream.ts";
 import { stopComputerUse } from "./tools/computer_use.ts";
 import { disconnectAllMcp } from "./mcp.ts";
-import { pet, stopPet } from "./pet.ts";
+import { pet, stopPet, type PetGestureType } from "./pet.ts";
 import { SlashMenu } from "./slash_menu.ts";
 import { printLogo } from "./logo.ts";
 import { PYTHON_DIR } from "./config.ts";
@@ -25,6 +25,20 @@ import { getMainAgent, getSubAgents, getAgentLabel, type AgentId, type SubAgentI
 // STT 长按阈值：按下录音热键持续 ≥ 该毫秒数并在释放时才触发录音；提前松开视为误触
 const STT_HOLD_MS = 2000;
 
+/** 桌宠手势 → 注入用户消息头部的上下文场景行（双语）。引导 Agent 在回复中自然流露出被摸头/被摇晃的感受。 */
+function petGestureScene(type: PetGestureType): string {
+  if (type === "dizzy") {
+    return t(
+      "（Sensei刚才拖着你到处晃来晃去，你感觉有些头晕。请在回复里自然地体现出这份晕眩感。）",
+      "(Sensei just swung you around, and you feel a bit dizzy. Let that dizziness show naturally in your reply.)",
+    );
+  }
+  return t(
+    "（Sensei刚才摸了摸你的头。请在回复里自然地体现出被摸头的感受。）",
+    "(Sensei just petted your head. Let that show naturally in your reply.)",
+  );
+}
+
 export class Repl {
   private rl: readline.Interface;
   private session: AgentSession;
@@ -34,7 +48,7 @@ export class Repl {
   private aborted = false; // 中断标志：避免 processInput finally 重复 prompt
   private sigintCount = 0;
   private sigintTimer: NodeJS.Timeout | null = null;
-  // 实时流式 TTS 管道（python/tts_stream.py 常驻进程；text_delta 边生成边合成边播放）
+  // 非流式 TTS 管道：agent_end 时只把最后一个回复 message 交给 endTurn() 整段合成播放
   // 音色按当前发言角色动态切换（setVoice），isEnabled 按该角色是否有克隆音色判断
   private ttsStream = new TtsStream(
     (agentId) => voice.isTtsEnabledFor(agentId),
@@ -110,13 +124,12 @@ export class Repl {
     });
 
     // Setup renderer with TTS callbacks
-    // onTextDelta: 文本增量实时送入非流式 TTS（按标点成句，边生成边入队）
-    // onTurnEnd: 回合结束（agent_end）时收尾残段 + 触发合成队列排空
+    // onTurnEnd: 回合结束（agent_end）时把最后一个 message 的完整文本交给 TTS 一次性处理
+    //   （只朗读最终回复；中间穿插工具调用的过程性发言不朗读）+ 气泡同步上屏最后一段
     // onPetText: 桌宠文字气泡（仅桌宠运行时发送）；情绪仍由 LLM change_emotion 工具驱动
     // --no-voice 模式下没有 play_end 兜底隐藏气泡：final 上屏时挂 5s 定时器
     this.renderer = createRenderer(
-      () => this.ttsStream.endTurn(),
-      (delta) => this.ttsStream.pushText(delta),
+      (text) => this.ttsStream.endTurn(text),
       (kind, data) => {
         if (pet.isRunning) pet.sendText(this.activeAgentId, kind, data);
       },
@@ -159,7 +172,7 @@ export class Repl {
         this.activeSession.abort().catch(() => {});
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
-        this.ttsStream.cancel(); // 打断流式 TTS，中断后不再播放后续内容
+        this.ttsStream.cancel(); // 打断 TTS，中断后不再播放后续内容
         this.hidePetBubble(); // 打断时立即隐藏气泡
         // 清空 readline 缓冲区，避免残留内容在重绘时混入提示符行
         (this.rl as any).line = "";
@@ -378,7 +391,7 @@ export class Repl {
       this.activeSession.abort().catch(() => {});
       this.isProcessing = false;
       this.aborted = true; // 阻止 processInput finally 再次 prompt
-      this.ttsStream.cancel(); // 打断流式 TTS（STT 接管输入前清掉残余播放）
+      this.ttsStream.cancel(); // 打断 TTS（STT 接管输入前清掉残余播放）
       this.hidePetBubble(); // 打断时立即隐藏气泡
       (this.rl as any).line = "";
       (this.rl as any).cursor = 0;
@@ -481,7 +494,7 @@ export class Repl {
       console.log(chalk.cyan(t("  语音：已禁用（--no-voice）", "  Voice: disabled (--no-voice)")));
     } else {
       // 当前主 Agent 无音色时强制显示"未配置声音"（权重大于 settings.ttsEnabled），
-      // 流式 TTS 在 isTtsEnabled() 里已被挡掉，不会启动
+      // TTS 在 isTtsEnabled() 里已被挡掉，不会启动
       if (!voice.hasCurrentVoice()) {
         console.log(chalk.cyan(t("  TTS：关（未配置声音）", "  TTS: off (no voice configured)")));
       } else {
@@ -545,7 +558,7 @@ export class Repl {
         this.activeSession.abort().catch(() => {});
         this.isProcessing = false;
         this.aborted = true; // 阻止 processInput finally 再次 prompt
-        this.ttsStream.cancel(); // 打断流式 TTS
+        this.ttsStream.cancel(); // 打断 TTS
         this.hidePetBubble(); // 打断时立即隐藏气泡
         // 清空 readline 缓冲区，避免残留内容在重绘时混入提示符行
         (this.rl as any).line = "";
@@ -617,8 +630,18 @@ export class Repl {
   }
 
   private async processInput(input: string) {
+    // 桌宠手势（摸头/dizzy）注入：若用户摸过头/拖住晃过，把"刚才发生了什么"作为
+    // 上下文行写在用户消息头部，引导 Agent 在回复中自然流露出确实感受到了。
+    // takeGesture 消费即清空 → 只注入最近一次、不重复注入；若用户发的是纯命令消息，
+    // processInput 不会被调用（见 line handler 的 / 分支），手势保留到下一条真实消息。
+    const gesture = pet.takeGesture();
+    let effective = input;
+    if (gesture) {
+      const scene = petGestureScene(gesture);
+      if (scene) effective = `${scene}\n\n${input}`;
+    }
     // 展开 @文件 / !命令 后走完整回合生命周期
-    await this.runRawTurn(this.parseInput(input));
+    await this.runRawTurn(this.parseInput(effective));
   }
 
   /** 把 renderer 订阅切到指定角色 session，并记录当前发言者。 */
@@ -676,10 +699,12 @@ export class Repl {
         const iv = setInterval(() => {
           if (!this.ttsStream.isPending) {
             clearInterval(iv);
+            clearTimeout(tout);
             resolve();
           }
         }, 100);
-        setTimeout(() => {
+        // 30s 兜底：异常卡死时不阻塞子 Agent 轮询/回合收尾
+        const tout = setTimeout(() => {
           clearInterval(iv);
           resolve();
         }, 30000);
@@ -851,7 +876,7 @@ export class Repl {
     // 停止全局热键监听（pynput）
     this.stopHotkeyHook();
 
-    // 停止实时流式 TTS 常驻进程
+    // 停止 TTS：终止当前合成进程并清空队列
     this.ttsStream.shutdown();
 
     // Cleanup
