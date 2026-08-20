@@ -15,13 +15,16 @@
 ## 安装
 
 ```bash
-npm install -g git+https://github.com/SRC114514/arona-agent.git
+npm install -g arona-agent
 
 # 初始化配置文件
 arona setup
 
 # 初始化后可直接启动
 arona
+
+# 更新
+npm update -g arona-agent
 
 # 禁用TTS+STT并启动
 arona --no-voice

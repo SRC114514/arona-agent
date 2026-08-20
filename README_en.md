@@ -13,13 +13,16 @@ A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs
 ## Installation
 
 ```bash
-npm install -g git+https://github.com/SRC114514/arona-agent.git
+npm install -g arona-agent
 
 # Initialize configuration
 arona setup
 
 # Launch after setup
 arona
+
+# Upgrade
+npm update -g arona-agent
 
 # Launch with TTS/STT disabled
 arona --no-voice
