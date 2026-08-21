@@ -171,12 +171,7 @@ interface SessionHeader {
   preview: string;
 }
 
-/**
- * 从首条 user 消息提取会话预览。
- * 剥离 repl.ts 注入的桌宠手势场景块（全角括号 `（…）` 包裹、后随空行），
- * 避免"摸头/dizzy 提示词"污染会话命名（用户首条消息常是手势触发）。
- * 仅影响预览命名，不改动存储内容。
- */
+/** 从首条 user 消息提取会话预览。 */
 function firstUserPreview(messages: any[]): string {
   const firstUserMsg = messages.find((m) => m.role === "user");
   if (!firstUserMsg) return "(empty)";
@@ -189,10 +184,8 @@ function firstUserPreview(messages: any[]): string {
             .map((c: any) => c.text)
             .join(" ")
         : "";
-  // 剥离开头的注入块：`（…）\n\n<用户真实输入>`
-  const cleaned = content.replace(/^（[^）]*）[ \t]*\n*/u, "");
-  let preview = cleaned.slice(0, 50).replace(/\n/g, " ");
-  if (cleaned.length > 50) preview += "...";
+  let preview = content.slice(0, 50).replace(/\n/g, " ");
+  if (content.length > 50) preview += "...";
   return preview;
 }
 

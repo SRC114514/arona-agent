@@ -145,6 +145,65 @@ def play_wav(data):
         _play_fallback(data)
 
 
+def _write_temp_wav(data):
+    """写入临时 wav，返回路径（供 synth_only 模式：合成后暂存，由 play 模式进程读取并删除）。"""
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.write(data)
+    tmp.close()
+    return tmp.name
+
+
+def _synth_and_play(cmd):
+    """默认模式：合成 + 播放（向后兼容，预合成流水线回退路径）。"""
+    text = (cmd.get("text") or "").strip()
+    voice = cmd.get("voice") or ""
+    if not text:
+        emit("error", message=t("TTS: 空文本", "TTS: empty text"))
+        sys.stdout.flush()
+        return
+    audio = synthesize(text, voice)
+    emit("play_start")
+    play_wav(audio)
+    emit("play_end")
+
+
+def _synth_only(cmd):
+    """预合成模式：只合成，写临时 wav 后发 synth_done（带路径）退出，不播放。
+    Node 侧在上一句播放期间调用本模式预合成下一句，消除句间 HTTP 合成停顿。"""
+    text = (cmd.get("text") or "").strip()
+    voice = cmd.get("voice") or ""
+    if not text:
+        emit("error", message=t("TTS: 空文本", "TTS: empty text"))
+        sys.stdout.flush()
+        return
+    audio = synthesize(text, voice)
+    path = _write_temp_wav(audio)
+    emit("synth_done", path=path)
+
+
+def _play_path(cmd):
+    """播放模式：读已合成的临时 wav 播放（无 HTTP），播完删除临时文件。"""
+    path = cmd.get("path") or ""
+    if not path or not os.path.exists(path):
+        emit("error", message=t("TTS: 无效的音频路径", "TTS: invalid audio path"))
+        sys.stdout.flush()
+        return
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except Exception as e:
+        emit("error", message=str(e))
+        sys.stdout.flush()
+        return
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+    emit("play_start")
+    play_wav(data)
+    emit("play_end")
+
+
 def main():
     emit("ready")
     line = sys.stdin.readline()
@@ -156,17 +215,14 @@ def main():
         emit("error", message=t("TTS: 无效的 stdin JSON", "TTS: invalid stdin JSON"))
         sys.stdout.flush()
         return
-    text = (cmd.get("text") or "").strip()
-    voice = cmd.get("voice") or ""
-    if not text:
-        emit("error", message=t("TTS: 空文本", "TTS: empty text"))
-        sys.stdout.flush()
-        return
+    mode = cmd.get("mode") or "synth_play"
     try:
-        audio = synthesize(text, voice)
-        emit("play_start")
-        play_wav(audio)
-        emit("play_end")
+        if mode == "synth_only":
+            _synth_only(cmd)
+        elif mode == "play":
+            _play_path(cmd)
+        else:
+            _synth_and_play(cmd)
         sys.stdout.flush()
     except Exception as e:
         emit("error", message=str(e))

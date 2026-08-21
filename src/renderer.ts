@@ -161,6 +161,17 @@ export function createRenderer(
     setSpeakerLabel(label: string | undefined) {
       speakerLabel = label;
     },
+    // 切 session（setActiveAgent）时显式复位回合状态：消除跨会话 curMsgText/lastText 残留，
+    // 防止被新 session 的 agent_end 误读上一角色文本。
+    resetTurn() {
+      curMsgText = "";
+      lastText = "";
+      thinkingBuffer = "";
+      drawnThinkingLines = 0;
+      inThinking = false;
+      inText = false;
+      textPrefixWritten = false;
+    },
     subscribe: (session: any) => {
       return session.subscribe((event: any) => {
         switch (event.type) {

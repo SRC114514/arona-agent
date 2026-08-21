@@ -12,7 +12,7 @@ import * as voice from "./voice.ts";
 import { TtsStream } from "./tts_stream.ts";
 import { stopComputerUse } from "./tools/computer_use.ts";
 import { disconnectAllMcp } from "./mcp.ts";
-import { pet, stopPet, type PetGestureType } from "./pet.ts";
+import { pet, stopPet } from "./pet.ts";
 import { SlashMenu } from "./slash_menu.ts";
 import { printLogo } from "./logo.ts";
 import { PYTHON_DIR } from "./config.ts";
@@ -24,20 +24,6 @@ import { getMainAgent, getSubAgents, getAgentLabel, type AgentId, type SubAgentI
 
 // STT 长按阈值：按下录音热键持续 ≥ 该毫秒数并在释放时才触发录音；提前松开视为误触
 const STT_HOLD_MS = 2000;
-
-/** 桌宠手势 → 注入用户消息头部的上下文场景行（双语）。引导 Agent 在回复中自然流露出被摸头/被摇晃的感受。 */
-function petGestureScene(type: PetGestureType): string {
-  if (type === "dizzy") {
-    return t(
-      "（Sensei刚才拖着你到处晃来晃去，你感觉有些头晕。请在回复里自然地体现出这份晕眩感。）",
-      "(Sensei just swung you around, and you feel a bit dizzy. Let that dizziness show naturally in your reply.)",
-    );
-  }
-  return t(
-    "（Sensei刚才摸了摸你的头。请在回复里自然地体现出被摸头的感受。）",
-    "(Sensei just petted your head. Let that show naturally in your reply.)",
-  );
-}
 
 export class Repl {
   private rl: readline.Interface;
@@ -630,18 +616,11 @@ export class Repl {
   }
 
   private async processInput(input: string) {
-    // 桌宠手势（摸头/dizzy）注入：若用户摸过头/拖住晃过，把"刚才发生了什么"作为
-    // 上下文行写在用户消息头部，引导 Agent 在回复中自然流露出确实感受到了。
-    // takeGesture 消费即清空 → 只注入最近一次、不重复注入；若用户发的是纯命令消息，
-    // processInput 不会被调用（见 line handler 的 / 分支），手势保留到下一条真实消息。
-    const gesture = pet.takeGesture();
-    let effective = input;
-    if (gesture) {
-      const scene = petGestureScene(gesture);
-      if (scene) effective = `${scene}\n\n${input}`;
-    }
+    // 桌宠手势（摸头/dizzy）不再拼进用户消息：落到主 Agent 发送边界注入（gesture_context.ts），
+    // 不进 state.messages → 子 Agent 复制主 session 历史时看不到、会话命名/存储零污染。
+    // takeGesture 消费即清空由发送边界扩展完成，只注入最近一次。
     // 展开 @文件 / !命令 后走完整回合生命周期
-    await this.runRawTurn(this.parseInput(effective));
+    await this.runRawTurn(this.parseInput(input));
   }
 
   /** 把 renderer 订阅切到指定角色 session，并记录当前发言者。 */
@@ -649,6 +628,8 @@ export class Repl {
     this.activeAgentId = agentId;
     this.activeSession = session;
     this.renderer.setSpeakerLabel(getAgentLabel(agentId));
+    // 显式复位回合状态，杜绝跨 session 残留 curMsgText/lastText 被误读
+    this.renderer.resetTurn();
     this.rendererUnsub?.();
     this.rendererUnsub = this.renderer.subscribe(session);
   }

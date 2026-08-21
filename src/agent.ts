@@ -21,6 +21,7 @@ import { connectMcpServers } from "./mcp.ts";
 import { InMemoryCredentialStore } from "./in_memory_credentials.ts";
 import { getMainAgent, type SubAgentId, type AgentId } from "./agent_registry.ts";
 import { speakerContextExtension } from "./speaker_context.ts";
+import { gestureContextExtension } from "./gesture_context.ts";
 import { t, getLang } from "./locale.ts";
 
 // Asia/Shanghai 当前时间，注入到 system prompt 供情境台词使用；语言随界面
@@ -571,7 +572,7 @@ export async function initAgent(): Promise<{
     appendSystemPromptOverride: () => [],
     // 群聊发言者标注：发送边界给带 speaker 的历史 assistant 消息加「角色名：」前缀，
     // 让模型区分谁说的（speaker 字段不会发给模型，必须编码进文本）
-    extensionFactories: [speakerContextExtension],
+    extensionFactories: [speakerContextExtension, gestureContextExtension],
   });
   await loader.reload();
 
