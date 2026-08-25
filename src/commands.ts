@@ -3,7 +3,7 @@ import { execSync } from "child_process";
 import { writeFileSync } from "fs";
 import { join } from "path";
 import type { AgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-import { config } from "./config.ts";
+import { config, sttHotkeyLabel } from "./config.ts";
 import * as memory from "./memory.ts";
 import * as voice from "./voice.ts";
 import * as mcp from "./mcp.ts";
@@ -37,11 +37,12 @@ export interface CommandContext {
   undoManager?: UndoManager;
   // /change-agent 切换角色后重启 TTS 进程（音色随主 Agent，spawn 时固化，需重拉）
   restartTts?: () => void;
+  // /change-agent 只改子 Agent 组合时回收旧子 session 对象，下轮按新组合重新初始化
+  resetSubAgents?: () => void;
 }
 
 const HELP_TEXT = t(
-  `
-${chalk.bold.cyan("ARONA Agent - 命令列表")}
+  `${chalk.bold.cyan("ARONA Agent - 命令列表")}
 
 ${chalk.bold("会话")}
   /new, /clear     开始新会话（清空上下文）
@@ -50,9 +51,9 @@ ${chalk.bold("会话")}
   /export          导出当前会话为 Markdown
 
 ${chalk.bold("显示")}
-  /thinking        开关思考/推理块显示
+  /thinking        开关推理块显示
   /details         开关工具执行详情显示
-  /compact         压缩当前上下文以节省 token
+  /compact         压缩上下文
 
 ${chalk.bold("语音")}
   /tts             开关文字转语音
@@ -67,13 +68,8 @@ ${chalk.bold("其他")}
   /undo            撤销上一个回合的全部文件改动
   /redo            重做已撤销的改动
   /help            显示本帮助
-
-${chalk.cyan("提示：")}
-  ${chalk.cyan("• @文件名 把文件内容插入到消息中")}
-  ${chalk.cyan("• !命令 执行 shell 命令并把输出加入消息")}
 `,
-  `
-${chalk.bold.cyan("ARONA Agent - Commands")}
+  `${chalk.bold.cyan("ARONA Agent - Commands")}
 
 ${chalk.bold("Session")}
   /new, /clear     Start a new session (clear context)
@@ -99,10 +95,6 @@ ${chalk.bold("Other")}
   /undo            Undo the previous turn's file changes
   /redo            Redo undone changes
   /help            Show this help
-
-${chalk.cyan("Tips:")}
-  ${chalk.cyan("• @filename inserts the file content into your message")}
-  ${chalk.cyan("• !command runs a shell command and appends its output")}
 `,
 );
 
@@ -184,7 +176,7 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       voice.setSttEnabled(!voice.isSttEnabled());
       console.log(chalk.cyan(t(`STT：${voice.isSttEnabled() ? "开" : "关"}`, `STT: ${voice.isSttEnabled() ? "on" : "off"}`)));
       if (voice.isSttEnabled()) {
-        console.log(chalk.cyan(t("长按右 Cmd ≥2秒录音（任务中按会先中断再录音）。", "Hold right Cmd ≥2s to record (press during a task to interrupt it first).")));
+        console.log(chalk.cyan(t(`长按${sttHotkeyLabel()} ≥2秒录音。`, `Hold ${sttHotkeyLabel()} ≥2s to record.`)));
       }
       ctx.setSttHookEnabled?.(voice.isSttEnabled());
       return true;
@@ -198,11 +190,11 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       return true;
 
     case "undo":
-      handleUndo(ctx);
+      await handleUndo(ctx);
       return true;
 
     case "redo":
-      handleRedo(ctx);
+      await handleRedo(ctx);
       return true;
 
     case "skill":
@@ -409,22 +401,22 @@ function handleExport(ctx: CommandContext) {
   }
 }
 
-function handleUndo(ctx: CommandContext) {
+async function handleUndo(ctx: CommandContext) {
   if (!ctx.undoManager) {
     console.log(chalk.yellow(t("撤销系统未初始化。", "Undo system is not initialized.")));
     return;
   }
-  const r = ctx.undoManager.undo();
+  const r = await ctx.undoManager.undo();
   if (r.ok) console.log(chalk.green(r.message));
   else console.log(chalk.yellow(r.message));
 }
 
-function handleRedo(ctx: CommandContext) {
+async function handleRedo(ctx: CommandContext) {
   if (!ctx.undoManager) {
     console.log(chalk.yellow(t("撤销系统未初始化。", "Undo system is not initialized.")));
     return;
   }
-  const r = ctx.undoManager.redo();
+  const r = await ctx.undoManager.redo();
   if (r.ok) console.log(chalk.green(r.message));
   else console.log(chalk.yellow(r.message));
 }
@@ -535,8 +527,10 @@ async function handleChangeAgent(ctx: CommandContext) {
     // 1. 持久化（settings.json mainAgent + subAgents 字段）
     setMainAgent(main);
     setSubAgents(subs);
-    // 2. 桌宠多窗口按新组合重建（旧进程退出后自动拉起）
+    // 2. 桌宠多窗口按新组合重建
     pet.restartWithSelection(main, subs);
+    // 2.5 子 Agent 组合变化：回收旧子 session 对象；主 Agent 切换时 newSession 也会回收
+    if (subsChanged) ctx.resetSubAgents?.();
     // 3. 主 Agent 切换才需要重启 TTS（音色随主 Agent 变化）与重建会话（人格变化）
     if (mainChanged) {
       ctx.restartTts?.();

@@ -34,6 +34,12 @@ import { t } from "./locale.ts";
 
 const UNDO_ROOT = join(ARONA_DIR, "undo");
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5MB
+// 单次快照最多扫描的文件数（超出即截断）：防止在 ~/、/ 等巨型目录下全盘递归把启动/回合拖死。
+const MAX_SCAN_FILES = 20000;
+// 递归深度上限，防御深目录/符号链接循环。
+const MAX_SCAN_DEPTH = 12;
+// 每处理这么多文件让出一次事件循环，避免阻塞 CLI 渲染/输入。
+const SCAN_YIELD_EVERY = 400;
 
 const DEFAULT_IGNORE_DIRS = new Set([
   "node_modules",
@@ -45,6 +51,25 @@ const DEFAULT_IGNORE_DIRS = new Set([
   "dist",
   "build",
   ".cache",
+  // 系统/巨型目录：undo 无意义，递归扫会拖垮启动（~/Library、/System、/usr 等）
+  "Library",
+  "Applications",
+  "System",
+  "private",
+  "dev",
+  "proc",
+  "sys",
+  "cores",
+  "Volumes",
+  "Network",
+  "bin",
+  "sbin",
+  "usr",
+  "var",
+  "etc",
+  "opt",
+  "tmp",
+  ".Trash",
 ]);
 
 const DEFAULT_IGNORE_FILES = new Set([
@@ -95,6 +120,8 @@ export class UndoManager {
   private pendingBefore: Map<string, FileEntry> | null = null;
   /** 当前基线快照(= pointer 指向的回合结束时的状态,或初始状态) */
   private baseline: Map<string, FileEntry> = new Map();
+  /** 后台基线快照 in-flight（load() 启动；beforeTurn 会先等它，避免与首回合扫描并发/双扫） */
+  private baselinePromise: Promise<void> | null = null;
   private ready = false;
 
   constructor(cwd: string) {
@@ -107,8 +134,9 @@ export class UndoManager {
   }
 
   /**
-   * 启动时调用:加载持久化状态(如有),并刷新基线为当前工作目录真实状态。
-   * 不存在持久化时,把当前状态作为初始基线。
+   * 启动时调用:加载持久化状态(如有),并在后台异步刷新基线为当前工作目录真实状态。
+   * 基线扫描改为后台异步 + 有界(MAX_SCAN_FILES/深度/系统目录):在 ~/、/ 等巨型目录下
+   * 同步全盘递归会把启动卡死(此前每次启动都在这卡住,子目录正常)。
    */
   load(): void {
     try {
@@ -134,9 +162,30 @@ export class UndoManager {
     if (this.pointer < this.turns.length - 1) {
       this.turns = this.turns.slice(0, this.pointer + 1);
     }
-    this.baseline = this.takeSnapshot();
     this.pendingBefore = null;
-    this.ready = true;
+    this.ready = false;
+    // 后台异步建基线;失败也放行(空基线,undo 退化为不可用但不卡启动)
+    this.baselinePromise = this.takeSnapshot()
+      .then((snap) => {
+        this.baseline = snap;
+        this.ready = true;
+      })
+      .catch(() => {
+        this.ready = true;
+      });
+  }
+
+  /** 等待后台基线快照完成（beforeTurn 调用，避免与首回合扫描并发/双扫）。 */
+  private async ensureBaselineReady(): Promise<void> {
+    if (this.baselinePromise) {
+      const p = this.baselinePromise;
+      this.baselinePromise = null;
+      try {
+        await p;
+      } catch {
+        // 基线失败:忽略,继续
+      }
+    }
   }
 
   /**
@@ -144,21 +193,22 @@ export class UndoManager {
    * 与 load() 配合:回合开始时 baseline = load 时扫的;这里再扫一次 = "before"
    * (一般等同 baseline,除非用户在回合间隙手动改了文件)。
    */
-  beforeTurn(): void {
-    this.pendingBefore = this.takeSnapshot();
+  async beforeTurn(): Promise<void> {
+    await this.ensureBaselineReady();
+    this.pendingBefore = await this.takeSnapshot();
   }
 
   /**
    * 每个 Agent 回合结束后调用,与 before 对比,产出 diff 入栈。
    * 没有任何变化时跳过(不污染栈)。
    */
-  afterTurn(): void {
-    if (!this.ready) return;
+  async afterTurn(): Promise<void> {
+    if (!this.ready) return; // 基线未就绪(后台仍在扫):跳过本回合 undo 记录
     if (!this.pendingBefore) {
       // 没 beforeTurn 直接 afterTurn:退化为只对 baseline 做对比
       this.pendingBefore = new Map(this.baseline);
     }
-    const after = this.takeSnapshot();
+    const after = await this.takeSnapshot();
     const diff = this.computeDiff(this.pendingBefore, after);
     this.pendingBefore = null;
     if (diff === null) {
@@ -190,7 +240,7 @@ export class UndoManager {
   /**
    * 撤销上一步。返回 { ok, message } 给命令调用方展示。
    */
-  undo(): { ok: boolean; message: string } {
+  async undo(): Promise<{ ok: boolean; message: string }> {
     if (!this.ready) return { ok: false, message: t("撤销系统未就绪。", "Undo system is not ready.") };
     if (this.pointer < 0) {
       return { ok: false, message: t("无内容可撤销。", "Nothing to undo.") };
@@ -210,7 +260,7 @@ export class UndoManager {
     }
     this.pointer--;
     // 更新 baseline 为"撤销后的状态"——直接重扫一次最稳
-    this.baseline = this.takeSnapshot();
+    this.baseline = await this.takeSnapshot();
     this.persist();
     return {
       ok: true,
@@ -224,7 +274,7 @@ export class UndoManager {
   /**
    * 重做下一步(已撤销的回合)。
    */
-  redo(): { ok: boolean; message: string } {
+  async redo(): Promise<{ ok: boolean; message: string }> {
     if (!this.ready) return { ok: false, message: t("撤销系统未就绪。", "Undo system is not ready.") };
     if (this.pointer >= this.turns.length - 1) {
       return { ok: false, message: t("无内容可重做。", "Nothing to redo.") };
@@ -243,7 +293,7 @@ export class UndoManager {
       };
     }
     this.pointer++;
-    this.baseline = this.takeSnapshot();
+    this.baseline = await this.takeSnapshot();
     this.persist();
     return {
       ok: true,
@@ -261,10 +311,13 @@ export class UndoManager {
    * 对 ≤ MAX_FILE_BYTES 的文件,同时读出完整 content(二进制 base64,文本 utf-8),
    * 这样 diff 阶段无需再回读文件——回合内文件可能已被 Agent 改写,
    * 回读出来的就不再是 before 内容。
+   * 异步 + 有界:每 SCAN_YIELD_EVERY 个文件让出一次事件循环;超过 MAX_SCAN_FILES 截断
+   * (巨型目录如 ~/、/ 下不至于全盘递归卡死)。
    */
-  private takeSnapshot(): Map<string, FileEntry> {
+  private async takeSnapshot(): Promise<Map<string, FileEntry>> {
     const out = new Map<string, FileEntry>();
-    this.walk(this.cwd, (abs) => {
+    const ctx = { count: 0, stop: false };
+    await this.walk(this.cwd, (abs) => {
       try {
         const stat = statSync(abs);
         if (!stat.isFile()) return;
@@ -283,11 +336,12 @@ export class UndoManager {
       } catch {
         // 读失败:当作不存在
       }
-    });
+    }, ctx, 0);
     return out;
   }
 
-  private walk(dir: string, cb: (abs: string) => void): void {
+  private async walk(dir: string, cb: (abs: string) => void, ctx: { count: number; stop: boolean }, depth: number): Promise<void> {
+    if (depth > MAX_SCAN_DEPTH || ctx.stop) return;
     let entries: { name: string; isDir: boolean }[];
     try {
       entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({
@@ -298,15 +352,25 @@ export class UndoManager {
       return;
     }
     for (const { name, isDir } of entries) {
+      if (ctx.stop) return;
       if (isDir) {
         if (DEFAULT_IGNORE_DIRS.has(name)) continue;
         // 跳过隐藏目录(以 . 开头)避免污染,但不强制(允许 .config 之类)
         // 这里维持简单:仅排除默认列表中的隐藏目录
-        this.walk(join(dir, name), cb);
+        await this.walk(join(dir, name), cb, ctx, depth + 1);
       } else {
         if (DEFAULT_IGNORE_FILES.has(name)) continue;
         const abs = join(dir, name);
         cb(abs);
+        ctx.count++;
+        if (ctx.count >= MAX_SCAN_FILES) {
+          ctx.stop = true; // 巨型目录:截断,快照只覆盖已扫到的文件
+          return;
+        }
+        if (ctx.count % SCAN_YIELD_EVERY === 0) {
+          // 让出事件循环,避免同步全盘扫描阻塞 CLI 渲染/输入
+          await new Promise<void>((r) => setImmediate(r));
+        }
       }
     }
   }

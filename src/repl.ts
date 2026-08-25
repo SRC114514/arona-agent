@@ -4,12 +4,14 @@ import { execSync, type ChildProcessWithoutNullStreams } from "child_process";
 import { readFileSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import type { AgentSession, ModelRuntime, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-import { config } from "./config.ts";
+import { config, sttHotkeyKey, sttHotkeyLabel } from "./config.ts";
 import { handleCommand, type CommandContext } from "./commands.ts";
 import { createRenderer, renderSavedMessages } from "./renderer.ts";
 import * as memory from "./memory.ts";
 import * as voice from "./voice.ts";
+import { getTtsProvider } from "./tts_provider.ts";
 import { TtsStream } from "./tts_stream.ts";
+import { stopGptSovitsLocalServer } from "./gpt_sovits_local.ts";
 import { stopComputerUse } from "./tools/computer_use.ts";
 import { disconnectAllMcp } from "./mcp.ts";
 import { pet, stopPet } from "./pet.ts";
@@ -209,6 +211,9 @@ export class Repl {
         this.activeSession = this.session;
         this.activeAgentId = getMainAgent();
         this.currentSessionPath = null; // 新会话清除源文件路径，退出时另存为新文件
+        // 复制上下文方案下子会话消息每轮被覆盖，无需清历史；此处回收子 session 对象，
+        // 让下轮按新主会话重新初始化（刷新 initSubAgent 期捕获的 memory 等快照）
+        this.resetSubSessions();
         this.rendererUnsub?.();
         this.renderer.setSpeakerLabel(getAgentLabel(getMainAgent()));
         this.rendererUnsub = this.renderer.subscribe(this.session);
@@ -238,6 +243,9 @@ export class Repl {
       },
       undoManager: this.undoManager,
       restartTts: () => this.ttsStream.restartVoice(),
+      // /change-agent 只改子 Agent 组合时回收旧的子 session 对象（dispose + 清空），
+      // 下轮 ensureSubSessions 按新组合重新初始化（刷新 initSubAgent 期捕获的 memory/工具状态）。
+      resetSubAgents: () => this.resetSubSessions(),
     };
   }
 
@@ -252,7 +260,7 @@ export class Repl {
 
   /**
    * 启动全局热键监听（Python pynput 独立进程）。
-   * 检测到右 Cmd 长按 ≥2 秒时，hotkey.py 输出 {"event":"trigger"}，触发 STT 录音。
+   * 检测到全局录音热键（macOS 右 Cmd / 其他右 Ctrl）长按 ≥2 秒时，hotkey.py 输出 {"event":"trigger"}，触发 STT 录音。
    */
   private async startHotkeyHook() {
     if (this.hotkeyProc) return; // 已启动
@@ -264,7 +272,7 @@ export class Repl {
         env: {
           ...process.env,
           PYTHONUTF8: "1",
-          ARONA_HOTKEY_KEY: "cmd_r",
+          ARONA_HOTKEY_KEY: sttHotkeyKey(),
           ARONA_HOTKEY_HOLD_MS: String(STT_HOLD_MS),
         },
         stdio: ["pipe", "pipe", "pipe"],
@@ -309,6 +317,16 @@ export class Repl {
         }
       });
 
+      // spawn 失败（pythonPath 不存在 / 脚本缺失）不会触发 close，必须监听 error，
+      // 否则 Node 会因未处理的 'error' 事件直接崩溃。
+      proc.on("error", (err) => {
+        this.hotkeyProc = null;
+        this.hotkeyReady = false;
+        if (this.hotkeyReadyReject) {
+          this.hotkeyReadyReject(new Error(t(`hotkey.py 启动失败：${err.message}`, `hotkey.py failed to start: ${err.message}`)));
+        }
+      });
+
       // 等待 ready 信号（最多 5 秒；进程提前退出会立即 reject）
       await new Promise<void>((resolve, reject) => {
         const cleanup = () => {
@@ -334,14 +352,15 @@ export class Repl {
       this.hotkeyReadyReject = null;
     } catch (err) {
       this.hotkeyProc = null;
+      const isMac = process.platform === "darwin";
       console.warn(chalk.yellow(
         t(
-          "STT 热键不可用：全局键盘监听启动失败。\n" +
-          "  请确认已安装 pynput（pip install pynput），\n" +
-          "  并在 系统设置 → 隐私与安全性 → 辅助功能 中为Python 授权。",
-          "STT hotkey unavailable: global keyboard listener failed to start.\n" +
-          "  Make sure pynput is installed (pip install pynput),\n" +
-          "  and grant Accessibility permission to Python in System Settings.",
+          isMac
+            ? "STT 热键不可用：请安装 pynput（pip install pynput），并在 系统设置 → 隐私与安全性 → 辅助功能 中为Python授权。"
+            : "STT 热键不可用：请安装 pynput（pip install pynput），并检查 Python 是否有权限监听全局键盘。",
+          isMac
+            ? "STT hotkey unavailable: install pynput (pip install pynput) and grant Accessibility permission to Python in System Settings."
+            : "STT hotkey unavailable: install pynput (pip install pynput) and check that Python has permission to listen for global keys.",
         )
       ));
     }
@@ -386,7 +405,7 @@ export class Repl {
     }
     // 让 readline 先把当前提示符行清掉，再启动录音 UI
     await new Promise((r) => setImmediate(r));
-    console.log(chalk.cyan(t("正在聆听... 请说话", "Listening... speak now")));
+    console.log(chalk.cyan(t("聆听…请说话", "Listening…")));
     this.rl.prompt();
     const text = await voice.listen();
     if (text) {
@@ -430,6 +449,9 @@ export class Repl {
     try {
       const messages = memory.loadSession(path);
       this.session.agent.state.messages = messages;
+      // 复制上下文方案下子会话消息每轮被覆盖，无需清历史；此处回收子 session 对象，
+      // 让下轮按恢复的会话重新初始化（刷新 initSubAgent 期捕获的 memory 等快照）
+      this.resetSubSessions();
       memory.resetConversationFlag();
       this.currentSessionPath = path; // 退出时覆盖保存回此文件
       console.clear();
@@ -475,28 +497,18 @@ export class Repl {
       console.clear();
     }
     printLogo();
-    console.log(chalk.cyan(t(`  模型：${config.model}`, `  Model: ${config.model}`)));
+    const statusLine: string[] = [];
+    statusLine.push(t(`模型：${config.model}`, `Model: ${config.model}`));
     if (config.noVoice) {
-      console.log(chalk.cyan(t("  语音：已禁用（--no-voice）", "  Voice: disabled (--no-voice)")));
+      statusLine.push(t("语音：关", "Voice: off"));
     } else {
-      // 当前主 Agent 无音色时强制显示"未配置声音"（权重大于 settings.ttsEnabled），
-      // TTS 在 isTtsEnabled() 里已被挡掉，不会启动
-      if (!voice.hasCurrentVoice()) {
-        console.log(chalk.cyan(t("  TTS：关（未配置声音）", "  TTS: off (no voice configured)")));
-      } else {
-        console.log(chalk.cyan(t(`  TTS：${voice.isTtsEnabled() ? "开" : "关"}`, `  TTS: ${voice.isTtsEnabled() ? "on" : "off"}`)));
-      }
-      console.log(chalk.cyan(t(`  STT：${voice.isSttEnabled() ? "开" : "关"}`, `  STT: ${voice.isSttEnabled() ? "on" : "off"}`)));
-      // STT 开启时打印热键提示：长按右 Cmd ≥2秒录音；任务中按会先 abort 再录音
-      if (voice.isSttEnabled()) {
-        console.log(chalk.cyan(t(`  录音：长按右 Cmd ≥${STT_HOLD_MS / 1000}秒（提前松开取消）`, `  Record: hold right Cmd ≥${STT_HOLD_MS / 1000}s (release early to cancel)`)));
-        // 非 macOS 无 系统设置 → 隐私与安全性 → 辅助功能 这一路径，提示仅对 macOS 显示
-        if (process.platform === "darwin") {
-          console.log(chalk.cyan(t("  提示：若热键无响应，请在 系统设置 → 隐私与安全性 → 辅助功能 中为Python授权", "  Tip: if the hotkey does not respond, grant Accessibility permission to Python in System Settings → Privacy & Security")));
-        }
-      }
+      statusLine.push(voice.hasCurrentVoice()
+        ? t(`TTS：${voice.isTtsEnabled() ? `开（${getTtsProvider().label()}）` : "关"}`, `TTS: ${voice.isTtsEnabled() ? `on (${getTtsProvider().label()})` : "off"}`)
+        : t("TTS：关（未配置声音）", "TTS: off (no voice configured)"));
+      statusLine.push(t(`STT：${voice.isSttEnabled() ? "开" : "关"}`, `STT: ${voice.isSttEnabled() ? "on" : "off"}`));
     }
-    console.log(chalk.cyan(t("  输入 / 弹出命令菜单，/help 查看完整命令，/exit 退出。\n", "  Type / to open the command menu, /help for all commands, /exit to quit.\n")));
+    console.log(chalk.cyan("  " + statusLine.join(" · ")));
+    // 仅在有编程语义的操作提示时打印帮助行
 
     // --resume= 启动时渲染恢复的历史记录（在 logo 之后，提示符之前）
     if (this.resumedMessages) {
@@ -609,7 +621,7 @@ export class Repl {
       this.doExit();
     });
 
-    // STT 开启时启动全局热键监听（pynput，长按右 Cmd ≥2秒触发录音）
+    // STT 开启时启动全局热键监听（pynput，长按全局录音热键 ≥2秒触发录音）
     if (voice.isSttEnabled()) {
       this.startHotkeyHook();
     }
@@ -632,6 +644,23 @@ export class Repl {
     this.renderer.resetTurn();
     this.rendererUnsub?.();
     this.rendererUnsub = this.renderer.subscribe(session);
+  }
+
+  /**
+   * 回收全部子 session 对象（dispose + 清空）。
+   * 复制上下文方案下子会话每轮被主 session 消息覆盖，无需借此清历史；此处目的是释放
+   * session 对象，并让下轮 ensureSubSessions 按新主会话/新子组合重新初始化，刷新
+   * initSubAgent 期捕获的 memoryContent 等快照与工具状态（/new、/resume、/change-agent 时调用）。
+   */
+  private resetSubSessions(): void {
+    for (const subSession of this.subSessions.values()) {
+      try {
+        subSession.dispose();
+      } catch {
+        // 回收失败不影响主流程
+      }
+    }
+    this.subSessions.clear();
   }
 
   /** 按 settings.json 当前启用的子 Agent 初始化/补齐子 session。 */
@@ -781,7 +810,7 @@ export class Repl {
     this.hidePetBubble();
     // 回合开始前打 checkpoint:扫一次当前工作目录,作为 before 快照
     // (回合结束后 afterTurn 会与它做 diff 入 undo 栈)
-    this.undoManager.beforeTurn();
+    await this.undoManager.beforeTurn();
     // 回合开始：不主动切换情绪，保持默认待机动画；
     // 由 agent 调用 change_emotion 一步到位地确定本回合情绪，避免先 saying 再切换的跳变
 
@@ -816,7 +845,7 @@ export class Repl {
     } finally {
       // 回合结束后打 after checkpoint,产出 diff 入 undo 栈
       try {
-        this.undoManager.afterTurn();
+        await this.undoManager.afterTurn();
       } catch (err) {
         // undo checkpoint 失败不影响主流程
         console.warn(chalk.yellow(t(`撤销快照记录失败：${err instanceof Error ? err.message : err}`, `Failed to record undo snapshot: ${err instanceof Error ? err.message : err}`)));
@@ -857,8 +886,9 @@ export class Repl {
     // 停止全局热键监听（pynput）
     this.stopHotkeyHook();
 
-    // 停止 TTS：终止当前合成进程并清空队列
+    // 停止 TTS：终止当前合成进程并清空队列；同时回收本进程自动启动的 GPT-SoVITS api_v2 子进程
     this.ttsStream.shutdown();
+    stopGptSovitsLocalServer();
 
     // Cleanup
     stopComputerUse();

@@ -139,12 +139,28 @@ export class PythonBridge {
       this.proc = null;
     });
 
+    // spawn 失败（pythonPath 不存在 / 脚本缺失）不会触发 close；不监听 error 会变成
+    // 未处理的 'error' 事件直接崩溃进程。
+    this.proc.on("error", (err) => {
+      this.proc = null;
+      if (this.pendingReject) {
+        if (this.pendingTimer) {
+          clearTimeout(this.pendingTimer);
+          this.pendingTimer = null;
+        }
+        this.pendingReject(new Error(t(`Python ${this.scriptName} 启动失败：${err.message}`, `Python ${this.scriptName} failed to start: ${err.message}`)));
+        this.pendingResolve = null;
+        this.pendingReject = null;
+      }
+    });
+
     // Wait for ready signal
     return new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timeout);
         this.proc?.stdout.off("data", readyChecker);
         this.proc?.off("close", onClose);
+        this.proc?.off("error", onError);
       };
       const timeout = setTimeout(() => {
         cleanup();
@@ -163,9 +179,15 @@ export class PythonBridge {
         cleanup();
         reject(new Error(t(`Python ${this.scriptName} 启动失败（进程提前退出）`, `Python ${this.scriptName} exited before becoming ready`)));
       };
+      // spawn 失败：立即失败，避免干等 10 秒
+      const onError = (err: Error) => {
+        cleanup();
+        reject(new Error(t(`Python ${this.scriptName} 启动失败：${err.message}`, `Python ${this.scriptName} failed to start: ${err.message}`)));
+      };
       // Temporarily listen for ready signal
       this.proc?.stdout.on("data", readyChecker);
       this.proc?.once("close", onClose);
+      this.proc?.once("error", onError);
     });
   }
 

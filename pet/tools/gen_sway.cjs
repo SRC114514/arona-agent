@@ -2,7 +2,7 @@
 // 用法：node pet/tools/gen_sway.cjs shiroko [--amp 20] [--keys 12]
 // 模式（SWAY_TARGETS[].main.mode）：
 //   band  = y 区间带内摆动（Shiroko 百褶裙：腿/手臂钉死，只动裙摆带；带内越低越自由）
-//   bottom= mesh 底部向上渐变（旧逻辑，仅适用于底缘就是自由端的 mesh）
+//   bottom= mesh 底部向上渐变（仅适用于底缘就是自由端的 mesh）
 // 原理（对未加权 mesh，附件顶点在骨本地空间）：
 //   - dx = amp·w·sin(2πt/T + φ(x))，φ 随 x 错开制造布料波浪
 //   - dy = amp·dyRatio·w·sin(4πt/T)（微弱垂直起伏）

@@ -1,12 +1,42 @@
-import { readFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, existsSync, readdirSync, cpSync } from "fs";
+import { homedir } from "os";
 import { join } from "path";
-import { SKILLS_DIR } from "./config.ts";
+import { SKILLS_DIR, verbose } from "./config.ts";
 import type { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 
 export interface SkillInfo {
   name: string;
   description: string;
   path: string;
+}
+
+/** ~/.agents/skills：Trae 全局技能目录（启动时补全缺失 Skill 的来源）。 */
+const AGENTS_SKILLS_DIR = join(homedir(), ".agents", "skills");
+
+/**
+ * 启动时把 ~/.agents/skills 下缺失的 Skill 目录同步到 ~/.arona/skills。
+ * 仅补缺（目标已存在同名目录则跳过），不覆盖、不删除；目录内需含 SKILL.md。
+ * 返回本次新同步的数量；任何失败仅 verbose 告警，绝不阻塞启动。
+ */
+export function syncSkillsFromAgentsDir(): number {
+  try {
+    if (!existsSync(AGENTS_SKILLS_DIR)) return 0;
+    const entries = readdirSync(AGENTS_SKILLS_DIR, { withFileTypes: true });
+    let synced = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const src = join(AGENTS_SKILLS_DIR, entry.name);
+      if (!existsSync(join(src, "SKILL.md"))) continue;
+      const dest = join(SKILLS_DIR, entry.name);
+      if (existsSync(dest)) continue;
+      cpSync(src, dest, { recursive: true });
+      synced++;
+    }
+    return synced;
+  } catch (err) {
+    if (verbose) console.warn(`[skills] sync from ${AGENTS_SKILLS_DIR} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return 0;
+  }
 }
 
 /**

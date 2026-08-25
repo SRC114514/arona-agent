@@ -1,14 +1,14 @@
 import { runPython } from "./utils/python.ts";
-import { config } from "./config.ts";
+import { config, verbose } from "./config.ts";
 import { getMainAgent, type AgentId } from "./agent_registry.ts";
-import { hasVoice } from "./voices.ts";
+import { getTtsProvider } from "./tts_provider.ts";
 
 let ttsEnabled = config.noVoice ? false : config.ttsEnabled;
 let sttEnabled = config.noVoice ? false : config.sttEnabled;
 
-/** 指定角色是否已有克隆音色（读 voices.json，arona 缺省回退旧 settings.ttsVoice）。 */
+/** 指定角色在当前 TTS Provider 下是否已具备音色（aliyun=克隆 voice_id；gpt-sovits cloud=显式 ref，local=ref/素材回退）。 */
 export function hasVoiceFor(agent: AgentId): boolean {
-  return hasVoice(agent);
+  return getTtsProvider().hasVoice(agent);
 }
 
 /** 当前主 Agent 是否已有克隆音色 */
@@ -18,9 +18,19 @@ export function hasCurrentVoice(): boolean {
 
 /** 指定角色在当前全局 TTS 开关下是否可朗读（无音色 → 强制静音，不影响 STT）。 */
 export function isTtsEnabledFor(agent: AgentId): boolean {
-  if (config.noVoice) return false;
-  if (!ttsEnabled) return false;
-  if (!hasVoiceFor(agent)) return false;
+  if (config.noVoice) {
+    if (verbose) console.error(`[tts] isTtsEnabledFor ${agent} = false (noVoice)`);
+    return false;
+  }
+  if (!ttsEnabled) {
+    if (verbose) console.error(`[tts] isTtsEnabledFor ${agent} = false (ttsEnabled=${ttsEnabled})`);
+    return false;
+  }
+  const provider = getTtsProvider();
+  if (!provider.hasVoice(agent)) {
+    if (verbose) console.error(`[tts] isTtsEnabledFor ${agent} = false (provider=${provider.id} hasVoice=false)`);
+    return false;
+  }
   return true;
 }
 

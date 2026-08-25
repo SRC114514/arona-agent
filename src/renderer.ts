@@ -259,19 +259,19 @@ export function createRenderer(
             if (showToolDetails) {
               const name = event.toolName;
               const input = event.input ? JSON.stringify(event.input).slice(0, 100) : "";
-              process.stdout.write(chalk.cyan(t(`\n  [工具] ${name}`, `\n  [tool] ${name}`)) + (input ? ` ${input}` : "") + "\n");
+              process.stdout.write(chalk.cyan(`\n  → ${name} ${input}`.trimEnd() + "\n"));
             }
             break;
 
           case "tool_execution_end":
             if (showToolDetails) {
-              const status = event.isError ? chalk.red(t("错误", "error")) : chalk.green(t("完成", "done"));
-              process.stdout.write(t("  [工具] ", "  [tool] ") + `${status}\n`);
+              const status = event.isError ? chalk.red(t("✗", "✗")) : chalk.green(t("✓", "✓"));
+              process.stdout.write(status + "\n");
             }
             break;
 
           case "compaction_start":
-            process.stdout.write(chalk.yellow(t("\n[正在压缩上下文...]\n", "\n[Compacting context...]\n")));
+            process.stdout.write(chalk.yellow(t("\n[压缩上下文…]\n", "\n[Compacting…]\n")));
             break;
 
           case "compaction_end":
@@ -282,12 +282,12 @@ export function createRenderer(
               const msg = String(event.errorMessage).replace(/^Compaction failed:\s*/i, "");
               process.stdout.write(chalk.red(t(`[压缩失败] ${msg}\n\n`, `[Compaction failed] ${msg}\n\n`)));
             } else {
-              process.stdout.write(chalk.yellow(t("[压缩完成]\n\n", "[Compaction complete]\n\n")));
+              process.stdout.write(chalk.yellow(t("[压缩完成]\n\n", "[Compaction done]\n\n")));
             }
             break;
 
           case "auto_retry_start":
-            process.stdout.write(chalk.yellow(t("\n[重试中...]\n", "\n[Retrying...]\n")));
+            process.stdout.write(chalk.yellow(t("\n[重试中…]\n", "\n[Retrying…]\n")));
             break;
         }
       });

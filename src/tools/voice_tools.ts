@@ -7,7 +7,7 @@ import { listen } from "../voice.ts";
  *
  * 设计原则：TTS 完全由程序在 Agent 回复时自动触发（renderer text_delta → TtsStream 实时流式），
  * 语气风格由 TTS 引擎自身决定，无需 Tool 介入。
- * STT 在用户长按右 Cmd ≥2秒时自动 listen（见 repl.ts），也无需 Tool 介入。
+ * STT 在用户长按全局录音热键（macOS 右 Cmd / 其他右 Ctrl）≥2秒时自动 listen（见 repl.ts），也无需 Tool 介入。
  *
  * 保留 transcribe Tool 仅作为手动触发 STT 的兜底入口（auto STT 关时仍可工作）。
  */

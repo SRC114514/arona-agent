@@ -34,8 +34,10 @@ if (!existsSync(tsxBin)) {
 }
 
 const child = spawn(tsxBin, [join(root, target), ...passArgs], {
+  // 保持用户调用 arona 时所在的目录作为工作目录（Workspace = CWD）。
+  // 之前固定 cwd: root 会让全局安装的 arona 把包目录当工作区，文件工具/项目文档/undo 全部错位。
+  cwd: process.cwd(),
   stdio: 'inherit',
-  cwd: root,
   // Windows: tsxBin 是 .cmd 批处理文件。Node >=20.12.2/18.20.2（CVE-2024-27980 修复，2024-04-10）
   // 起，spawn .bat/.cmd 且不设 shell 会直接抛 EINVAL，导致 `arona setup` 在 Windows 上无法启动。
   shell: process.platform === 'win32',

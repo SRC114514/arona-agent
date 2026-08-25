@@ -8,14 +8,14 @@
 
 ![示意图](./intro.png)
 
-基于 [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建的终端对话式 AI Agent，集成 Computer Use、语音（TTS/STT）、桌面宠物、持久记忆与会话管理。
+基于 [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建的终端对话式 AI Agent，集成 Computer Use、语音（TTS/STT）、桌面宠物与持久记忆。
 
 ---
 
 ## 安装
 
 ```bash
-npm install -g arona-agent
+npm i -g arona-agent
 
 # 初始化配置文件
 arona setup
@@ -24,7 +24,7 @@ arona setup
 arona
 
 # 更新
-npm update -g arona-agent
+npm u -g arona-agent
 
 # 禁用TTS+STT并启动
 arona --no-voice
@@ -59,8 +59,8 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | 字段 | 说明 | 默认值 |
 |---|---|---|
 | `apiKey` | API Key | — |
-| `apiBaseUrl` | API地址（留空则按模型名自动匹配） | — |
-| `model` | 模型名（`provider/model-id`，裸名自动补前缀） | `openai/gpt-4o` |
+| `apiBaseUrl` | API地址 | — |
+| `model` | 模型名 | `openai/gpt-4o` |
 | `thinkingLevel` | 思考等级 | `medium` |
 | `contextWindow` | 上下文窗口 | `1000000` |
 | `language` | 界面语言（`auto`/`zh`/`en`） | `auto` |
@@ -69,8 +69,10 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | `ttsEnabled` | 启用 TTS | `true` |
 | `sttEnabled` | 启用 STT | `true` |
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
-| `ttsApiKey` | 百炼 API Key | — |
+| `ttsApiKey` | 百炼 API Key（GPT-SoVITS 时仅用于 STT） | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
+| `ttsProvider` | TTS 后端（`aliyun`/`gpt-sovits`） | `aliyun` |
+| `ttsConfig` | 各 Provider 配置 | `{}` |
 | `sttApiKey` | 百炼 API Key | — |
 | `sttModel` | STT 模型 | `qwen-audio-3.0-asr-flash-streaming` |
 | `sttFormat` | STT 音频格式 | `pcm` |
@@ -89,7 +91,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | 路径 | 说明 |
 |---|---|
 | `settings.json` | 本地总配置文件，字段见 [配置](#配置) |
-| `voices.json` | 角色音色克隆 voice_id |
+| `voices.json` | TTS音色配置文件 |
 | `MEMORY.md` | 持久记忆 |
 | `sessions/` | 已保存会话 |
 | `skills/` | 自定义 Skill |
@@ -101,8 +103,10 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 ## 桌宠与 STT 热键
 
 - **桌宠**：透明无边框置顶窗口；拖动窗口可移动，在头部区域左右摇晃可触发"摸头"彩蛋；点击/拖拽还会触发特效
-- **STT 热键**：右 Cmd 键，长按 ≥ 2 秒触发一次性录音。
-- **macOS 权限**：全局键盘监听需「系统设置 → 隐私与安全性 → 辅助功能」为Python授权；Computer Use 截图需授予终端「屏幕录制」权限。
+- **STT 热键**：macOS 为右 Cmd 键，Windows/Linux 为右 Ctrl 键，长按 ≥ 2 秒触发一次性录音。
+> MacOS下，全局键盘监听需「系统设置 → 隐私与安全性 → 辅助功能」为Python授权；
+
+> Computer Use 截图需授予终端「屏幕录制」权限。
 
 ---
 

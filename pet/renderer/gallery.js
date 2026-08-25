@@ -1,8 +1,8 @@
 // 表情目视图库（gallery.js）：加载当前 Agent 骨架，逐帧切换数字情绪预设，供人工目视选号。
 // 由 pet/tools/gallery_capture.cjs 驱动截图。
 // 与 spinetest 不同：这里不调度眨眼/注视/拖动，保证截图干净。
-// 注意：截图内不带任何水印（旧 #label 水印已删——DOM 文本与 WebGL 画布是两条合成路径，
-// 曾出现水印滞后于骨架的过期纹理帧，编号与脸错位误导选号；编号一律以 gallery.html 文字为准）。
+// 注意：截图内不带任何水印——DOM 文本与 WebGL 画布是两条合成路径，
+// 曾出现水印滞后于骨架的过期纹理帧，编号与脸错位误导选号；编号一律以 gallery.html 文字为准。
 const canvas = document.getElementById("spine");
 
 async function init() {

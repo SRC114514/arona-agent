@@ -157,15 +157,17 @@ function errorText(status: number, detail: string): string {
 /** 限流重试 5 次仍失败 → 给 Agent 的可操作建议。 */
 function rateLimitExhaustedText(): string {
   return t(
-    "Tavily 触发限流，自动重试 5 次仍失败。建议：1) 在 ~/.arona/settings.json 配置 tavilyApiKey 以提升额度（免费计划每月 1000 credits，无需信用卡）；2) 稍后重试。",
-    "Tavily is rate-limiting; 5 auto-retries failed. Suggest: 1) configure tavilyApiKey in ~/.arona/settings.json for higher quota (free plan: 1000 credits/month, no credit card); 2) retry later.",
+    "Tavily 触发限流，自动重试 5 次仍失败。建议：1) 在 ~/.arona/settings.json 配置 tavilyApiKey；2) 稍后重试。",
+    "Tavily is rate-limiting; 5 auto-retries failed. Suggest: 1) configure tavilyApiKey in ~/.arona/settings.json; 2) retry later.",
   );
 }
 
 /** 统一失败文案：重试耗尽 → 限流建议；否则 → 通用错误。 */
 function failText(toolName: string, res: TavilyResponse<unknown>): string {
-  if (res.retries >= RATE_LIMIT_RETRIES && res.ok === false) return `${toolName} 失败：${rateLimitExhaustedText()}`;
-  return `${toolName} 失败：${errorText(res.status, res.error || "")}`;
+  if (res.retries >= RATE_LIMIT_RETRIES && res.ok === false) {
+    return t(`${toolName} 失败：${rateLimitExhaustedText()}`, `${toolName} failed: ${rateLimitExhaustedText()}`);
+  }
+  return t(`${toolName} 失败：${errorText(res.status, res.error || "")}`, `${toolName} failed: ${errorText(res.status, res.error || "")}`);
 }
 
 // ============================================================
@@ -249,9 +251,12 @@ export const webExtractTool = defineTool({
 
     const truncated =
       text.length > EXTRACT_MAX_CHARS
-        ? `${text.slice(0, EXTRACT_MAX_CHARS)}\n\n…（已截断，全文共 ${text.length} 字符，仅显示前 ${EXTRACT_MAX_CHARS}）`
+        ? `${text.slice(0, EXTRACT_MAX_CHARS)}\n\n${t(
+            `…（已截断，全文共 ${text.length} 字符，仅显示前 ${EXTRACT_MAX_CHARS}）`,
+            `… (truncated; ${text.length} chars total, showing first ${EXTRACT_MAX_CHARS})`,
+          )}`
         : text;
-    return textResult(`来源: ${result.url}\n\n${truncated}`);
+    return textResult(t(`来源: ${result.url}\n\n${truncated}`, `Source: ${result.url}\n\n${truncated}`));
   },
 });
 
@@ -308,7 +313,10 @@ export const webCrawlTool = defineTool({
       const body = (r.raw_content || "").trim();
       const truncated =
         body.length > CRAWL_PAGE_MAX_CHARS
-          ? `${body.slice(0, CRAWL_PAGE_MAX_CHARS)}\n…（已截断，该页共 ${body.length} 字符）`
+          ? `${body.slice(0, CRAWL_PAGE_MAX_CHARS)}\n${t(
+              `…（已截断，该页共 ${body.length} 字符）`,
+              `… (truncated; this page has ${body.length} chars)`,
+            )}`
           : body;
       return `[${i + 1}] ${r.url}\n${truncated}`;
     });
@@ -345,7 +353,9 @@ export const webMapTool = defineTool({
     }
     const shown = urls.slice(0, 100);
     const lines = shown.map((u, i) => `- ${u}`).join("\n");
-    const more = urls.length > shown.length ? `\n…（共 ${urls.length} 个，仅显示前 ${shown.length} 个）` : "";
+    const more = urls.length > shown.length
+      ? `\n${t(`…（共 ${urls.length} 个，仅显示前 ${shown.length} 个）`, `… (${urls.length} total, showing first ${shown.length})`)}`
+      : "";
     return textResult(t(`站点结构（${urls.length} 个页面）：\n`, `Site map (${urls.length} pages):\n`) + lines + more);
   },
 });
@@ -410,10 +420,14 @@ export const webResearchTool = defineTool({
         }
         const truncated =
           content.length > RESEARCH_MAX_CHARS
-            ? `${content.slice(0, RESEARCH_MAX_CHARS)}\n\n…（报告过长，已截断，全文共 ${content.length} 字符）`
+            ? `${content.slice(0, RESEARCH_MAX_CHARS)}\n\n${t(
+                `…（报告过长，已截断，全文共 ${content.length} 字符）`,
+                `… (report too long; truncated; ${content.length} chars total)`,
+              )}`
             : content;
         const sourceLines = sources.length > 0
-          ? `\n\n来源（${sources.length}）：\n` + sources.map((s) => `- ${s.title || ""}: ${s.url || ""}`).join("\n")
+          ? `\n\n${t(`来源（${sources.length}）：\n`, `Sources (${sources.length}):\n`)}` +
+            sources.map((s) => `- ${s.title || ""}: ${s.url || ""}`).join("\n")
           : "";
         return textResult(truncated + sourceLines);
       }

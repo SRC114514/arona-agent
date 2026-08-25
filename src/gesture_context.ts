@@ -2,9 +2,9 @@
 // 追加一条 user 消息，描述"刚才发生了什么"，引导主 Agent 在回复中自然流露出确实感受到了。
 //
 // 为什么用发送边界而不是拼进用户输入：repl.ts 的 processInput 会把文本写进主 session 的
-// state.messages，而子 Agent 每轮复制主 session 全量历史（repl.ts runOneAgent）——那样手势
-// 提示词会下放给子 Agent、还会污染会话命名/存储。发送边界注入只改本次请求的消息数组、
-// 不进 state.messages → 仅主 Agent 看到、零存储污染、会话命名天然干净。
+// state.messages，会污染会话命名/存储；拼进输入仍可能被主 session 落盘/导出，且子 Agent 每轮
+// 复制主 session 全量（stateless）时会一并看到。发送边界注入只改本次请求的消息数组、不进
+// state.messages → 仅主 Agent 本轮看到、零存储污染、会话命名天然干净。
 //
 // 只注册在**主 Agent** 的 loader 扩展列表（agent.ts initAgent），子 Agent（initSubAgent）
 // 的 loader 不含本扩展 → 不会收到。消费经 pet.takeGesture()（消费即清空，只注入最近一次）。
@@ -40,7 +40,7 @@ export const gestureContextExtension: InlineExtension = {
       return {
         messages: [
           ...event.messages,
-          { role: "user", content: [{ type: "text", text: scene }] },
+          { role: "user" as const, content: [{ type: "text" as const, text: scene }], timestamp: Date.now() },
         ],
       };
     });

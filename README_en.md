@@ -6,7 +6,7 @@
 
 ![Screenshot](./intro.png)
 
-A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), featuring Computer Use, voice (TTS/STT), a desktop pet, persistent memory, and session management.
+A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), featuring Computer Use, voice (TTS/STT), desktop pets and persistent memory.
 
 ---
 
@@ -56,7 +56,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, mostly genera
 | Field | Description | Default |
 |---|---|---|
 | `apiKey` | API key | — |
-| `apiBaseUrl` | API base URL (empty = auto-matched by model name) | — |
+| `apiBaseUrl` | API base URL | — |
 | `model` | Model name | `openai/gpt-4o` |
 | `thinkingLevel` | Thinking level | `medium` |
 | `contextWindow` | Context window | `1000000` |
@@ -66,8 +66,10 @@ All configuration lives in the JSON file `~/.arona/settings.json`, mostly genera
 | `ttsEnabled` | Enable TTS | `true` |
 | `sttEnabled` | Enable STT | `true` |
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
-| `ttsApiKey` | DashScope API key | — |
+| `ttsApiKey` | DashScope API key (only for STT with GPT-SoVITS) | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
+| `ttsProvider` | TTS backend (`aliyun`/`gpt-sovits`) | `aliyun` |
+| `ttsConfig` | Provider-specific config | `{}` |
 | `sttApiKey` | DashScope API key | — |
 | `sttModel` | STT model | `qwen-audio-3.0-asr-flash-streaming` |
 | `sttFormat` | STT audio format | `pcm` |
@@ -86,7 +88,7 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 | Path | Description |
 |---|---|
 | `settings.json` | Main config file; see the [Configuration](#configuration) section for fields |
-| `voices.json` | Per-character cloned voice_id |
+| `voices.json` | TTS Voices config file |
 | `MEMORY.md` | Persistent memory |
 | `sessions/` | Saved sessions |
 | `skills/` | Custom skills |
@@ -98,8 +100,10 @@ Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is
 ## Key functions
 
 - **Desktop pet**: transparent frameless always-on-top window; drag to move; shake the head region left-right to trigger the "head-pat" easter egg; clicks/drags also fire FX.
-- **STT hotkey**: right Cmd key — hold for ≥ 2 seconds to start a one-shot recording.
-- **macOS permissions**: global keyboard listening requires Accessibility permission for Python (System Settings → Privacy & Security → Accessibility); Computer Use screenshots require Screen Recording permission for the terminal.
+- **STT hotkey**: right Cmd on macOS, right Ctrl on Windows/Linux — hold for ≥ 2 seconds to start a one-shot recording.
+> Global keyboard listening requires Accessibility permission for Python (System Settings → Privacy & Security → Accessibility).
+
+> Computer Use screenshots require Screen Recording permission for the terminal.
 
 ---
 

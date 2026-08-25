@@ -9,7 +9,10 @@ ARONA 全局热键监听 - pynput 实现
 退出时输出 {"event":"exit"}。
 
 环境变量：
-  ARONA_HOTKEY_KEY      - 热键名称（默认 cmd_r，即右 Cmd）
+  ARONA_HOTKEY_KEY      - 热键名称（默认 cmd_r，即右 Cmd）。
+                          实际按键由 Node 侧（src/repl.ts）按平台注入：macOS 传 cmd_r（右 Cmd），
+                          Windows/Linux 传 ctrl_r（右 Ctrl）——pynput 在 Windows 无 Key.cmd_r，
+                          默认 cmd_r 在该平台会静默失效。用户仍可用本环境变量自定义覆盖。
   ARONA_HOTKEY_HOLD_MS  - 长按阈值（默认 2000 毫秒）
 """
 
@@ -156,6 +159,9 @@ def main():
         if code != target_code:
             return
         if target_is_right and is_right is not True:
+            return
+        if not target_is_right and is_right is True and target_code in ("cmd", "ctrl", "alt", "shift"):
+            # 左键模式：排除右键释放，避免右修饰键误清左键状态
             return
 
         with state["lock"]:

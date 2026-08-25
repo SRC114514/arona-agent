@@ -1,7 +1,7 @@
 import { homedir } from "os";
 import { join, resolve } from "path";
 import { existsSync, mkdirSync, readFileSync } from "fs";
-import type { LanguageSetting } from "./locale.ts";
+import { t, type LanguageSetting } from "./locale.ts";
 
 export const ARONA_DIR = join(homedir(), ".arona");
 export const MEMORY_FILE = join(ARONA_DIR, "MEMORY.md");
@@ -35,6 +35,22 @@ export interface McpServerConfig {
   headers?: Record<string, string>;
 }
 
+/** 已实现的 TTS Provider。 */
+export type TtsProvider = "aliyun" | "gpt-sovits";
+
+export const TTS_PROVIDER_IDS: readonly TtsProvider[] = ["aliyun", "gpt-sovits"];
+
+/** settings.json 中 ttsProvider 的原始值解析：未知/未实现回退 aliyun 并警告一次。 */
+function resolveTtsProvider(raw: unknown): TtsProvider {
+  if (typeof raw === "string" && (TTS_PROVIDER_IDS as readonly string[]).includes(raw)) {
+    return raw as TtsProvider;
+  }
+  if (typeof raw === "string" && raw) {
+    console.warn(t(`[tts] 未知 ttsProvider "${raw}"，已回退 aliyun`, `[tts] unknown ttsProvider "${raw}", falling back to aliyun`));
+  }
+  return "aliyun";
+}
+
 interface AronaConfig {
   // LLM
   apiKey: string;
@@ -45,6 +61,10 @@ interface AronaConfig {
   contextWindow: number;
   // Voice (Qwen / 阿里云百炼 DashScope)
   noVoice: boolean;
+  // TTS 后端：aliyun（默认，百炼） | gpt-sovits（本地 api_v2 服务）
+  ttsProvider: TtsProvider;
+  // 各 Provider 专属配置（键 = provider id）。百炼沿用顶层 ttsApiKey/ttsModel/workspaceId，不入此表。
+  ttsConfig: Record<string, unknown>;
   // 百炼业务空间 ID（可选；留空走旧域名 dashscope.aliyuncs.com）
   workspaceId: string;
   ttsApiKey: string;
@@ -83,6 +103,10 @@ interface Settings {
   sttEnabled?: boolean;
   /** @deprecated 已合并进 ttsEnabled，仅读兼容（旧配置 ttsAuto:false 仍生效） */
   ttsAuto?: boolean;
+  /** TTS 后端（aliyun | gpt-sovits） */
+  ttsProvider?: string;
+  /** 各 Provider 专属配置（键 = provider id；百炼沿用顶层 TTS 字段） */
+  ttsConfig?: Record<string, unknown>;
   workspaceId?: string;
   ttsApiKey?: string;
   ttsModel?: string;
@@ -115,7 +139,7 @@ function loadSettings(): Settings {
   try {
     return JSON.parse(readFileSync(SETTINGS_FILE, "utf-8"));
   } catch {
-    console.warn("Failed to parse settings.json, using defaults");
+    console.warn(t("settings.json 解析失败，使用默认配置", "Failed to parse settings.json, using defaults"));
     return {};
   }
 }
@@ -219,6 +243,9 @@ function loadConfig(): AronaConfig {
     thinkingLevel: s.thinkingLevel || "medium",
     contextWindow: typeof s.contextWindow === "number" && s.contextWindow > 0 ? s.contextWindow : 1000000,
 
+    ttsProvider: resolveTtsProvider(s.ttsProvider),
+    ttsConfig: s.ttsConfig && typeof s.ttsConfig === "object" && !Array.isArray(s.ttsConfig) ? s.ttsConfig : {},
+
     noVoice,
     // Skip TTS/STT fields when --no-voice is set
     workspaceId: noVoice ? "" : (s.workspaceId || ""),
@@ -243,3 +270,19 @@ function loadConfig(): AronaConfig {
 }
 
 export const config = loadConfig();
+
+/**
+ * STT 全局热键键名（pynput 命名，供 repl.ts 注入 ARONA_HOTKEY_KEY）：
+ * macOS 右 Cmd（pynput 有 Key.cmd_r），Windows/Linux 右 Ctrl（pynput Key.ctrl_r 三平台皆有效）。
+ * Windows 没有 Key.cmd_r，默认 cmd_r 在那会是静默失效，故按平台自动选。
+ */
+export function sttHotkeyKey(): string {
+  return process.platform === "darwin" ? "cmd_r" : "ctrl_r";
+}
+
+/** STT 全局热键显示名（用户可见，双语简洁）。右 Ctrl 提示一句话即可，不追加文案。 */
+export function sttHotkeyLabel(): string {
+  return process.platform === "darwin"
+    ? t("右 Cmd", "right Cmd")
+    : t("右 Ctrl", "right Ctrl");
+}

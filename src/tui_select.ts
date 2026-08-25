@@ -3,6 +3,7 @@
 // 复用 commands.ts 的可见宽度计算与行截断思路，避免 CJK 折行导致重绘叠字。
 
 import chalk from "chalk";
+import { t } from "./locale.ts";
 
 export interface SelectOption {
   id: string;
@@ -54,6 +55,7 @@ function truncateStyled(text: string, maxW: number, style: (s: string) => string
  * 多选 TUI。返回选中的 id 集合；用户取消（Esc/q/Ctrl+C）返回 null。
  *
  * 交互：↑/↓ 循环移动光标，空格切换 [*]/[ ]，回车确认。
+ * single=true 时单选：空格把当前项设为唯一选中（再按空格取消不选）。
  * 调用方需保证进入前 stdin 未被 readline 占用（setup 在调用前 rl.close()）。
  */
 export async function multiSelect(
@@ -61,6 +63,7 @@ export async function multiSelect(
   options: SelectOption[],
   initiallySelected: Set<string>,
   hint?: string,
+  single = false,
 ): Promise<Set<string> | null> {
   if (options.length === 0) return new Set<string>();
 
@@ -74,6 +77,8 @@ export async function multiSelect(
   const selected = new Set<string>(initiallySelected);
   let cursor = 0;
   let drawnScreenLines = 0;
+  /** 临时提示（单选未选择就按回车时显示，下次按键清除） */
+  let notice: string | null = null;
   const cols = process.stdout.columns ?? 80;
 
   const render = () => {
@@ -96,6 +101,7 @@ export async function multiSelect(
       out.push(styled);
     });
     if (hint) out.push(truncateStyled(hint, maxW, (x) => chalk.cyan(x)));
+    if (notice) out.push(truncateStyled(notice, maxW, (x) => chalk.yellow(x)));
     process.stdout.write(out.join("\r\n") + "\r\n");
     drawnScreenLines = out.length;
   };
@@ -105,18 +111,41 @@ export async function multiSelect(
   let resolveFn: (v: Set<string> | null) => void = () => {};
   const onData = (key: string) => {
     if (key === "\x1b[A") {
+      notice = null;
       cursor = (cursor - 1 + options.length) % options.length;
       render();
     } else if (key === "\x1b[B") {
+      notice = null;
       cursor = (cursor + 1) % options.length;
       render();
     } else if (key === " ") {
+      notice = null;
       const o = options[cursor];
       if (o.locked) return; // 锁定项：空格无效，保持 [*]
-      if (selected.has(o.id)) selected.delete(o.id);
-      else selected.add(o.id);
+      if (single) {
+        // 单选：空格把当前项设为唯一选中；已选中时按空格取消（可 Enter 由调用方回退默认）
+        if (selected.has(o.id)) selected.delete(o.id);
+        else {
+          selected.clear();
+          selected.add(o.id);
+        }
+      } else if (selected.has(o.id)) {
+        selected.delete(o.id);
+      } else {
+        selected.add(o.id);
+      }
       render();
     } else if (key === "\r" || key === "\n") {
+      // 单选未选中任何项时回车不生效：不静默回落默认项，
+      // 提示后保持菜单，等待用户明确选择
+      if (single && selected.size === 0) {
+        notice = t(
+          "请先按空格选择一项，再回车确认",
+          "Press Space to select an item first, then Enter",
+        );
+        render();
+        return;
+      }
       cleanup();
       resolveFn(selected);
     } else if (key === "\x1b" || key === "\x1b\x1b" || key === "q" || key === "\x03") {

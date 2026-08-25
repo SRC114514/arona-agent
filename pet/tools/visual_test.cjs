@@ -22,7 +22,7 @@ let win;
 // 指令时间线：t 秒时向渲染层发送情绪/重置指令；offs 覆盖默认截屏偏移
 // expect：落定后（+400ms）执行的断言（track4/slot attachment 期望值）
 const TIMELINE = [
-  // —— 情绪进/出 + 瞬时切换（原溶解/中断语义已退役）——
+  // —— 情绪进/出 + 瞬时切换 ——
   { t: 2.0, type: "emotion", name: "enjoy", tag: "enjoy",
     expect: { track4: "13", coverL: "L_Eye_Cover_01", halo: "halo_normal_00", mouse: "Mouse_01", gaze: false } },
   { t: 3.0, type: "emotion", name: "smile", tag: "smile",
@@ -38,7 +38,7 @@ const TIMELINE = [
     expect: { track4: "05", halo: "halo_angry", mouse: "Mouse_06", gaze: false } },
   { t: 6.4, type: "reset", tag: "angryBack",
     expect: { track4: null, halo: "halo_normal_00", gaze: true } },
-  // —— 说话/疑惑（旧介导断言改为 track4 预设 + 特征 slot）——
+  // —— 说话/疑惑（track4 预设 + 特征 slot）——
   { t: 7.0, type: "emotion", name: "saying", tag: "saying", offs: [100, 300, 700],
     expect: { track4: "20", mouse: "Mouse_02", halo: "halo_normal_00", gaze: true } },
   { t: 8.2, type: "reset", tag: "sayingBack", offs: [100, 300, 700],

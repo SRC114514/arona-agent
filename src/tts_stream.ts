@@ -5,8 +5,15 @@ import { t } from "./locale.ts";
 import { spawnCompat, stripProxyEnv } from "./utils/spawn.ts";
 import { stripMarkdown } from "./voice.ts";
 import { getMainAgent, type AgentId } from "./agent_registry.ts";
-import { getVoiceId } from "./voices.ts";
+import { getTtsProvider, type TtsCommand } from "./tts_provider.ts";
 import { splitStreamedText, countTextUnits } from "./text_split.ts";
+
+/** --verbose 日志用：掩码载荷里的 apiKey（避免密钥进日志）。 */
+function redactPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...payload };
+  if (typeof out.apiKey === "string" && out.apiKey) out.apiKey = "***";
+  return out;
+}
 
 /**
  * 非流式 TTS 管道（阿里云百炼"非实时语音合成"，整句一次 HTTP 合成）。
@@ -47,6 +54,16 @@ interface PendingSentence {
 function stripCodeBlocks(s: string): string {
   // 先删成对围栏块，再清掉残留的单个 ```（未闭合/游离标记）
   return s.replace(/```[\s\S]*?```/g, " ").replace(/```/g, " ");
+}
+
+/**
+ * 判断 GPT-SoVITS 报错是否与参考音频相关（"发现无效→重新上传再试"的依据）。
+ * 参考音频是云端通过 OSS URL 引用的，URL 失效时服务端报错文案多样，这里做宽松匹配。
+ * 误判只多一次重试（无害）；漏判则跳过本句、下轮 prepare 重新校验。
+ */
+function isRefAudioError(msg: string | undefined): boolean {
+  if (!msg) return false;
+  return /(参考音频|ref_?audio|ref.?wav|refer|示例音频|prompt|无法打开|not found|404|下载失败|download.*fail|cannot.*(?:audio|wav)|invalid.*(?:audio|wav))/i.test(msg);
 }
 
 export class TtsStream {
@@ -103,7 +120,18 @@ export class TtsStream {
       return;
     }
     const { sentences, rest } = splitStreamedText(full, TTS_FORCE_SPLIT_LEN);
-    for (const s of sentences) this.emitSentence(s, this.currentAgent);
+    // 碎句合并：切句器把「…」当句末（人设常用结巴省略号），会产生 1 字碎句（如「嗯……」
+    // 被切成「嗯…」+「好呀。」）。GPT-SoVITS 对 1 字超短输入的合成又快又怪（语速快/吞字感），
+    // 这里把 countTextUnits ≤ 1 的碎句并入相邻句，仅影响 TTS，不影响气泡渲染。
+    const merged: string[] = [];
+    for (const s of sentences) {
+      if (countTextUnits(stripMarkdown(s)) <= 1 && merged.length > 0) {
+        merged[merged.length - 1] += s;
+      } else {
+        merged.push(s);
+      }
+    }
+    for (const s of merged) this.emitSentence(s, this.currentAgent);
     const tail = rest.trim();
     if (tail) this.emitSentence(tail, this.currentAgent);
     void this.drain();
@@ -164,24 +192,46 @@ export class TtsStream {
     this.busy = true;
     let aborted = false;
     try {
+      // 合成前准备：本地 GPT-SoVITS 确保 api_v2 已启动/可达；云端模式预上传并校验 OSS 参考音频。
+      const provider = getTtsProvider();
+      if (provider.prepare) {
+        try {
+          await provider.prepare();
+        } catch (err) {
+          console.warn(t(
+            `GPT-SoVITS 本地服务准备失败：${err instanceof Error ? err.message : String(err)}`,
+            `GPT-SoVITS local server prepare failed: ${err instanceof Error ? err.message : String(err)}`,
+          ));
+        }
+        if (this.generation !== gen || this.shuttingDown) return;
+      }
       while (this.queue.length > 0 && !this.shuttingDown) {
         if (this.generation !== gen) return; // 已被 cancel 作废，停止处理
         const item = this.queue.shift()!;
-        // 单槽预合成：当前句播放期间预合成下一句（queue[0]），消除句间 HTTP 合成停顿
         const next = this.queue[0];
-        if (next && next.audioPath === undefined && !next.prefetchPromise) {
+        // 单槽预合成：仅当本句走 play 模式（已合成 wav，只播本地不碰 GPT-SoVITS 服务器）时提前启动。
+        // 本句走合成+播放（audioPath 为空/失败）时若提前 prefetch(next)，两个 python 进程会并发
+        // set_gpt_weights 争抢同一 api_v2 的全局权重 → 首句 /tts 可能落入 next 权重（群聊音色错乱）。
+        // 因此仅 play 模式预取；合成模式下 defer 到本句 play_start（音频已到手、权重可切换）后再预取。
+        let prefetchStarted = false;
+        const startPrefetch = () => {
+          if (prefetchStarted) return;
+          if (this.generation !== gen) return;
+          if (!next || next.audioPath !== undefined || next.prefetchPromise) return;
+          prefetchStarted = true;
           next.prefetchPromise = this.prefetch(next).finally(() => {
             next.prefetchPromise = undefined;
           });
-        }
-        // 短句兜底：上一句太短时预合成可能未完成，等其收尾（已从"从头合成"缩短为"等尾巴"）
+        };
+        if (typeof item.audioPath === "string") startPrefetch();
+        // 短句兜底：上一句太短时预合成可能未完成，等其收尾
         if (item.prefetchPromise) {
           if (verbose) console.error(`[tts] await prefetch "${item.text.slice(0, 40)}"`);
           await item.prefetchPromise;
           if (this.generation !== gen) return; // 等待期间被 cancel 作废
         }
         if (verbose) console.error(`[tts] speakOne start agent=${item.agent} "${item.text.slice(0, 40)}"`);
-        const ok = await this.speakOne(item);
+        const ok = await this.speakOne(item, typeof item.audioPath === "string" ? undefined : startPrefetch);
         if (verbose) console.error(`[tts] speakOne end agent=${item.agent} ok=${ok} remaining=${this.queue.length}`);
         if (!ok) {
           aborted = true;
@@ -201,38 +251,47 @@ export class TtsStream {
    * 预合成下一句：spawn 一次性 synth_only 进程，把 wav 写到临时文件，供播放时直接读（无 HTTP）。
    * 成功（synth_done）→ item.audioPath = 路径（仅当 generation 未变）；失败/超时/被杀 → null（回退合成+播放）。
    * 在上一句播放期间调用，消除句间 HTTP 合成停顿。带 TTS_SENTENCE_TIMEOUT_MS 保险丝。
+   * 参考音频相关错误 → 通知 provider 作废缓存（本句回退合成+播放，speakOne 会重传重试）。
    */
-  private prefetch(item: PendingSentence): Promise<void> {
+  private async prefetch(item: PendingSentence): Promise<void> {
+    if (verbose) console.error(`[tts] prefetch start agent=${item.agent} "${item.text.slice(0, 40)}"`);
+    const gen = this.generation;
+    const provider = getTtsProvider();
+    let cmd: TtsCommand;
+    try {
+      cmd = await provider.buildCommand(item.agent, item.text, "synth_only");
+    } catch (err) {
+      console.warn(t(`TTS: ${err instanceof Error ? err.message : String(err)}`, `TTS: ${err instanceof Error ? err.message : String(err)}`));
+      if (this.generation === gen) item.audioPath = null;
+      return;
+    }
+    if (this.generation !== gen) return;
     return new Promise((resolve) => {
-      if (verbose) console.error(`[tts] prefetch start agent=${item.agent} "${item.text.slice(0, 40)}"`);
       let settled = false;
       let timer: NodeJS.Timeout | undefined;
-      const gen = this.generation;
       const doResolve = () => {
         if (settled) return;
         if (timer) clearTimeout(timer);
         settled = true;
         resolve();
       };
-      const voiceId = getVoiceId(item.agent);
+      const fuseMs = provider.sentenceTimeoutMs();
       let stdoutBuffer = "";
       const proc = spawnCompat(config.pythonPath, ["-u", join(PYTHON_DIR, "tts_say.py")], {
         env: stripProxyEnv({
           ...process.env,
           PYTHONUTF8: "1",
-          QWEN_WORKSPACE_ID: config.workspaceId,
-          QWEN_TTS_API_KEY: config.ttsApiKey,
-          QWEN_TTS_MODEL: config.ttsModel,
-          QWEN_TTS_VOICE: voiceId,
+          ...cmd.env,
         }),
         stdio: ["pipe", "pipe", "pipe"],
       });
       this.prefetchProc = proc;
 
-      // 保险丝：预合成最多等 TTS_SENTENCE_TIMEOUT_MS，超时杀进程 + null 回退（busy 必然复位、整体不静音）
+      // 保险丝：预合成最多等 fuseMs（provider 自定义，aliyun 30s / gpt-sovits timeoutMs），
+      // 超时杀进程 + null 回退（busy 必然复位、整体不静音）
       timer = setTimeout(() => {
         if (settled) return;
-        if (verbose) console.error(`[tts] prefetch TIMEOUT (${TTS_SENTENCE_TIMEOUT_MS}ms) agent=${item.agent} "${item.text.slice(0, 40)}"`);
+        if (verbose) console.error(`[tts] prefetch TIMEOUT (${fuseMs}ms) agent=${item.agent} "${item.text.slice(0, 40)}"`);
         if (this.prefetchProc === proc) this.prefetchProc = null;
         if (!proc.killed) {
           try {
@@ -243,7 +302,7 @@ export class TtsStream {
         }
         if (this.generation === gen) item.audioPath = null;
         doResolve();
-      }, TTS_SENTENCE_TIMEOUT_MS);
+      }, fuseMs);
 
       proc.stdout.on("data", (data) => {
         stdoutBuffer += data.toString();
@@ -252,7 +311,7 @@ export class TtsStream {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt: { event?: string; message?: string; path?: string };
+          let evt: { event?: string; message?: string; path?: string; gpt?: string; sovits?: string };
           try {
             evt = JSON.parse(trimmed);
           } catch {
@@ -262,9 +321,13 @@ export class TtsStream {
             if (verbose) console.error(`[tts] prefetch synth_done agent=${item.agent} "${item.text.slice(0, 40)}"`);
             if (this.generation === gen) item.audioPath = evt.path;
             doResolve();
+          } else if (evt.event === "weights_loaded") {
+            if (verbose) console.error(`[tts] prefetch weights_loaded agent=${item.agent} gpt=${evt.gpt ?? ""} sovits=${evt.sovits ?? ""}`);
+            provider.ackWeights?.({ gpt: evt.gpt, sovits: evt.sovits });
           } else if (evt.event === "error") {
             console.warn(t(`TTS: ${evt.message ?? "unknown error"}`, `TTS: ${evt.message ?? "unknown error"}`));
             if (verbose) console.error(`[tts] prefetch error: ${evt.message}`);
+            if (isRefAudioError(evt.message)) provider.markRefInvalid?.(item.agent);
             if (this.generation === gen) item.audioPath = null;
             doResolve();
           }
@@ -294,7 +357,8 @@ export class TtsStream {
       });
 
       try {
-        proc.stdin.write(JSON.stringify({ mode: "synth_only", text: item.text, voice: voiceId }) + "\n");
+        if (verbose) console.error(`[tts] prefetch payload ${JSON.stringify(redactPayload(cmd.payload))}`);
+        proc.stdin.write(JSON.stringify(cmd.payload) + "\n");
         proc.stdin.end();
       } catch {
         // 忽略
@@ -309,46 +373,89 @@ export class TtsStream {
    * 音色按句固定：环境变量与 stdin 都用该句所属角色的 voice_id，不受后续 setVoice 影响。
    * 带 TTS_SENTENCE_TIMEOUT_MS 保险丝：到点仍未 play_end/close → 杀进程 + 按正常结束继续下一句，
    * 保证 drain 必然推进、busy 必然复位，杜绝"卡死一句 → 整条 TTS 永久静音"。
+   * 参考音频相关错误（云端 OSS URL 失效等）→ markRefInvalid 作废缓存并【重新上传再试一次】。
+   * @param onPlayStart 合成+播放模式下，本句音频已到手（play_start）时回调：此刻 GPT-SoVITS
+   *                    服务器权重可安全切换，由调用方在此启动下一句预合成（避免权重并发竞态）。
    * @returns true = 正常结束（含合成失败/超时，继续下一句）；false = 被 cancel 打断
    */
-  private speakOne(item: PendingSentence): Promise<boolean> {
+  private async speakOne(item: PendingSentence, onPlayStart?: () => void): Promise<boolean> {
+    const { text, agent } = item;
+    const provider = getTtsProvider();
+    const gen = this.generation;
+    this._killRequested = false;
+    let retried = false;
+    for (;;) {
+      if (this.generation !== gen) return false;
+      let cmd: TtsCommand;
+      try {
+        cmd = await provider.buildCommand(agent, text, "synth_play");
+      } catch (err) {
+        console.warn(t(`TTS: ${err instanceof Error ? err.message : String(err)}`, `TTS: ${err instanceof Error ? err.message : String(err)}`));
+        return true; // 音色解析失败：跳过本句继续
+      }
+      if (this.generation !== gen) return false;
+      const payload =
+        typeof item.audioPath === "string"
+          ? { mode: "play", path: item.audioPath }
+          : cmd.payload;
+      const result = await this.runSentence(cmd.env, payload, agent, text, provider.sentenceTimeoutMs(), onPlayStart);
+      if (result === "retry" && !retried) {
+        retried = true;
+        if (verbose) console.error(`[tts] 参考音频无效，重新上传后重试 agent=${agent} "${text.slice(0, 40)}"`);
+        provider.markRefInvalid?.(agent);
+        item.audioPath = null; // 丢弃可能已预合成的旧 wav，走合成+播放
+        continue;
+      }
+      return result === "cancel" ? false : true;
+    }
+  }
+
+  /**
+   * 合成+播放一句（spawn 一次性 python 进程）：play 模式只播已合成 wav；否则合成+播放。
+   * 带 fuseMs 时长保险丝：超时杀进程并按"正常结束"返回，保证整条 TTS 不静音。
+   * @param onPlayStart 合成模式收到 play_start 时调用一次（在此启动下一句预合成）
+   * @returns "ok"=正常结束（继续下一句）；"cancel"=被 cancel 打断；"retry"=参考音频相关错误（可重试）
+   */
+  private runSentence(
+    env: Record<string, string>,
+    payload: Record<string, unknown>,
+    agent: AgentId,
+    text: string,
+    fuseMs: number,
+    onPlayStart?: () => void,
+  ): Promise<"ok" | "cancel" | "retry"> {
     return new Promise((resolve) => {
       this._killRequested = false;
       let settled = false;
       let timer: NodeJS.Timeout | undefined; // 时长保险丝句柄（TDZ 安全：先声明，后赋值）
-      const doResolve = (val: boolean) => {
+      const doResolve = (val: "ok" | "cancel" | "retry") => {
         if (settled) return;
         if (timer) clearTimeout(timer);
+        // 无论正常 play_end、异常退出、超时还是取消，本句结束后都不允许残留 pendingCount，
+        // 否则 onIdle/isPending 会被卡死（play_start 后进程异常退出/超时是主要泄漏路径）。
+        this.pendingCount = 0;
         settled = true;
         resolve(val);
       };
-      const { text, agent } = item;
-      const voiceId = getVoiceId(agent);
-      const payload =
-        typeof item.audioPath === "string"
-          ? { mode: "play", path: item.audioPath }
-          : { text, voice: voiceId };
+      const provider = getTtsProvider();
       let stdoutBuffer = "";
       const proc = spawnCompat(config.pythonPath, ["-u", join(PYTHON_DIR, "tts_say.py")], {
         env: stripProxyEnv({
           ...process.env,
           PYTHONUTF8: "1",
-          QWEN_WORKSPACE_ID: config.workspaceId,
-          QWEN_TTS_API_KEY: config.ttsApiKey,
-          QWEN_TTS_MODEL: config.ttsModel,
-          QWEN_TTS_VOICE: voiceId,
+          ...env,
         }),
         stdio: ["pipe", "pipe", "pipe"],
       });
       this.proc = proc;
 
-      // 时长保险丝：一句合成+播放最多等 TTS_SENTENCE_TIMEOUT_MS，超时主动杀进程并推进一步
+      // 时长保险丝：一句合成+播放最多等 fuseMs（provider 自定义），超时主动杀进程并推进一步
       timer = setTimeout(() => {
         if (settled) return;
-        if (verbose) console.error(`[tts] speakOne TIMEOUT (${TTS_SENTENCE_TIMEOUT_MS}ms) agent=${agent} "${text.slice(0, 40)}"`);
+        if (verbose) console.error(`[tts] speakOne TIMEOUT (${fuseMs}ms) agent=${agent} "${text.slice(0, 40)}"`);
         if (this.proc === proc) this.killProc();
-        doResolve(true);
-      }, TTS_SENTENCE_TIMEOUT_MS);
+        doResolve("ok");
+      }, fuseMs);
 
       proc.stdout.on("data", (data) => {
         stdoutBuffer += data.toString();
@@ -357,7 +464,7 @@ export class TtsStream {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt: { event?: string; message?: string };
+          let evt: { event?: string; message?: string; gpt?: string; sovits?: string };
           try {
             evt = JSON.parse(trimmed);
           } catch {
@@ -366,17 +473,23 @@ export class TtsStream {
           switch (evt.event) {
             case "play_start":
               this.pendingCount++;
+              onPlayStart?.(); // 音频已到手、服务器权重可切换 → 启动下一句预合成
               if (verbose) console.error(`[tts] play_start pending=${this.pendingCount}`);
               break;
             case "play_end":
               if (this.pendingCount > 0) this.pendingCount--;
               if (verbose) console.error(`[tts] play_end pending=${this.pendingCount}`);
-              doResolve(true); // 播放完成
+              doResolve("ok"); // 播放完成
+              break;
+            case "weights_loaded":
+              if (verbose) console.error(`[tts] speakOne weights_loaded agent=${agent} gpt=${evt.gpt ?? ""} sovits=${evt.sovits ?? ""}`);
+              provider.ackWeights?.({ gpt: evt.gpt, sovits: evt.sovits });
               break;
             case "error":
               console.warn(t(`TTS: ${evt.message ?? "unknown error"}`, `TTS: ${evt.message ?? "unknown error"}`));
               if (verbose) console.error(`[tts] error: ${evt.message}`);
-              // 合成失败不中断队列，靠 close 再 resolve(true) 继续下一句
+              // 参考音频相关错误（OSS URL 失效等）→ 返回 retry 让上层重传重试；其它错误靠 close 继续下一句
+              if (isRefAudioError(evt.message)) doResolve("retry");
               break;
             default:
               break;
@@ -393,14 +506,15 @@ export class TtsStream {
       proc.on("close", () => {
         if (this.proc === proc) this.proc = null;
         // 若已通过 play_end 结算，则 close 不再改写结果；否则按是否被 kill 决定
-        doResolve(!this._killRequested);
+        doResolve(this._killRequested ? "cancel" : "ok");
       });
       proc.on("error", () => {
         if (this.proc === proc) this.proc = null;
-        doResolve(!this._killRequested);
+        doResolve(this._killRequested ? "cancel" : "ok");
       });
 
       try {
+        if (verbose) console.error(`[tts] speakOne payload ${JSON.stringify(redactPayload(payload))}`);
         proc.stdin.write(JSON.stringify(payload) + "\n");
         proc.stdin.end();
       } catch {
