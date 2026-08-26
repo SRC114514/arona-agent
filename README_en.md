@@ -13,7 +13,7 @@ A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs
 ## Installation
 
 ```bash
-npm install -g arona-agent
+npm i -g arona-agent
 
 # Initialize configuration
 arona setup
@@ -22,7 +22,7 @@ arona setup
 arona
 
 # Upgrade
-npm update -g arona-agent
+npm u -g arona-agent
 
 # Launch with TTS/STT disabled
 arona --no-voice
@@ -37,7 +37,7 @@ arona voice add [<character-name>]   # omit the name to enter the TUI for missin
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
 - **Voice**: Non-streaming TTS (whole-sentence synthesis for natural prosody) + STT.
-- **Desktop pet**: transparent frameless always-on-top Electron window + emotion switching + cursor-following pupils + head-pat easter egg + full-screen click/trail FX.
+- **Desktop pet**: transparent frameless always-on-top Electron window + emotion switching + cursor-following pupils + head-pat easter egg + full-screen click/trail FX; lip-sync mouth animation driven by TTS volume.
 - **Multi-character group chat**: main agent + sub agents on the same screen. After the main agent replies, sub agents take turns in order.
 
 ---
@@ -66,7 +66,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, mostly genera
 | `ttsEnabled` | Enable TTS | `true` |
 | `sttEnabled` | Enable STT | `true` |
 | `workspaceId` | Alibaba Cloud Model Studio business space ID | — |
-| `ttsApiKey` | DashScope API key (only for STT with GPT-SoVITS) | — |
+| `ttsApiKey` | DashScope API key | — |
 | `ttsModel` | TTS model | `qwen-audio-3.0-tts-plus` |
 | `ttsProvider` | TTS backend (`aliyun`/`gpt-sovits`) | `aliyun` |
 | `ttsConfig` | Provider-specific config | `{}` |

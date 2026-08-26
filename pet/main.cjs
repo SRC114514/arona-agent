@@ -388,6 +388,12 @@ function handleMessage(msg) {
       sendToAgent(id, "pet:text", { kind: msg.kind, data: msg.data });
       break;
     }
+    case "tts_level": {
+      // TTS 播放中实时音量（RMS 0~1）→ 对应角色窗口嘴型 lip-sync
+      const id = msg.agent && AGENTS[msg.agent] ? msg.agent : MAIN_AGENT_ID;
+      if (typeof msg.rms === "number") sendToAgent(id, "pet:tts-level", msg.rms);
+      break;
+    }
     case "quit":
       app.quit();
       break;

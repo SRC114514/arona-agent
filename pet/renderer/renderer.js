@@ -355,6 +355,11 @@ async function init() {
   window.petAPI.onEmotion(showEmotion);
   window.petAPI.onReset(resetToBase);
 
+  // TTS 播放中实时音量 → 嘴型 lip-sync（spine_layer 内部做包络/档位/覆盖）
+  window.petAPI.onTtsLevel((rms) => {
+    window.SpineLayer.setMouthLevel(rms);
+  });
+
   // 文字气泡：只显示 mid/final 短消息；等到 TTS 播放结束（tts_end）再消失
   window.petAPI.onText(({ kind, data }) => {
     if (!petBubble) return;

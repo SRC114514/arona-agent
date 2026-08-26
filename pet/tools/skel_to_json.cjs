@@ -1,6 +1,6 @@
 // skel(二进制) → Spine 3.8 JSON 导出器 + round-trip 深比对验证。
 // 用法：node pet/tools/skel_to_json.cjs <agentId> [--verify] [--out <path>]
-//   默认输出到 assets/blue-archive/<id>/<id>_spr.json（arona/plana 在 spine/ 子目录）
+//   默认输出到 assets/blue-archive/<id>/spine/<id>_spr.json
 //   --verify：导出后用 SkeletonJson 读回，与 SkeletonBinary 的 SkeletonData 深比对。
 //
 // 关键格式事实（源码核对 vendored spine-webgl.js）：
@@ -87,17 +87,33 @@ function exportAttachment(a) {
     return m;
   }
   if (a.constructor.name === "MeshAttachment") {
-    if (a.bones != null) throw new Error(`加权 mesh 不支持导出: ${a.name}`);
     const m = {
       type: "mesh",
       name: a.name,
       path: a.path,
       color: colorToHex(a.color),
       uvs: arr(a.regionUVs),
-      vertices: arr(a.vertices),
       triangles: arr(a.triangles),
       hull: a.hullLength / 2,
     };
+    if (a.bones != null) {
+      // 加权 mesh：binary 的 bones=[boneCount, idx...] + vertices=[x,y,w...] 扁平三元组
+      // → JSON 交错格式 [boneCount, boneIdx, x, y, weight, ...]
+      const bones = Array.from(a.bones), weights = Array.from(a.vertices);
+      const verts = [];
+      let wi = 0;
+      for (let bi = 0; bi < bones.length; ) {
+        const boneCount = bones[bi++];
+        verts.push(boneCount);
+        for (let k = 0; k < boneCount; k++) {
+          verts.push(bones[bi++], weights[wi], weights[wi + 1], weights[wi + 2]);
+          wi += 3;
+        }
+      }
+      m.vertices = verts.map(r2);
+    } else {
+      m.vertices = arr(a.vertices);
+    }
     if (a.edges) m.edges = arr(a.edges);
     if (a.width) m.width = r2(a.width);
     if (a.height) m.height = r2(a.height);
@@ -201,10 +217,6 @@ function exportAnimation(anim, data) {
 
 // ---- 顶层导出 ----
 function exportSkeletonData(data) {
-  if (data.ikConstraints.length || data.transformConstraints.length || data.pathConstraints.length)
-    throw new Error("存在 IK/transform/path 约束，导出器未覆盖");
-  if (data.events.length) throw new Error("存在事件，导出器未覆盖");
-
   const root = {
     skeleton: {
       hash: data.hash,
@@ -246,6 +258,78 @@ function exportSkeletonData(data) {
     }),
     animations: {},
   };
+  // IK / transform / path 约束：mix 系字段必须全量显式写
+  // （binary 端默认 rotateMix=0，JSON 读入端默认 1，省略会不一致）
+  if (data.ikConstraints.length) {
+    root.ik = data.ikConstraints.map((ik) => {
+      const m = { name: ik.name };
+      if (ik.order) m.order = ik.order;
+      if (ik.skinRequired) m.skin = true;
+      m.bones = ik.bones.map((b) => b.name);
+      m.target = ik.target.name;
+      if (ik.mix !== 1) m.mix = r2(ik.mix);
+      if (ik.softness) m.softness = r2(ik.softness);
+      m.bendPositive = ik.bendDirection === 1;
+      if (ik.compress) m.compress = true;
+      if (ik.stretch) m.stretch = true;
+      if (ik.uniform) m.uniform = true;
+      return m;
+    });
+  }
+  if (data.transformConstraints.length) {
+    root.transform = data.transformConstraints.map((tr) => {
+      const m = { name: tr.name };
+      if (tr.order) m.order = tr.order;
+      if (tr.skinRequired) m.skin = true;
+      m.bones = tr.bones.map((b) => b.name);
+      m.target = tr.target.name;
+      if (tr.local) m.local = true;
+      if (tr.relative) m.relative = true;
+      m.rotation = r2(tr.offsetRotation);
+      m.x = r2(tr.offsetX);
+      m.y = r2(tr.offsetY);
+      m.scaleX = r2(tr.offsetScaleX);
+      m.scaleY = r2(tr.offsetScaleY);
+      m.shearY = r2(tr.offsetShearY);
+      m.rotateMix = r2(tr.rotateMix);
+      m.translateMix = r2(tr.translateMix);
+      m.scaleMix = r2(tr.scaleMix);
+      m.shearMix = r2(tr.shearMix);
+      return m;
+    });
+  }
+  if (data.pathConstraints.length) {
+    root.path = data.pathConstraints.map((pc) => {
+      const m = { name: pc.name };
+      if (pc.order) m.order = pc.order;
+      if (pc.skinRequired) m.skin = true;
+      m.bones = pc.bones.map((b) => b.name);
+      m.target = pc.target.name;
+      m.positionMode = pc.positionMode === spine.PositionMode.Fixed ? "fixed" : "percent";
+      m.spacingMode = pc.spacingMode === spine.SpacingMode.Length ? "length"
+        : pc.spacingMode === spine.SpacingMode.Fixed ? "fixed" : "percent";
+      m.rotateMode = pc.rotateMode === spine.RotateMode.Tangent ? "tangent"
+        : pc.rotateMode === spine.RotateMode.Chain ? "chain" : "chainScale";
+      m.rotation = r2(pc.offsetRotation);
+      m.position = r2(pc.position);
+      m.spacing = r2(pc.spacing);
+      m.rotateMix = r2(pc.rotateMix);
+      m.translateMix = r2(pc.translateMix);
+      return m;
+    });
+  }
+  if (data.events.length) {
+    root.events = {};
+    for (const ev of data.events) {
+      const m = { int: ev.intValue, float: r2(ev.floatValue), string: ev.stringValue || "" };
+      if (ev.audioPath != null) {
+        m.audio = ev.audioPath;
+        m.volume = r2(ev.volume);
+        m.balance = r2(ev.balance);
+      }
+      root.events[ev.name] = m;
+    }
+  }
   for (const anim of data.animations) root.animations[anim.name] = exportAnimation(anim, data);
   return root;
 }
@@ -335,9 +419,60 @@ function verify(a, b) {
           cmpFloatArray(`${p}.triangles`, aa.triangles, ab.triangles, 0, errors);
           if (aa.hullLength !== ab.hullLength) ctx()(`${p} hull ${aa.hullLength}!=${ab.hullLength}`);
           if ((aa.edges ? aa.edges.length : -1) !== (ab.edges ? ab.edges.length : -1)) ctx()(`${p} edges`);
+          if (aa.bones != null || ab.bones != null) {
+            const ba = aa.bones ? Array.from(aa.bones).join(",") : "";
+            const bb = ab.bones ? Array.from(ab.bones).join(",") : "";
+            if (ba !== bb) ctx()(`${p} bones 不等 (加权)`);
+          }
         }
       }
     }
+  });
+
+  // IK 约束
+  if (a.ikConstraints.length !== b.ikConstraints.length) ctx()(`IK 数量 ${a.ikConstraints.length}!=${b.ikConstraints.length}`);
+  a.ikConstraints.forEach((ia, i) => {
+    const ib = b.ikConstraints[i];
+    if (!ib) return;
+    if (ia.name !== ib.name) return ctx()(`IK[${i}] 名 ${ia.name}!=${ib.name}`);
+    for (const k of ["order", "mix", "softness", "bendDirection", "compress", "stretch", "uniform"])
+      if (ia[k] !== ib[k]) ctx()(`IK ${ia.name}.${k}: ${ia[k]} != ${ib[k]}`);
+    if (ia.bones.map((x) => x.name).join(",") !== ib.bones.map((x) => x.name).join(",")) ctx()(`IK ${ia.name} bones`);
+    if (ia.target.name !== ib.target.name) ctx()(`IK ${ia.name} target ${ia.target.name}!=${ib.target.name}`);
+  });
+
+  // transform 约束
+  if (a.transformConstraints.length !== b.transformConstraints.length) ctx()(`transform 数量 ${a.transformConstraints.length}!=${b.transformConstraints.length}`);
+  a.transformConstraints.forEach((ta, i) => {
+    const tb = b.transformConstraints[i];
+    if (!tb) return;
+    if (ta.name !== tb.name) return ctx()(`TR[${i}] 名 ${ta.name}!=${tb.name}`);
+    for (const k of ["order", "local", "relative", "offsetRotation", "offsetX", "offsetY", "offsetScaleX", "offsetScaleY", "offsetShearY", "rotateMix", "translateMix", "scaleMix", "shearMix"])
+      if (!approx(ta[k], tb[k], 1e-4)) ctx()(`TR ${ta.name}.${k}: ${ta[k]} != ${tb[k]}`);
+    if (ta.bones.map((x) => x.name).join(",") !== tb.bones.map((x) => x.name).join(",")) ctx()(`TR ${ta.name} bones`);
+    if (ta.target.name !== tb.target.name) ctx()(`TR ${ta.name} target ${ta.target.name}!=${tb.target.name}`);
+  });
+
+  // path 约束
+  if (a.pathConstraints.length !== b.pathConstraints.length) ctx()(`path 数量 ${a.pathConstraints.length}!=${b.pathConstraints.length}`);
+  a.pathConstraints.forEach((pa, i) => {
+    const pb = b.pathConstraints[i];
+    if (!pb) return;
+    if (pa.name !== pb.name) return ctx()(`PATH[${i}] 名 ${pa.name}!=${pb.name}`);
+    for (const k of ["order", "positionMode", "spacingMode", "rotateMode", "offsetRotation", "position", "spacing", "rotateMix", "translateMix"])
+      if (!approx(pa[k], pb[k], 1e-4)) ctx()(`PATH ${pa.name}.${k}: ${pa[k]} != ${pb[k]}`);
+    if (pa.bones.map((x) => x.name).join(",") !== pb.bones.map((x) => x.name).join(",")) ctx()(`PATH ${pa.name} bones`);
+    if (pa.target.name !== pb.target.name) ctx()(`PATH ${pa.name} target ${pa.target.name}!=${pb.target.name}`);
+  });
+
+  // 事件
+  if (a.events.length !== b.events.length) ctx()(`事件数量 ${a.events.length}!=${b.events.length}`);
+  a.events.forEach((ea, i) => {
+    const eb = b.events[i];
+    if (!eb) return;
+    if (ea.name !== eb.name) return ctx()(`event[${i}] 名 ${ea.name}!=${eb.name}`);
+    for (const k of ["intValue", "floatValue", "stringValue", "audioPath", "volume", "balance"])
+      if (ea[k] !== eb[k]) ctx()(`event ${ea.name}.${k}: ${ea[k]} != ${eb[k]}`);
   });
 
   // 动画（按 属性标识 分组比对，顺序无关）

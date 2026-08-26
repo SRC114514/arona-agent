@@ -52,6 +52,10 @@ const ARONA = {
   // 睁眼预设默认保留瞳孔跟随；以下预设禁跟随：jealous(07) 自带固定斜视（跟随会覆盖）、
   // angry(05) 眼神固定不跟光标、doubt(27) 闭眼本就关闭（显式列出以便理解）
   noGazePresets: ["05", "07", "27"],
+  // 嘴型 lip-sync 3 档（几何 bounds 初值：closed=setup 中性嘴；part=Mouse_02 说话嘴、
+  // open=Mouse_11 惊讶最大张口——visual_test 情绪嘴型交叉验证开度与顶点高度相关；
+  // 精确开度可生成嘴型图库目视微调）
+  mouth: { slot: "Mouse_01", closed: "Mouse_01", part: "Mouse_02", open: "Mouse_11" },
 };
 
 const PLANA = {
@@ -102,6 +106,9 @@ const PLANA = {
   closedEyePresets: ["04", "05", "06", "10", "11", "12", "13", "14", "16", "17", "99"],
   // 禁跟随预设：05 闭眼冗余无害；07（curious）按 Arona 同源保留固定斜视，待用户目视确认跟随是否别扭
   noGazePresets: ["05", "07"],
+  // 嘴型 lip-sync 3 档（几何 bounds 初值：closed=setup 中性嘴 Mouth_01；part=Mouth_03 中等开度；
+  // open=Mouth_08 最大张口——精确开度可生成嘴型图库目视微调）
+  mouth: { slot: "Mouth_01", closed: "Mouth_01", part: "Mouth_03", open: "Mouth_08" },
 };
 
 // ---- 精灵图切换式角色（Shiroko / Hoshino）----
@@ -154,7 +161,7 @@ const SHIROKO = {
 
 const HOSHINO = {
   id: "hoshino",
-  spineBase: "../../assets/blue-archive/hoshino/",
+  spineBase: "../../assets/blue-archive/hoshino/spine/",
   // .json = skel_to_json 导出 + meshify_region 身体网格化(6×10) + gen_sway 衣摆形变；
   // 重新生成顺序：skel_to_json → meshify_region → gen_sway（任何前一步都会覆盖后一步产物）
   skelFile: "hoshino_spr.json",

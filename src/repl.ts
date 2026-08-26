@@ -45,6 +45,10 @@ export class Repl {
       this.hidePetBubble();
       if (this.turnEnded && !this.ttsStream.isPending) pet.reset();
     },
+    // 播放中实时音量 → 桌宠嘴型 lip-sync（转发给对应角色窗口）
+    (agentId, rms) => {
+      if (pet.isRunning) pet.sendTtsLevel(agentId, rms);
+    },
   );
   // 回合结束标志：中间段的 play_end 不触发 pet.reset，只有回合结束后才恢复桌宠
   private turnEnded = false;

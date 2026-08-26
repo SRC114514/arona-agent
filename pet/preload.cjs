@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld("petAPI", {
   onEmotion: (cb) => ipcRenderer.on("pet:emotion", (_e, name) => cb(name)),
   onReset: (cb) => ipcRenderer.on("pet:reset", () => cb()),
   onText: (cb) => ipcRenderer.on("pet:text", (_e, p) => cb(p)),
+  // TTS 播放中实时音量（RMS 0~1）→ 嘴型 lip-sync
+  onTtsLevel: (cb) => ipcRenderer.on("pet:tts-level", (_e, rms) => cb(rms)),
   getAgentConfig: () => ipcRenderer.invoke("pet:get-agent-config"),
   drag: (dx, dy) => ipcRenderer.send("pet:drag", dx, dy),
   dragEnd: () => ipcRenderer.send("pet:dragend"),

@@ -20,7 +20,7 @@ import {
   getGptSovitsVoice,
   type GptSovitsVoiceConfig,
 } from "./voices.ts";
-import { ensureGptSovitsLocalServer, persistLoadedWeights, touchDaemonLastUsed } from "./gpt_sovits_local.ts";
+import { ensureGptSovitsLocalServer, persistLoadedWeights, recycleOwnedGptSovitsDaemon, touchDaemonLastUsed } from "./gpt_sovits_local.ts";
 import {
   ensureOssUrlAlive,
   fetchTextFromUrl,
@@ -341,7 +341,9 @@ class GptSovitsTtsProvider implements TtsProvider {
       promptText: voice.promptText,
       promptLang: voice.promptLang,
       textLang: voice.textLang,
-      timeoutMs: this.cfg.timeoutMs,
+      // HTTP 超时 = 保险丝 − 5s：合成挂死时 python 先报真实错误（urlopen 原因），
+      // Node 保险丝（这个 provider 的 timeoutMs）只作最后兜底，不再静默吞错
+      timeoutMs: Math.max(this.cfg.timeoutMs - 5000, 10000),
       gptWeightsPath: voice.gptWeightsPath,
       sovitsWeightsPath: voice.sovitsWeightsPath,
       switchGpt,
@@ -419,6 +421,8 @@ class AliyunTtsProvider implements TtsProvider {
       provider: "aliyun",
       text,
       voice: voiceId,
+      // HTTP 超时 = 保险丝(30s) − 5s：合成挂死时 python 先报真实错误，Node 保险丝只作最后兜底
+      timeoutMs: 25_000,
     };
     if (mode === "synth_only") payload.mode = "synth_only";
     return {
@@ -470,7 +474,14 @@ export function getTtsProvider(): TtsProvider {
  * 失败仅打日志，不影响主流程（首次 TTS 的 drain prepare 仍会按原路径再尝试并给出明确报错）。
  */
 export function preloadGptSovitsLocal(): void {
-  if (config.ttsProvider !== "gpt-sovits" || config.noVoice) return;
+  if (config.noVoice) return;
+  if (config.ttsProvider !== "gpt-sovits") {
+    // 已切到其它 provider（如 aliyun）：回收残留的本地 GPT-SoVITS 守护进程。
+    // 父进程已退出、空闲巡检不再认领的孤儿常占 ~1GB 内存；pidfile + 命令行特征
+    // 双重确认只动 ARONA 自己 spawn 的 daemon，不误杀外部手动启动的服务。
+    void recycleOwnedGptSovitsDaemon();
+    return;
+  }
   const cfg = normalizeGptSovitsConfig(config.ttsConfig["gpt-sovits"]);
   if (cfg.mode !== "local") return;
   const hasGpt =

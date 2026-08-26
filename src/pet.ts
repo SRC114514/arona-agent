@@ -283,6 +283,11 @@ class PetBridge {
     this.send({ type: "text", agent: agentId, kind, data });
   }
 
+  /** 播放中实时音量（RMS 0~1）→ 桌宠嘴型 lip-sync */
+  sendTtsLevel(agentId: AgentId, rms: number): void {
+    this.send({ type: "tts_level", agent: agentId, rms });
+  }
+
   reset(): void {
     this.send({ type: "reset" });
   }

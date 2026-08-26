@@ -39,7 +39,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
 - **语音**：非流式 TTS + STT。
-- **桌宠**：透明无边框置顶 Electron 窗口 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效。
+- **桌宠**：透明无边框置顶 Electron 窗口 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效；TTS 说话时嘴型跟随音量（lip-sync）。
 - **多角色群聊**：主 Agent 单窗口、子 Agent 同屏；每轮主 Agent 回复完后子 Agent 依次接话。
 
 
@@ -48,7 +48,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 ## 环境要求
 
 - **Node.js >= 22.19.0**
-- **Python 3.12 / 3.13**
+- **Python 3.9+（CUA需要 3.12 / 3.13）**
 
 ---
 
@@ -69,7 +69,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | `ttsEnabled` | 启用 TTS | `true` |
 | `sttEnabled` | 启用 STT | `true` |
 | `workspaceId` | 阿里云百炼业务空间 ID | — |
-| `ttsApiKey` | 百炼 API Key（GPT-SoVITS 时仅用于 STT） | — |
+| `ttsApiKey` | 百炼 API Key | — |
 | `ttsModel` | TTS 模型 | `qwen-audio-3.0-tts-plus` |
 | `ttsProvider` | TTS 后端（`aliyun`/`gpt-sovits`） | `aliyun` |
 | `ttsConfig` | 各 Provider 配置 | `{}` |

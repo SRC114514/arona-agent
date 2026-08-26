@@ -23,6 +23,14 @@
   //   5 blink   Eye_Close_01（在预设之上，短暂盖住预设眼部；closedEye 预设期间禁止）
   const DEFAULT_MIX = 0.2;     // track 内 crossfade 时长
 
+  // ---- 嘴型 lip-sync（音量 RMS → 3 档嘴型，apply 后手动覆盖嘴槽 attachment）----
+  // 覆盖铁律：手动覆盖在 state.apply 之后天然压过所有 track——情绪预设（track4）也会 key 嘴槽
+  // （编号动画含 Mouse_01 attachment timeline），说话结束后嘴回中性嘴属预期行为（plan.md 已确认）。
+  const MOUTH_ENV_ATTACK = 0.8;   // 包络上升系数（≈80ms 时标，快——跟上语音起始）
+  const MOUTH_ENV_RELEASE = 0.3;  // 包络下降系数（≈200ms 时标，慢——吸收清音/爆破音突兀感）
+  const MOUTH_THRESHOLD = 0.06;   // 低于 = 静音闭口
+  const MOUTH_PART_HI = 0.22;     // 高于 = 大张（微张区间在 [THRESHOLD, PART_HI)）
+
   // 摸头/注视参数（初值，可调）
   const PAT_MAX_DEG = 3;       // 摸头：Head_Rot 微动幅度（用户：6° 的圆弧状摆动仍诡异，再减半）
   const HEAD_SMOOTH_NEAR = 0.3;
@@ -72,6 +80,11 @@
   // 调试用身体冻结：非 null 时每帧把 track0 Idle_01 的 trackTime 钉在固定相位（gallery 截图用，
   // 保证不同批次截图身体姿势完全一致、可直接像素对比；桌宠正常运行不设置，零影响）
   let pinBodyT = null;
+  // 嘴型 lip-sync：agent.mouth 缺省（无嘴槽角色如 Shiroko）→ mouthCfg=null 静默关闭
+  let mouthCfg = null;
+  let mouthLevel = 0;       // 目标电平（setMouthLevel 传入，0~1）
+  let mouthEnv = 0;         // 平滑包络（快攻慢放）
+  let mouthOverride = null; // 调试/标定：强制嘴槽 attachment（null = 自动）
 
   function clamp(v, lo, hi) {
     return v < lo ? lo : v > hi ? hi : v;
@@ -192,6 +205,36 @@
     }
   }
 
+  // ---- 嘴型 lip-sync：音量包络 → 3 档嘴型，apply 后手动覆盖嘴槽 attachment ----
+  // 在 state.apply 之后调用（与摸头/眼球同类，手动覆盖压过所有 track，包括 track4 情绪预设）。
+  // ⚠️ 静音（无电平且包络已收尾）必须 return 不干预：否则会把情绪预设 key 的嘴型强制打回 closed
+  // （visual_test 回归实证：angry 预设 Mouse_06 被改回 Mouse_01）。说话结束包络衰减到 0 后
+  // 自然交还控制权，state.apply 让 track4 的嘴型（或 setup 中性嘴）恢复显示。
+  function applyMouth() {
+    if (!mouthCfg || !skeleton || !state) return;
+    const slot = skeleton.findSlot(mouthCfg.slot);
+    if (!slot) return;
+    if (mouthOverride !== null) {
+      // 调试/标定：强制指定嘴型（mouth 图库截图用）
+      if (slot.attachment && slot.attachment.name === mouthOverride) return;
+      const att = skeleton.getAttachment(slot.data.index, mouthOverride);
+      if (att) slot.attachment = att;
+      return;
+    }
+    if (mouthLevel <= 0 && mouthEnv <= 0) return;
+    // 包络：快攻慢放（release 吸收清音/爆破音突兀感，避免嘴型跳变机械）
+    const target = mouthLevel;
+    if (target > mouthEnv) mouthEnv += (target - mouthEnv) * MOUTH_ENV_ATTACK;
+    else mouthEnv += (target - mouthEnv) * MOUTH_ENV_RELEASE;
+    if (mouthEnv < 0.002) mouthEnv = 0;
+    const name = mouthEnv < MOUTH_THRESHOLD
+      ? mouthCfg.closed
+      : mouthEnv < MOUTH_PART_HI ? mouthCfg.part : mouthCfg.open;
+    if (slot.attachment && slot.attachment.name === name) return;
+    const att = skeleton.getAttachment(slot.data.index, name);
+    if (att) slot.attachment = att;
+  }
+
   function applyManualBones() {
     const cursor = cursorPos;
     if (!skeleton) return;
@@ -290,6 +333,7 @@
       if (e) e.trackTime = pinBodyT;
     }
     state.apply(skeleton);
+    applyMouth();
     applyManualBones();
     skeleton.updateWorldTransform();
     if (mode === "webgl") {
@@ -392,6 +436,8 @@
     tiltBone = agent.pat?.tiltBone ? skeleton.findBone(agent.pat.tiltBone) : null;
     tiltRestRot = tiltBone ? tiltBone.data.rotation : 0;
     prepareTiltSlots();
+    // 嘴型 lip-sync 配置（无嘴槽角色缺省 mouth → 静默关闭）
+    mouthCfg = agent.mouth && agent.mouth.slot ? agent.mouth : null;
 
     const stateData = new spine.AnimationStateData(skelData);
     stateData.defaultMix = DEFAULT_MIX;
@@ -604,6 +650,24 @@
     // 调试用：冻结 track0 身体相位（gallery 批量截图对比用；null 恢复动画）
     pinBody(t) {
       pinBodyT = t === undefined ? 0 : t;
+    },
+
+    // ---- 嘴型 lip-sync（音量 RMS → 3 档）----
+    // renderer 在 pet:tts-level 事件时调用；rms 为裸音量 0~1，包络/档位在此内部处理
+    setMouthLevel(rms) {
+      mouthLevel = clamp(+rms || 0, 0, 1);
+    },
+    // 调试/标定：强制嘴槽 attachment（null 恢复自动）。mouth 图库截图用。
+    setMouthOverride(name) {
+      mouthOverride = name || null;
+    },
+    // 嘴型图库：枚举嘴槽所有可选 attachment 名（skin 定义；无 mouth 配置返回空数组）
+    getMouthOptions() {
+      if (!skeleton || !mouthCfg) return [];
+      // skin.attachments 以 slotIndex 为键（非 slot 名），须经 findSlotIndex 转换
+      const idx = skeleton.findSlotIndex(mouthCfg.slot);
+      const atts = skeleton.data.defaultSkin.attachments[idx];
+      return atts ? Object.keys(atts) : [];
     },
   };
 })();

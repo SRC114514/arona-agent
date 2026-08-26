@@ -399,9 +399,6 @@ async function doEnsure(
   cfg: GptSovitsConfig,
 ): Promise<{ gpt?: string; sovits?: string } | null> {
   const { host, port } = parseHostPort(cfg.baseUrl);
-  // 覆盖写 yaml：api_v2 加载时会 merge 官方默认模板回写该文件，这里重置为纯 custom，
-  // 保证新 spawn 的 daemon 用我们生成的配置（digest 走 buildTtsInferYaml 内存串，不受此影响）。
-  writeTtsInferYaml(cfg);
   const pidfile = readPidfile();
   const daemonAlive = !!pidfile && pidAlive(pidfile.pid) && pidIsApiV2(pidfile.pid);
 
@@ -536,6 +533,56 @@ export function stopGptSovitsLocalServer(): void {
   } catch {
     // 忽略
   }
+}
+
+/**
+ * 通过 ps 扫描"由 ARONA 启动的残留 api_v2"进程（pidfile 可能已被清但进程未死，
+ * 如父进程异常退出后成孤儿）。特征 = 命令行含 api_v2.py 且 -c 指向我们生成的 yaml
+ * （ARONA spawn 时固定传 ~/.arona/gpt-sovits-tts-infer.yaml，外部手动启动避不开此特征）。
+ * win32 无 ps -o command，仅靠 pidfile 路径回收该场景。
+ */
+function scanStrayApiV2Pids(): number[] {
+  if (process.platform === "win32") return [];
+  const marker = join(ARONA_DIR, "gpt-sovits-tts-infer.yaml");
+  try {
+    const out = execFileSync("ps", ["-axo", "pid=,command="], { encoding: "utf-8", maxBuffer: 4 * 1024 * 1024 });
+    const pids: number[] = [];
+    for (const line of out.split("\n")) {
+      const m = line.match(/^\s*(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const cmd = m[2];
+      // 排除 JS 运行时进程（node/tsx/npm）：调用者的包装命令行可能携带特征串（如 -e 脚本、
+      // 文档命令），真实 api_v2 一定是 python 解释器启动，误杀会把回收者自己干掉。
+      if (/node(\.exe)?\s|tsx|npm(\.cmd)?/i.test(cmd)) continue;
+      if (cmd.includes("api_v2.py") && cmd.includes(marker)) {
+        const pid = Number(m[1]);
+        if (pid > 0) pids.push(pid);
+      }
+    }
+    return pids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 回收残留的 GPT-SoVITS 守护进程（ttsProvider 非 gpt-sovits 时于启动调用）。
+ * 先按 pidfile 命中回收；pidfile 缺失/已被清（孤儿场景）再按命令行特征扫残留进程。
+ * pidfile + 命令行双重确认只动 ARONA 自己 spawn 的 daemon，不误杀外部手动服务。
+ */
+export async function recycleOwnedGptSovitsDaemon(): Promise<void> {
+  const pf = readPidfile();
+  if (pf && pidAlive(pf.pid) && pidIsApiV2(pf.pid)) {
+    if (verbose) console.error(`[gpt-sovits] ttsProvider 非 gpt-sovits，回收残留守护进程 pid=${pf.pid}`);
+    await killPidAndWait(pf.pid);
+  } else {
+    for (const pid of scanStrayApiV2Pids()) {
+      if (pf?.pid === pid) continue;
+      if (verbose) console.error(`[gpt-sovits] ttsProvider 非 gpt-sovits，回收残留守护进程 pid=${pid} (stray)`);
+      await killPidAndWait(pid);
+    }
+  }
+  clearPidfile();
 }
 
 /** 刷新自有 daemon 的 lastUsedAt（写 pidfile；仅自有 daemon，外部服务不写）。 */

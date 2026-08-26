@@ -80,6 +80,8 @@ export class TtsStream {
   constructor(
     private isEnabledFor: (agent: AgentId) => boolean,
     private onIdle?: () => void,
+    // 播放中实时音量（RMS 0~1，lip-sync）：python 播放循环节流 20Hz 发 level → 转发给桌宠
+    private onLevel?: (agent: AgentId, rms: number) => void,
   ) {}
 
   /** 当前是否有未播放完的合成段（供 repl 判断 pet.reset 时机） */
@@ -311,7 +313,7 @@ export class TtsStream {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt: { event?: string; message?: string; path?: string; gpt?: string; sovits?: string };
+          let evt: { event?: string; message?: string; path?: string; gpt?: string; sovits?: string; name?: string };
           try {
             evt = JSON.parse(trimmed);
           } catch {
@@ -324,6 +326,8 @@ export class TtsStream {
           } else if (evt.event === "weights_loaded") {
             if (verbose) console.error(`[tts] prefetch weights_loaded agent=${item.agent} gpt=${evt.gpt ?? ""} sovits=${evt.sovits ?? ""}`);
             provider.ackWeights?.({ gpt: evt.gpt, sovits: evt.sovits });
+          } else if (evt.event === "phase") {
+            if (verbose) console.error(`[tts] prefetch phase ${evt.name ?? "?"} agent=${item.agent}`);
           } else if (evt.event === "error") {
             console.warn(t(`TTS: ${evt.message ?? "unknown error"}`, `TTS: ${evt.message ?? "unknown error"}`));
             if (verbose) console.error(`[tts] prefetch error: ${evt.message}`);
@@ -449,13 +453,21 @@ export class TtsStream {
       });
       this.proc = proc;
 
-      // 时长保险丝：一句合成+播放最多等 fuseMs（provider 自定义），超时主动杀进程并推进一步
-      timer = setTimeout(() => {
+      // 时长保险丝：一句合成+播放最多等 fuseMs（provider 自定义），超时主动杀进程并推进一步。
+      // 进入播放（play_start 带 duration）后重新武装为 实际音频时长 + 10s：合成段已到手，
+      // 剩余时间只需覆盖播放，避免接近 50 单元的长句播到一半被 30s 保险丝拦腰杀掉。
+      const armFuse = (ms: number) => {
         if (settled) return;
-        if (verbose) console.error(`[tts] speakOne TIMEOUT (${fuseMs}ms) agent=${agent} "${text.slice(0, 40)}"`);
-        if (this.proc === proc) this.killProc();
-        doResolve("ok");
-      }, fuseMs);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (settled) return;
+          if (verbose) console.error(`[tts] speakOne TIMEOUT (${ms}ms) agent=${agent} "${text.slice(0, 40)}"`);
+          if (this.proc === proc) this.killProc();
+          doResolve("ok");
+        }, ms);
+      };
+
+      armFuse(fuseMs);
 
       proc.stdout.on("data", (data) => {
         stdoutBuffer += data.toString();
@@ -464,7 +476,7 @@ export class TtsStream {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed) continue;
-          let evt: { event?: string; message?: string; gpt?: string; sovits?: string };
+          let evt: { event?: string; message?: string; path?: string; gpt?: string; sovits?: string; rms?: number; duration?: number; name?: string };
           try {
             evt = JSON.parse(trimmed);
           } catch {
@@ -475,15 +487,26 @@ export class TtsStream {
               this.pendingCount++;
               onPlayStart?.(); // 音频已到手、服务器权重可切换 → 启动下一句预合成
               if (verbose) console.error(`[tts] play_start pending=${this.pendingCount}`);
+              // 播放期保险丝按实际音频时长扩容（合成已到手，剩余时间只需覆盖播放；含 10s 余量）
+              if (typeof evt.duration === "number" && evt.duration > 0) {
+                armFuse(evt.duration * 1000 + 10_000);
+                if (verbose) console.error(`[tts] play_start dur=${evt.duration}s fuse->${Math.round(evt.duration * 1000 + 10_000)}ms`);
+              }
               break;
             case "play_end":
               if (this.pendingCount > 0) this.pendingCount--;
               if (verbose) console.error(`[tts] play_end pending=${this.pendingCount}`);
               doResolve("ok"); // 播放完成
               break;
+            case "level":
+              if (typeof evt.rms === "number") this.onLevel?.(agent, evt.rms);
+              break;
             case "weights_loaded":
               if (verbose) console.error(`[tts] speakOne weights_loaded agent=${agent} gpt=${evt.gpt ?? ""} sovits=${evt.sovits ?? ""}`);
               provider.ackWeights?.({ gpt: evt.gpt, sovits: evt.sovits });
+              break;
+            case "phase":
+              if (verbose) console.error(`[tts] speakOne phase ${evt.name ?? "?"} agent=${agent}`);
               break;
             case "error":
               console.warn(t(`TTS: ${evt.message ?? "unknown error"}`, `TTS: ${evt.message ?? "unknown error"}`));

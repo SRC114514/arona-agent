@@ -26,12 +26,9 @@ const spine = (() => {
 })();
 
 // 按角色 id 解析 { atlas, skelData, pngSize }。
-// id 解析路径规则与 pet/agents.cjs 一致：arona/plana 在 spine/ 子目录，其余在角色根目录。
+// 所有角色资源统一在 assets/blue-archive/<id>/spine/ 子目录（与 pet/agents.cjs 一致）。
 function loadAgent(id) {
-  const withSub = ["arona", "plana"].includes(id);
-  const base = withSub
-    ? path.join(ASSETS, id, "spine")
-    : path.join(ASSETS, id);
+  const base = path.join(ASSETS, id, "spine");
   const atlasFile = `${id}_spr.atlas.txt`;
   const skelFile = `${id}_spr.skel`;
   const pngFile = `${id}_spr.png`;
