@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "child_process";
 import { join } from "path";
-import { PYTHON_DIR, config } from "../config.ts";
+import { PYTHON_DIR, config, verbose } from "../config.ts";
 import { t, getLang } from "../locale.ts";
 import { spawnCompat, stripProxyEnv } from "./spawn.ts";
 
@@ -42,6 +42,13 @@ export async function runPython(
     });
     proc.stderr.on("data", (data) => {
       stderr += data.toString();
+      // --verbose：逐行实时转发 python stderr，可见 voice_clone 上传/轮询等阶段进度
+      if (verbose) {
+        for (const line of data.toString().split(/[\r\n]+/)) {
+          const msg = line.trim();
+          if (msg) console.error(`[python:${scriptName}]`, msg);
+        }
+      }
     });
     proc.on("close", (code) => {
       clearTimeout(timer);

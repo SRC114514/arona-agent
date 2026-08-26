@@ -278,6 +278,16 @@ function loadConfig(): AronaConfig {
 export const config = loadConfig();
 
 /**
+ * 重新加载 settings.json 并就地更新 config 单例（首次运行引导 setup 完成后调用）。
+ * ESM 模块缓存无法重建模块级 const，只能改对象字段；所有消费方均通过 config.xxx
+ * 运行时引用属性，就地覆盖即全局生效（无顶层解构，见 index.ts 引导注释）。
+ */
+export function reloadConfig(): AronaConfig {
+  Object.assign(config, loadConfig());
+  return config;
+}
+
+/**
  * STT 全局热键键名（pynput 命名，供 repl.ts 注入 ARONA_HOTKEY_KEY）：
  * macOS 右 Cmd（pynput 有 Key.cmd_r），Windows/Linux 右 Ctrl（pynput Key.ctrl_r 三平台皆有效）。
  * Windows 没有 Key.cmd_r，默认 cmd_r 在那会是静默失效，故按平台自动选。

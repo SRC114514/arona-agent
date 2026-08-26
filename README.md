@@ -17,11 +17,20 @@
 ```bash
 npm i -g arona-agent
 
-# 初始化配置文件
-arona setup
-
-# 初始化后可直接启动
+# 首次运行自动进入初始化向导
 arona
+
+# 或着如果想先上手玩玩
+npx arona-agent
+```
+
+---
+
+## 扩展指令
+
+```bash
+# 重新初始化（可选）
+arona setup
 
 # 更新
 npm u -g arona-agent

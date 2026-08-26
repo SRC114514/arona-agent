@@ -129,3 +129,13 @@ export function getLang(): Language {
 export function setLang(l: Language): void {
   lang = l;
 }
+
+/**
+ * 按 settings.json 的 language 字段重新定型语言（首次运行引导 setup 完成后调用；
+ * 不重新探测系统/环境，仅尊重向导写入的显式配置）。auto/缺失保持现状返回当前值。
+ */
+export function refreshLanguage(): Language {
+  const setting = readSettingsLanguage();
+  if (setting === "zh" || setting === "en") lang = setting;
+  return lang;
+}

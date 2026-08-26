@@ -15,11 +15,20 @@ A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs
 ```bash
 npm i -g arona-agent
 
-# Initialize configuration
-arona setup
-
-# Launch after setup
+# First run auto-starts the setup wizard, then launches ARONA
 arona
+
+# Quick Start
+npx arona-agent
+```
+
+---
+
+## Optional commands
+
+```bash
+# Re-run setup manually (optional)
+arona setup
 
 # Upgrade
 npm u -g arona-agent

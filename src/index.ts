@@ -1,17 +1,51 @@
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { initAgent } from "./agent.ts";
 import { Repl } from "./repl.ts";
 import { resetConversationFlag, loadSession } from "./memory.ts";
 import { startPet } from "./pet.ts";
-import { config, settingsExist } from "./config.ts";
+import { config, settingsExist, reloadConfig, PROJECT_ROOT } from "./config.ts";
 import { preloadGptSovitsLocal } from "./tts_provider.ts";
 import { syncSkillsFromAgentsDir } from "./skills.ts";
-import { t } from "./locale.ts";
+import { t, refreshLanguage } from "./locale.ts";
 import chalk from "chalk";
 
+/**
+ * 首次运行引导：以子进程拉起 setup 向导（stdio inherit 复用当前终端交互）。
+ * 传 ARONA_AUTO_SETUP=1 让向导末尾提示"正在启动"而非"运行 arona"。setup 在
+ * 独立进程写 settings.json，主进程随后 reloadConfig 即可（ESM 缓存无法重建单例）。
+ */
+function runSetupWizard(): Promise<number> {
+  const tsxBin = process.platform === "win32"
+    ? join(PROJECT_ROOT, "node_modules", ".bin", "tsx.cmd")
+    : join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
+  return new Promise((resolve) => {
+    const child = spawn(tsxBin, [join(PROJECT_ROOT, "src", "setup.ts"), ...process.argv.slice(2)], {
+      cwd: process.cwd(),
+      stdio: "inherit",
+      shell: process.platform === "win32",
+      env: { ...process.env, ARONA_AUTO_SETUP: "1" },
+    });
+    child.on("exit", (code) => resolve(code ?? 0));
+  });
+}
+
 async function main() {
+  // 首次运行引导：无 settings.json 时直接进入 setup 向导，配置完成后继续 REPL
   if (!settingsExist()) {
-    console.log(chalk.yellow(t("未找到配置文件，请运行 arona setup 初始化。", "Config file not found. Run `arona setup` to initialize.")));
-    process.exit(1);
+    console.log(chalk.yellow(t("未找到配置文件，正在进入初始化向导…", "Config file not found. Starting the setup wizard…")));
+    const setupCode = await runSetupWizard();
+    if (setupCode !== 0) {
+      console.log(chalk.yellow(t("初始化已中止，配置未保存。", "Setup aborted, configuration not saved.")));
+      process.exit(setupCode);
+    }
+    if (!settingsExist()) {
+      console.log(chalk.yellow(t("配置未保存，无法启动。请重新运行 arona 完成初始化。", "Configuration was not saved. Re-run arona to initialize.")));
+      process.exit(1);
+    }
+    // setup 在子进程内写配置：就地刷新 config 单例与 UI 语言后继续
+    reloadConfig();
+    refreshLanguage();
   }
 
   if (!config.apiKey) {

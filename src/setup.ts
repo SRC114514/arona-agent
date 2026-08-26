@@ -694,7 +694,12 @@ async function main() {
 
       console.log(chalk.green(t(`\n✓ 配置已保存到 ${SETTINGS_FILE}`, `\n✓ Configuration saved to ${SETTINGS_FILE}`)));
     }
-    console.log(chalk.cyan(t("  运行 arona 启动 Agent。\n", "  Run arona to start the Agent.\n")));
+    if (process.env.ARONA_AUTO_SETUP === "1") {
+      // 首次运行自动引导（index.ts spawn 传入）：配置完成后主进程直接续跑 REPL
+      console.log(chalk.cyan(t("  配置完成，正在启动 ARONA...\n", "  Configuration saved. Starting ARONA...\n")));
+    } else {
+      console.log(chalk.cyan(t("  运行 arona 启动 Agent。\n", "  Run arona to start the Agent.\n")));
+    }
   } finally {
     rl.close();
   }

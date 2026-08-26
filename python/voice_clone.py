@@ -19,6 +19,13 @@ import re
 import sys
 import time
 
+from _i18n import t
+
+
+def log(msg_zh, msg_en):
+    # 阶段诊断只走 stderr：Node 侧 --verbose 会逐行转发实时可见，stdout 保持纯 JSON。
+    print(f"[voice_clone] {t(msg_zh, msg_en)}", file=sys.stderr, flush=True)
+
 
 def fail(msg):
     print(json.dumps({"error": msg}))
@@ -52,29 +59,39 @@ def main():
 
     # 1. Upload audio to DashScope hosted OSS
     try:
+        log(f"上传音频 {os.path.basename(audio_file)} 到 DashScope 托管 OSS...",
+            f"Uploading {os.path.basename(audio_file)} to DashScope OSS...")
         resp = Files.upload(file_path=audio_file, purpose="voice_clone")
         file_id = resp.output["uploaded_files"][0]["file_id"]
+        log(f"上传完成 file_id={file_id}", f"Upload complete file_id={file_id}")
     except Exception as e:
         fail(f"Upload failed: {e}")
 
     # 2. Get the Alibaba Cloud internal URL (must use internal address)
     try:
+        log("获取 OSS 内部地址...", "Getting OSS internal URL...")
         oss_url = Files.get(file_id).output["url"]
+        log("OSS 内部地址获取成功", "OSS internal URL acquired")
     except Exception as e:
         fail(f"Failed to get OSS URL: {e}")
 
     # 3. Submit voice cloning
     try:
+        log(f"提交音色克隆（model={target_model}，prefix={prefix}）...",
+            f"Submitting voice creation (model={target_model}, prefix={prefix})...")
         svc = VoiceEnrollmentService()
         voice_id = svc.create_voice(target_model=target_model, prefix=prefix, url=oss_url)
+        log(f"已提交，voice_id={voice_id}", f"Submitted, voice_id={voice_id}")
     except Exception as e:
         fail(f"create_voice failed: {e}")
 
     # 4. Wait for voice to be ready (max 5 minutes)
     try:
-        for _ in range(30):
+        for i in range(30):
             info = svc.query_voice(voice_id=voice_id)
             status = info.get("status")
+            log(f"查询克隆状态：{status}（第 {i + 1}/30 次，每 10s）",
+                f"Voice status: {status} ({i + 1}/30, every 10s)")
             if status == "OK":
                 break
             if status == "UNDEPLOYED":
@@ -87,10 +104,12 @@ def main():
 
     # 5. Delete the uploaded file (best-effort cleanup)
     try:
+        log("删除已上传文件（尽力清理）...", "Deleting uploaded file (best-effort)...")
         Files.delete(file_id)
     except Exception:
         pass  # Cleanup is best-effort
 
+    log(f"音色克隆完成 voice_id={voice_id}", f"Voice clone complete voice_id={voice_id}")
     print(json.dumps({"voice_id": voice_id}))
 
 
