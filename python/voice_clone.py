@@ -16,10 +16,26 @@ All logging goes to stderr so stdout stays clean JSON.
 import json
 import os
 import re
+import socket
 import sys
 import time
 
 from _i18n import t
+
+# ---- IPv4 优先解析（同 tts_say.py）----
+# macOS 家宽坑：系统有全局 IPv6 地址但出口路由不通，python 无 Happy Eyeballs，
+# getaddrinfo 返回 v6 在前 → 每次请求先卡满 v6 超时才回落 v4（上传/轮询多请求叠加=分钟级卡死，
+# 表现为"正在克隆"卡住；开代理可用是因为代理直连 127.0.0.1 恰好绕开 v6）。
+# 重排 AF_INET 在前根治；IPv4 不可用时仍按序回落 IPv6。
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_first_getaddrinfo(*args, **kwargs):
+    res = _orig_getaddrinfo(*args, **kwargs)
+    return sorted(res, key=lambda r: 0 if r[0] == socket.AF_INET else 1)
+
+
+socket.getaddrinfo = _ipv4_first_getaddrinfo
 
 
 def log(msg_zh, msg_en):

@@ -17,7 +17,21 @@ stdout:
 
 import json
 import os
+import socket
 import sys
+
+# ---- IPv4 优先解析（同 tts_say.py / voice_clone.py）----
+# macOS 家宽坑：有全局 IPv6 但出口路由不通，python 无 Happy Eyeballs →
+# getaddrinfo v6 在前，每次请求先卡满 v6 超时再回落 v4。重排 AF_INET 在前根治。
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_first_getaddrinfo(*args, **kwargs):
+    res = _orig_getaddrinfo(*args, **kwargs)
+    return sorted(res, key=lambda r: 0 if r[0] == socket.AF_INET else 1)
+
+
+socket.getaddrinfo = _ipv4_first_getaddrinfo
 
 
 def fail(msg):
