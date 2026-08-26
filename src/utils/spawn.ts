@@ -3,7 +3,7 @@ import { spawn, type SpawnOptions, type ChildProcessWithoutNullStreams } from "c
 /**
  * 跨平台 spawn 封装。
  *
- * Node >= 20.12.2 / 18.20.2 / 21.7.3（2024-04-10 起，CVE-2024-27980 安全修复）引入破坏性变更：
+ * Node >= 20.12.2 / 18.20.2 / 21.7.3（CVE-2024-27980 安全修复起）引入破坏性变更：
  * Windows 上 spawn() 直接执行 .bat / .cmd 文件、且未设置 `shell: true` 时会直接抛 EINVAL。
  * 这里检测命令是否为批处理文件，命中时自动补 shell，保证 Windows 端不炸、其他平台零影响。
  *

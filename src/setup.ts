@@ -25,7 +25,7 @@ interface Settings {
   language?: "auto" | "zh" | "en";
   /** 主 Agent（arona | plana）：setup 保存时保留，不能覆盖 /change-agent 的选择 */
   mainAgent?: string;
-  /** 子 Agent 列表（shiroko | hoshino）：setup 保存时保留，不能覆盖 /change-agent 的选择 */
+  /** 子 Agent 列表（见 agent_registry.ts）：setup 保存时保留，不能覆盖 /change-agent 的选择 */
   subAgents?: string[];
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
@@ -687,6 +687,7 @@ async function main() {
         cuaApiKey: existing.cuaApiKey || "",
         pythonPath: pythonPath,
         mcpServers: existing.mcpServers || {},
+        autoLoadSkills: existing.autoLoadSkills ?? true, // 保留手写参数，勿覆盖
       };
 
       writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n");

@@ -14,15 +14,24 @@ const { AGENTS } = require(path.join(PET, "agents.cjs"));
 const agentId = process.env.ARONA_AGENT && AGENTS[process.env.ARONA_AGENT] ? process.env.ARONA_AGENT : "arona";
 const AGENT = AGENTS[agentId];
 const MODE = process.env.GALLERY_MODE === "emotions" ? "emotions" : "presets";
-// 数字预设普查（CLAUDE.md B5）：arona = 00~32 + 99（34 个）；plana = 00~20 + 99（22 个）；
-// shiroko/hoshino = 00~17 + 99（19 个，精灵图切脸式角色）
-const PRESETS = AGENT.id === "arona"
-  ? [...Array.from({ length: 33 }, (_, i) => String(i).padStart(2, "0")), "99"]
-  : AGENT.id === "plana"
-    ? [...Array.from({ length: 21 }, (_, i) => String(i).padStart(2, "0")), "99"]
-    : [...Array.from({ length: 18 }, (_, i) => String(i).padStart(2, "0")), "99"];
-// 附件签名互异断言仅对骨脸角色（arona/plana）强制；精灵图角色（shiroko/hoshino）可能出现
-// 预设共用同一 sprite（如 99 与 00 同默认脸），碰撞是预期，只警告不算失败。
+// 数字预设普查（CLAUDE.md B5）：从 skel 动画名自动推导，新增角色零维护——
+//   arona = 00~32 + 99（34 个）；plana = 00~20 + 99（22 个）；
+//   shiroko/hoshino = 00~17 + 99（19 个）；hanako = 00~06 + 99（8 个）；
+//   koharu = 00~12 + 99（14 个）。（精灵图切脸式角色；99 恒为闭眼预设）
+let PRESETS = [];
+try {
+  const { skelData } = require("./spine_node.cjs").loadAgent(agentId);
+  const nums = skelData.animations
+    .map((a) => a.name)
+    .filter((n) => /^\d+$/.test(n))
+    .sort((a, b) => Number(a) - Number(b));
+  PRESETS = nums.concat("99");
+} catch {
+  // 动画名读取失败：回退 arona 默认（不计入断言计数）
+  PRESETS = [...Array.from({ length: 33 }, (_, i) => String(i).padStart(2, "0")), "99"];
+}
+// 附件签名互异断言仅对骨脸角色（arona/plana）强制；精灵图角色（shiroko/hoshino/hanako/koharu）
+// 可能出现预设共用同一 sprite（如 99 与 00 同默认脸），碰撞是预期，只警告不算失败。
 const SIGNATURE_UNIQUE_REQUIRED = AGENT.id === "arona" || AGENT.id === "plana";
 
 // 情绪确认模式：17 个情绪名 → 其映射预设（顺序 = agents.cjs 定义顺序）

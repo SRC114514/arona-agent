@@ -22,10 +22,12 @@ async function main() {
     console.log(chalk.cyan(t("语音功能已禁用（--no-voice）。", "Voice features disabled (--no-voice).")));
   }
 
-  // 补全缺失 Skill（仅补缺，不覆盖用户定制）
-  const synced = syncSkillsFromAgentsDir();
-  if (synced > 0) {
-    console.log(chalk.cyan(t(`已同步 ${synced} 个 Skill`, `Synced ${synced} skill(s)`)));
+  // 补全缺失 Skill（仅补缺，不覆盖用户定制）；autoLoadSkills=false 时跳过
+  if (config.autoLoadSkills) {
+    const synced = syncSkillsFromAgentsDir();
+    if (synced > 0) {
+      console.log(chalk.cyan(t(`已同步 ${synced} 个 Skill`, `Synced ${synced} skill(s)`)));
+    }
   }
 
   let { session, modelRuntime, loader } = await initAgent();

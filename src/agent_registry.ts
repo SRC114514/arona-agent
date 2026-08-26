@@ -1,6 +1,6 @@
 // Agent 注册表：主 Agent + 子 Agent 的桌宠形象与人格。
 // 主 Agent（arona | plana）由 /change-agent 单选，持久化到 settings.json#mainAgent。
-// 子 Agent（shiroko | hoshino 及日后新增）由 /change-agent 多选，持久化到 settings.json#subAgents。
+// 子 Agent（shiroko | hoshino | hanako | koharu）由 /change-agent 多选，持久化到 settings.json#subAgents。
 // 桌宠侧对应 pet/agents.cjs（ARONA_AGENT env 选主、ARONA_SUB_AGENTS env 选子窗口），
 // 人格侧对应 agent.ts 的 buildPrompt* + initSubAgent。
 
@@ -11,7 +11,7 @@ import { t } from "./locale.ts";
 export const MAIN_AGENT_IDS = ["arona", "plana"] as const;
 export type MainAgentId = (typeof MAIN_AGENT_IDS)[number];
 
-export const SUB_AGENT_IDS = ["shiroko", "hoshino"] as const;
+export const SUB_AGENT_IDS = ["shiroko", "hoshino", "hanako", "koharu"] as const;
 export type SubAgentId = (typeof SUB_AGENT_IDS)[number];
 
 export const AGENT_IDS = [...MAIN_AGENT_IDS, ...SUB_AGENT_IDS] as const;
@@ -28,6 +28,10 @@ export function getAgentLabel(id: AgentId): string {
       return t("砂狼白子", "Shiroko");
     case "hoshino":
       return t("小鸟游星野", "Hoshino");
+    case "hanako":
+      return t("浦和花子", "Hanako");
+    case "koharu":
+      return t("下江小春", "Koharu");
   }
 }
 

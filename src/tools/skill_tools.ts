@@ -20,8 +20,8 @@ function loadSkillsTool(loader: DefaultResourceLoader): ToolDefinition {
     name: "load_skills",
     label: t("加载技能", "Load Skills"),
     description: t(
-      "列出或加载技能。**不传 names（或传空数组）时**：返回所有可用技能的 name + description 列表，便于先发现再加载。**传 names 时**：返回对应技能的 SKILL.md 全文（支持单个字符串或字符串数组），加载后遵循其中指令执行。未找到的技能会在结果中列出。建议单次加载不超过 5 个，避免上下文膨胀。",
-      "List or load skills. **Without names (or with an empty array)**: returns the name + description list of all available skills, so you can discover before loading. **With names**: returns the full SKILL.md content of the requested skills (accepts a single string or an array of strings); follow the instructions inside after loading. Missing skills are reported in the result. Load at most 5 per call to avoid bloating the context.",
+      "列出或加载技能。**不传 names 时**：返回所有可用技能的 name + description 列表，便于先发现再加载。**传 names 时**：返回对应技能的 SKILL.md 全文（支持单个字符串或字符串数组），加载后遵循其中指令执行；未找到的技能会在结果中列出。建议单次加载不超过 5 个，避免上下文膨胀。",
+      "List or load skills. **Without names**: returns the name + description list of all available skills, so you can discover before loading. **With names**: returns the full SKILL.md content of the requested skills (accepts a single string or an array of strings); follow the instructions inside after loading; missing skills are reported in the result. Load at most 5 per call to avoid bloating the context.",
     ),
     parameters: Type.Object({
       names: Type.Optional(

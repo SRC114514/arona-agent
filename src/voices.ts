@@ -37,6 +37,8 @@ export const VOICE_AUDIO: Record<AgentId, string> = {
   plana: join(PROJECT_ROOT, "assets", "blue-archive", "plana", "voice.mp3"),
   shiroko: join(PROJECT_ROOT, "assets", "blue-archive", "shiroko", "voice.mp3"),
   hoshino: join(PROJECT_ROOT, "assets", "blue-archive", "hoshino", "voice.mp3"),
+  hanako: join(PROJECT_ROOT, "assets", "blue-archive", "hanako", "voice.mp3"),
+  koharu: join(PROJECT_ROOT, "assets", "blue-archive", "koharu", "voice.mp3"),
 };
 
 /**
@@ -49,6 +51,8 @@ export const VOICE_SOVITS_AUDIO: Record<AgentId, string> = {
   plana: join(PROJECT_ROOT, "assets", "blue-archive", "plana", "voice_sovits.mp3"),
   shiroko: join(PROJECT_ROOT, "assets", "blue-archive", "shiroko", "voice_sovits.mp3"),
   hoshino: join(PROJECT_ROOT, "assets", "blue-archive", "hoshino", "voice_sovits.mp3"),
+  hanako: join(PROJECT_ROOT, "assets", "blue-archive", "hanako", "voice_sovits.mp3"),
+  koharu: join(PROJECT_ROOT, "assets", "blue-archive", "koharu", "voice_sovits.mp3"),
 };
 
 function loadVoices(): Record<string, unknown> {

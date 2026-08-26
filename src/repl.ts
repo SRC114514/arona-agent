@@ -52,7 +52,7 @@ export class Repl {
   );
   // 回合结束标志：中间段的 play_end 不触发 pet.reset，只有回合结束后才恢复桌宠
   private turnEnded = false;
-  // 子 Agent session 集合（shiroko/hoshino；按 settings 启用）
+  // 子 Agent session 集合（见 agent_registry.ts；按 settings 启用）
   private subSessions = new Map<SubAgentId, AgentSession>();
   // 当前正在发言的 session / agent（中断时 abort 的是它，而不是固定主 session）
   private activeSession: AgentSession;

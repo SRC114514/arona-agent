@@ -1,0 +1,19 @@
+{
+  "angry": "05",
+  "assured": "01",
+  "curious": "00",
+  "delighted": "01",
+  "desire": "03",
+  "dizzy": "99",
+  "doubt": "00",
+  "dreaming": "99",
+  "enjoy": "99",
+  "excited": "03",
+  "jealous": "99",
+  "love": "03",
+  "saying": "00",
+  "scared": "00",
+  "shame": "99",
+  "smile": "01",
+  "tired": "04"
+}

@@ -81,7 +81,6 @@ const PLANA = {
     eyeR: "R_Eye_1",
   },
   emotions: {
-    // 用户 2026-08-15 对照重绑版图库（plana_emotions_rebind_*.html，无水印防错位版）重新指定；
     // 共用预设：jealous/doubt=20；love/smile=17；delighted/excited=09（合并，与 Arona 12 同语义）；
     // dreaming/enjoy/scared/shame=14；desire/saying=18
     angry: "05",
@@ -119,8 +118,9 @@ const PLANA = {
 
 const SHIROKO = {
   id: "shiroko",
-  // ⚠️ 资源直接放在 assets/blue-archive/shiroko/（无 spine/ 子目录，与 arona/plana 不同）
-  spineBase: "../../assets/blue-archive/shiroko/",
+  // 资源在 assets/blue-archive/shiroko/spine/（修复：早期无 spine/ 子目录时指向上一级，
+  // 资源整理后未同步 → 渲染 404 白屏）
+  spineBase: "../../assets/blue-archive/shiroko/spine/",
   // .json = skel_to_json.cjs 导出 + gen_sway.cjs 注入衣摆微动（Idle_01 deform）；
   // 重新生成顺序：先 skel_to_json 再 gen_sway（只跑 skel_to_json 会覆盖掉形变）
   skelFile: "shiroko_spr.json",
@@ -133,7 +133,7 @@ const SHIROKO = {
     // 无 pat/look 动画：摸头走 emotion 预设 + PC_Layer 微倾斜
   },
   bones: {},
-  // 用户 2026-08-18 对照图库重绑：数字预设 00~17+99（19 个）
+  // 数字预设 00~17+99（19 个）
   emotions: {
     angry: "06",
     assured: "05",
@@ -173,7 +173,7 @@ const HOSHINO = {
     blink: "Eye_Close_01",
   },
   bones: {},
-  // 用户 2026-08-18 对照图库重绑：数字预设 00~17+99（19 个）
+  // 数字预设 00~17+99（19 个）
   emotions: {
     angry: "06",
     assured: "01",
@@ -199,6 +199,90 @@ const HOSHINO = {
   pat: { type: "none" },
 };
 
-const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO };
+// ---- Hanako / Koharu（三一补课部，精灵图切换式）----
+// 结构与 shiroko/hoshino 同构（root/PC_Layer/halo 三骨）；预设数量不同：
+//   hanako = 00~06 + 99（8 个）；koharu = 00~12 + 99（14 个）。
+// 用户需求：不做摸头、不做瞳孔跟随（bones 为空 + pat none）。衣摆微动经 gen_sway 注入
+// 的 Idle_01 deform（hanako_01 裙摆底边 band 0~500；koharu 裙摆带 band 800~1350）。
+
+const HANAKO = {
+  id: "hanako",
+  spineBase: "../../assets/blue-archive/hanako/spine/",
+  // .json = skel_to_json 导出 + gen_sway 衣摆形变；重新生成顺序：skel_to_json → gen_sway
+  skelFile: "hanako_spr.json",
+  atlasFile: "hanako_spr.atlas.txt",
+  // bounds 1163×2463（更高更窄，fitCamera 高度压缩）→ 1.0 初值，目视后按需调
+  extraScale: 1,
+  anims: {
+    idle: "Idle_01",
+    blink: "Eye_Close_01",
+  },
+  bones: {},
+  // 数字预设 00~06+99（8 个）；99 = 闭眼预设
+  emotions: {
+    angry: "05",
+    assured: "01",
+    curious: "00",
+    delighted: "01",
+    desire: "03",
+    dizzy: "99",
+    doubt: "00",
+    dreaming: "99",
+    enjoy: "99",
+    excited: "03",
+    jealous: "99",
+    love: "03",
+    saying: "00",
+    scared: "00",
+    shame: "99",
+    smile: "01",
+    tired: "04",
+  },
+  closedEyePresets: [],
+  noGazePresets: [],
+  // 用户需求：花子不做摸头适配
+  pat: { type: "none" },
+};
+
+const KOHARU = {
+  id: "koharu",
+  spineBase: "../../assets/blue-archive/koharu/spine/",
+  // .json = skel_to_json 导出 + gen_sway 衣摆形变；重新生成顺序：skel_to_json → gen_sway
+  skelFile: "koharu_spr.json",
+  atlasFile: "koharu_spr.atlas.txt",
+  // bounds 1395×2069：高≈Arona，但宽(含光环球)超宽 → 取宽为最小边，身高只占 70% → extraScale 放大到 1.3
+  extraScale: 1.3,
+  anims: {
+    idle: "Idle_01",
+    blink: "Eye_Close_01",
+  },
+  bones: {},
+  // 数字预设 00~12+99（14 个）
+  emotions: {
+    angry: "07",
+    assured: "01",
+    curious: "01",
+    delighted: "03",
+    desire: "03",
+    dizzy: "99",
+    doubt: "10",
+    dreaming: "99",
+    enjoy: "03",
+    excited: "03",
+    jealous: "10",
+    love: "03",
+    saying: "02",
+    scared: "09",
+    shame: "08",
+    smile: "02",
+    tired: "99",
+  },
+  closedEyePresets: [],
+  noGazePresets: [],
+  // 用户需求：小春不做摸头适配
+  pat: { type: "none" },
+};
+
+const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO, hanako: HANAKO, koharu: KOHARU };
 
 module.exports = { AGENTS };

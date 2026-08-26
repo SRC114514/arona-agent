@@ -1,6 +1,6 @@
 {
   "name": "arona-agent",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "description": "Terminal AI Agent with desktop pet Arona — eye-tracking pupils, voice cloning, Computer Use, TTS/STT, MCP.",
   "license": "MIT",
   "type": "module",
@@ -14,13 +14,11 @@
     "assets/",
     "bin/",
     "requirements.txt",
-    "intro.png",
     "README_en.md"
   ],
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
-    "postinstall": "node bin/postinstall-fix.mjs"
+    "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.1",

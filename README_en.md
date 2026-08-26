@@ -1,12 +1,12 @@
 # ARONA Agent
 
-[中文](README.md) | [English](README_en.md)
+[简体中文](README.md)
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-![Screenshot](./intro.png)
+![Screenshot](https://cdn.jsdelivr.net/gh/SRC114514/arona-agent/intro.png)
 
-A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), featuring Computer Use, voice (TTS/STT), desktop pets and persistent memory.
+A terminal-based conversational AI Agent built on the [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), featuring Computer Use, TTS / STT, desktop pets and persistent memory.
 
 ---
 
@@ -37,7 +37,7 @@ arona voice add [<character-name>]   # omit the name to enter the TUI for missin
 
 - **Computer Use**: based on [cua](https://pypi.org/project/cua/).
 - **Voice**: Non-streaming TTS (whole-sentence synthesis for natural prosody) + STT.
-- **Desktop pet**: transparent frameless always-on-top Electron window + emotion switching + cursor-following pupils + head-pat easter egg + full-screen click/trail FX; lip-sync mouth animation driven by TTS volume.
+- **Desktop pet**: transparent frameless always-on-top Electron window + emotion switching + cursor-following pupils + head-pat easter egg + full-screen click/trail FX.
 - **Multi-character group chat**: main agent + sub agents on the same screen. After the main agent replies, sub agents take turns in order.
 
 ---
@@ -77,6 +77,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, mostly genera
 | `cuaApiKey` | Cua API key | — |
 | `tavilyApiKey` | Tavily API key | — |
 | `pythonPath` | Python path | `python3` |
+| `autoReadSkills` | Automatically load missing Skills from `~/.agents` on startup | `true` |
 | `mcpServers` | MCP server JSON | `{}` |
 
 Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is added automatically based on the model name prefix or the `apiBaseUrl` domain.

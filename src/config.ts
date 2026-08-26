@@ -85,6 +85,8 @@ interface AronaConfig {
   // Misc
   pythonPath: string;
   mcpServers: Record<string, McpServerConfig>;
+  // 启动时是否从 ~/.agents/skills 补全缺失 Skill（默认 true）
+  autoLoadSkills: boolean;
 }
 
 interface Settings {
@@ -97,7 +99,7 @@ interface Settings {
   language?: LanguageSetting;
   // 主 Agent（arona | plana）：桌宠形象 + 人格，由 agent_registry.ts 读写
   mainAgent?: string;
-  // 启用的子 Agent 列表（shiroko | hoshino），由 agent_registry.ts 读写
+  // 启用的子 Agent 列表（见 agent_registry.ts），由 agent_registry.ts 读写
   subAgents?: string[];
   ttsEnabled?: boolean;
   sttEnabled?: boolean;
@@ -121,6 +123,8 @@ interface Settings {
   tavilyApiKey?: string;
   pythonPath?: string;
   mcpServers?: Record<string, McpServerConfig>;
+  // 启动时是否从 ~/.agents/skills 补全缺失 Skill（默认 true）
+  autoLoadSkills?: boolean;
 }
 
 /**
@@ -266,6 +270,8 @@ function loadConfig(): AronaConfig {
 
     pythonPath: s.pythonPath || (process.platform === "win32" ? "python" : "python3"),
     mcpServers: s.mcpServers || {},
+    // 显式 false 才关闭（不填/true 保持原有补全行为）
+    autoLoadSkills: s.autoLoadSkills !== false,
   };
 }
 

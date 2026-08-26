@@ -147,7 +147,7 @@ function createPetWindow(agentId, index) {
     vlog("did-finish-load", bw.webContents.getURL());
     send({ type: "ready", agent: agentId });
   });
-  // ---- GL 驱动消息缓冲 / 报错解锁（2026-08-20）----
+  // ---- GL 驱动消息缓冲 / 报错解锁 ----
   // Windows SwiftShader 下 Chromium 把 GL 驱动性能提示（如
   // "GPU stall due to ReadPixels"，Chromium gl_utils.cc 的 Performance 级消息）
   // 作为 console 消息打到渲染进程。非 verbose 时是纯噪音——平时静默缓冲；

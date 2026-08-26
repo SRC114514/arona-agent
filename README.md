@@ -1,14 +1,14 @@
 # ARONA Agent
 
-[English](README_en.md) | [简体中文](README.md)
+[English](https://github.com/SRC114514/arona-agent/blob/main/README_en.md)
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 > 谁不想在电脑上养一只 ~~香香软软~~ 可可爱爱的阿洛娜呢？
 
-![示意图](./intro.png)
+![示意图](https://cdn.jsdelivr.net/gh/SRC114514/arona-agent/intro.png)
 
-基于 [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建的终端对话式 AI Agent，集成 Computer Use、语音（TTS/STT）、桌面宠物与持久记忆。
+基于 [Pi SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 构建的终端对话式 AI Agent，集成 Computer Use、TTS / STT、桌面宠物与持久记忆。
 
 ---
 
@@ -39,7 +39,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 
 - **Computer Use**：基于 [cua](https://pypi.org/project/cua/) 。
 - **语音**：非流式 TTS + STT。
-- **桌宠**：透明无边框置顶 Electron 窗口 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效；TTS 说话时嘴型跟随音量（lip-sync）。
+- **桌宠**：透明无边框置顶 Electron 窗口 + 情绪切换 + 瞳孔跟随鼠标 + 头部摇动摸头彩蛋 + 全屏点击/拖尾特效；
 - **多角色群聊**：主 Agent 单窗口、子 Agent 同屏；每轮主 Agent 回复完后子 Agent 依次接话。
 
 
@@ -80,6 +80,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | `cuaApiKey` | Cua API Key | — |
 | `tavilyApiKey` | Tavily API Key | — |
 | `pythonPath` | Python 路径 | `python3` |
+| `autoReadSkills` | 启动时自动从 `~/.agents` 补全缺失的Skill | `true` |
 | `mcpServers` | MCP 服务器 JSON | `{}` |
 
 模型名前缀自动检测：若 `model` 不含 `/`，按模型名前缀或 `apiBaseUrl` 域名自动补 `provider/`。

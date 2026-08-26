@@ -18,7 +18,7 @@ const path = require("path");
 const { loadAgent } = require("./spine_node.cjs");
 
 // 每角色摆动部位配置。
-// Shiroko 实测（2026-08-18 目视+顶点勘察）：黑色百褶裙 y≈950~1260（±535 两外角在 y 1235~1241，
+// Shiroko 实测（目视+顶点勘察）：黑色百褶裙 y≈950~1260（±535 两外角在 y 1235~1241，
 // 中部裙片垂到 y 982~1132）；腿 y<600（8 顶点）、手臂衔接 y>1300 —— 全部钉死。
 const SWAY_TARGETS = {
   shiroko: {
@@ -35,6 +35,27 @@ const SWAY_TARGETS = {
     main: {
       slot: "hoshino", att: "hoshino", mode: "band",
       bandMin: 1100, bandMax: 1500, ampScale: 1, dyRatio: 0.35,
+    },
+  },
+  // Hanako 身体 = 上身 hanako_00 + 下身 hanako_01 两个 mesh（长裙盖到脚踝）。
+  // 裙摆自由端 = 下身 mesh 底部（v5~v7 y≈28~35 底边、v4/v8 y≈174~197 左右摆尖）；
+  // 腰线 y 736~1040 钉死、腿中段 v9(y591) 以上不参与 —— band 0~500 只晃裙摆下摆
+  // （bandMin 必须 ≤ mesh 最低顶点 y=28，否则底边正中 v5/v6 被排除、裙底半动半钉死）。
+  hanako: {
+    idle: "Idle_01",
+    main: {
+      slot: "hanako_01", att: "hanako_01", mode: "band",
+      bandMin: 0, bandMax: 500, ampScale: 1, dyRatio: 0.35,
+    },
+  },
+  // Koharu 全身单 mesh（27 verts，y 287~2248）：短裙摆 y≈830~1330
+  // （左摆尖 v19(~832)/v20(~895)、右摆尖 v9(~1194)/v7(~1327)）；
+  // 腿 y<550 钉死、头肩 y>1650 钉死 —— band 800~1350 只晃裙摆与下腹。
+  koharu: {
+    idle: "Idle_01",
+    main: {
+      slot: "koharu", att: "koharu", mode: "band",
+      bandMin: 800, bandMax: 1350, ampScale: 1, dyRatio: 0.35,
     },
   },
 };
@@ -98,7 +119,7 @@ function main() {
   const args = process.argv.slice(2);
   const id = args.find((x) => !x.startsWith("--"));
   if (!id || !SWAY_TARGETS[id]) {
-    console.error("用法: node pet/tools/gen_sway.cjs <shiroko|hoshino> [--amp 4] [--keys 12] [--band=mn:mx]");
+    console.error("用法: node pet/tools/gen_sway.cjs <shiroko|hoshino|hanako|koharu> [--amp 4] [--keys 12] [--band=mn:mx]");
     process.exit(2);
   }
   const cfg = SWAY_TARGETS[id];
