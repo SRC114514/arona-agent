@@ -38,6 +38,9 @@ arona --no-voice
 
 # Clone/re-clone a character's voice
 arona voice add [<character-name>]   # omit the name to enter the TUI for missing voices
+
+# Environment health check
+arona doctor
 ```
 
 ---
@@ -86,7 +89,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, mostly genera
 | `cuaApiKey` | Cua API key | — |
 | `tavilyApiKey` | Tavily API key | — |
 | `pythonPath` | Python path | `python3` |
-| `autoReadSkills` | Automatically load missing Skills from `~/.agents` on startup | `true` |
+| `autoLoadSkills` | Automatically load missing Skills from `~/.agents` on startup | `true` |
 | `mcpServers` | MCP server JSON | `{}` |
 
 Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is added automatically based on the model name prefix or the `apiBaseUrl` domain.

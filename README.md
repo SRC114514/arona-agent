@@ -40,6 +40,9 @@ arona --no-voice
 
 # 补全/重新克隆某角色音色
 arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全的角色
+
+# 环境自检
+arona doctor
 ```
 
 ---
@@ -57,7 +60,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 ## 环境要求
 
 - **Node.js >= 22.19.0**
-- **Python 3.9+（CUA需要 3.12 / 3.13）**
+- **Python 3.12 / 3.13**
 
 ---
 
@@ -89,7 +92,7 @@ arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全�
 | `cuaApiKey` | Cua API Key | — |
 | `tavilyApiKey` | Tavily API Key | — |
 | `pythonPath` | Python 路径 | `python3` |
-| `autoReadSkills` | 启动时自动从 `~/.agents` 补全缺失的Skill | `true` |
+| `autoLoadSkills` | 启动时自动从 `~/.agents` 补全缺失的Skill | `true` |
 | `mcpServers` | MCP 服务器 JSON | `{}` |
 
 模型名前缀自动检测：若 `model` 不含 `/`，按模型名前缀或 `apiBaseUrl` 域名自动补 `provider/`。
