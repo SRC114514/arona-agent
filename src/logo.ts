@@ -7,6 +7,10 @@
 
 import figlet from "figlet";
 
+// Fonts 是 @types/figlet 里 export = 命名空间的成员类型，默认导入/具名导入都拿不到；
+// 用 loadFont 的首参反推出等价的字体名联合类型。
+type FigletFont = Parameters<typeof figlet.loadFont>[0];
+
 // 配色（与原 launcher.sh 一致）
 const C = "\x1b[38;2;0;210;255m"; // CYAN  #00D2FF  边框 + 底部字母
 const B = "\x1b[38;2;66;135;245m"; // BLUE  #4287F5  顶部字母
@@ -21,7 +25,7 @@ const R = "\x1b[0m"; // RESET
 // 4) 平面字体（最后兜底）：按宽度降序，每个字体也是先 AGENT 再 ARONA
 //
 // 列数估算已留出边框 2 格 + 缩进 2 格 + 内边距 6 格（即 width + 10）
-const VARIANTS: { text: string; font: figlet.Fonts }[] = [
+const VARIANTS: { text: string; font: FigletFont }[] = [
   // —— ANSI Shadow 绝对优先 ——
   { text: "ARONA AGENT", font: "ANSI Shadow" }, // ~101 列
   { text: "ARONA",       font: "ANSI Shadow" }, // ~53 列

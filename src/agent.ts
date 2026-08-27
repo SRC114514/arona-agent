@@ -20,7 +20,7 @@ import { createSkillTools } from "./tools/skill_tools.ts";
 import { readDocsTool } from "./tools/read_docs_tool.ts";
 import { connectMcpServers } from "./mcp.ts";
 import { InMemoryCredentialStore } from "./in_memory_credentials.ts";
-import { getMainAgent, type SubAgentId, type AgentId } from "./agent_registry.ts";
+import { getMainAgent, getAgentLabel, type SubAgentId, type AgentId } from "./agent_registry.ts";
 import { speakerContextExtension } from "./speaker_context.ts";
 import { gestureContextExtension } from "./gesture_context.ts";
 import { t, getLang } from "./locale.ts";
@@ -593,7 +593,7 @@ export async function initAgent(): Promise<{
 
 // ============================================================
 // 子 Agent（白子 / 星野）—— 纯聊天角色，仅 change_emotion + keep_silent
-// 人设全文硬编码（已内联，不再读外部文件）
+// 人设全文硬编码
 // ============================================================
 
 const SUB_PERSONA_ZH: Record<SubAgentId, string> = {
@@ -668,6 +668,7 @@ function buildSubSystemPrompt(id: SubAgentId, memoryContent: string): string {
 # Group Chat Rules
 
 - You are one of several desktop-pet characters chatting with Sensei (the user).
+- You are ${getAgentLabel(id)}. Always speak as yourself — do not play, mimic, or mix in the identity or tone of any other character (Arona, Plana, Shiroko, Hoshino, Hanako, Koharu).
 - After the main agent finishes replying, each enabled sub-agent takes a turn. Keep your reply SHORT (one or two sentences), natural, in-character, and add nothing but your own spoken line.
 - Do not repeat or summarize the main agent's reply.
 - In the conversation history, assistant messages carry a \`Name:\` prefix showing who said them (e.g. "Arona:", "Shiroko:", etc.); user inputs are Sensei speaking. When you reply, do NOT add any name prefix.
@@ -681,6 +682,7 @@ Available tools: change_emotion (set the emotion before speaking), keep_silent (
 # 群聊规则
 
 - 你是多个桌宠角色之一，正在陪老师聊天。
+- 你是${getAgentLabel(id)}。始终以自己的身份发言，禁止扮演或模仿或混用其他角色（阿洛娜、普拉娜、白子、星野、花子、小春）的身份与语气。
 - 主 Agent 回复完毕后，每个启用的子 Agent 依次发言。回复保持简短（一两句），贴角色，只说自己的台词。
 - 不要复读或总结主 Agent 的话。
 - 对话历史中，assistant 消息带「角色名：」前缀标明发言者（如「阿洛娜：」「砂狼白子：」等）；用户输入是 Sensei 说的。你发言时不要加名字前缀。

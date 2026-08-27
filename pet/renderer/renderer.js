@@ -104,9 +104,9 @@ const PAT_TURN_PX = 20;        // 单次"有效换向"所需的最小半波位�
 const DIZZY_TURNS = 2;          // 换向次数阈值（一来一回）
 const DIZZY_AMPLITUDE = 150;    // 窗口内单轴摆幅极差阈值（px）——"大幅"档位，待实测调整
 const DIZZY_RECOVER_MS = 2000;  // 松手后保持晕脸的时长，之后自动回待机
-// 头部区域：x 比例基于左侧 320px 渲染区（spineCanvas.clientWidth），y 基于窗口高。
-// ⚠️ x 不能按整窗 innerWidth（580 = 320 渲染 + 260 气泡）算：0.26×580≈151px 比头部实际
-// 左缘（渲染区内 ~110px）偏右，会把头部左边缘切掉——左侧长按拖动永不触发摸头（实测）。
+// 头部区域：x 比例基于 320px 渲染区宽（spineCanvas.clientWidth——旧版窗口曾含 260px 气泡区，
+// 若按整窗 innerWidth 算 x 会把头部左缘切掉；现窗口已收窄为渲染区本体，两者恰好相等，
+// 但仍按 clientWidth 计算以防未来再加非渲染区域），y 基于窗口高。
 // Spine 姿势实测头部在 CSS y 119~180。
 const HEAD_BOX = { xMin: 0.26, xMax: 0.78, yMin: 0.06, yMax: 0.29 };
 // 摸头期间"离开头部"判定缓冲（px）：用户反馈 16px 太严苛，先放宽 50px、再要求更宽 → 90px；
@@ -300,20 +300,7 @@ function onMouseUp() {
   }
 }
 
-// ---- 文字气泡 ----
-const petBubble = document.getElementById("pet-bubble");
-let bubbleTimer = null;
-
-function showBubble(text) {
-  if (!petBubble) return;
-  petBubble.textContent = text;
-  petBubble.classList.remove("hidden");
-}
-
-function hideBubble() {
-  if (!petBubble) return;
-  petBubble.classList.add("hidden");
-}
+// ---- 文字气泡：已迁至全屏特效窗（fx.html/fx.js），本窗口不再渲染气泡 ----
 
 async function init() {
   // 情绪预设映射：agents.cjs（与 main 进程白名单同源）值 = 预设动画名；
@@ -358,23 +345,6 @@ async function init() {
   // TTS 播放中实时音量 → 嘴型 lip-sync（spine_layer 内部做包络/档位/覆盖）
   window.petAPI.onTtsLevel((rms) => {
     window.SpineLayer.setMouthLevel(rms);
-  });
-
-  // 文字气泡：只显示 mid/final 短消息；等到 TTS 播放结束（tts_end）再消失
-  window.petAPI.onText(({ kind, data }) => {
-    if (!petBubble) return;
-    if (kind === "tts_end") {
-      if (bubbleTimer) clearTimeout(bubbleTimer);
-      bubbleTimer = null;
-      hideBubble();
-      return;
-    }
-    // mid / final
-    if (typeof data === "string" && data.length > 0) {
-      if (bubbleTimer) clearTimeout(bubbleTimer);
-      bubbleTimer = null;
-      showBubble(data);
-    }
   });
 
   document.addEventListener("mousedown", onMouseDown);

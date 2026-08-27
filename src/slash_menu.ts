@@ -171,15 +171,21 @@ export class SlashMenu {
     this.redraw(rl);
   }
 
-  /** ↑/↓ 导航（循环）。 */
-  move(direction: -1 | 1, rl: Interface): void {
-    if (!this.visible || this.matches.length === 0) return;
+  /**
+   * ↑/↓ 导航。返回是否移动了选中项：
+   * - ↓ 到底环绕回顶部（保持循环导航）；
+   * - ↑ 在顶部（selected === 0）不环绕，返回 false 作为"到达边界"信号，
+   *   由 repl 放行给 readline 做历史回溯（读取上次执行的命令）。
+   */
+  move(direction: -1 | 1, rl: Interface): boolean {
+    if (!this.visible || this.matches.length === 0) return false;
+    if (direction === -1 && this.selected === 0) return false; // 顶部按 ↑：交给历史回溯
     let next = this.selected + direction;
-    if (next < 0) next = this.matches.length - 1;
     if (next >= this.matches.length) next = 0;
     this.selected = next;
     this.clampScroll();
     this.redraw(rl);
+    return true;
   }
 
   /**

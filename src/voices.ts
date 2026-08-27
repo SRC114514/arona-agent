@@ -179,6 +179,12 @@ export function getMissingAgents(): AgentId[] {
 }
 
 /**
+ * 演示模式（settings.json#demoMode === true）下，aliyun 分支 TUI 预标记为"已克隆"并锁定的角色。
+ * setup.ts 与 voice_cli.ts 共用此表（配合 tui_select.lockExisting），保证两个命令的演示行为一致（其余角色视为未克隆）。
+ */
+export const DEMO_PRECLONED_AGENTS: readonly AgentId[] = ["arona", "plana", "shiroko", "hoshino"];
+
+/**
  * 克隆指定角色的百炼音色，返回 voice_id。
  * 复用 python/voice_clone.py：ARONA_VOICE_AUDIO + ARONA_VOICE_PREFIX 指定音频与角色前缀。
  */

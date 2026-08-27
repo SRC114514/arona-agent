@@ -8,8 +8,20 @@ import { t } from "./locale.ts";
 export interface SelectOption {
   id: string;
   label: string;
-  /** 锁定：强制显示 [*]，空格不可切换（已有音色的角色）。 */
+  /**
+   * 锁定（已存在/已配置的项）。
+   * 请统一用 lockExisting() 按 existing 集合生成。
+   */
   locked?: boolean;
+}
+
+/**
+ * 把"已存在/已配置"的项标记为锁定。调用方给出 existing 集合即可。
+ * 已显式 locked:true 的项保持锁定；不在 existing 里的项原样返回。
+ */
+export function lockExisting<T extends SelectOption>(options: readonly T[], existing: Iterable<string>): T[] {
+  const set = new Set(existing);
+  return options.map((o) => (o.locked || set.has(o.id) ? { ...o, locked: true } : o));
 }
 
 /** 计算一个字符串去除 ANSI 转义后的可见宽度（CJK/全角算 2，控制符算 0）。 */

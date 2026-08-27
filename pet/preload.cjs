@@ -3,7 +3,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("petAPI", {
   onEmotion: (cb) => ipcRenderer.on("pet:emotion", (_e, name) => cb(name)),
   onReset: (cb) => ipcRenderer.on("pet:reset", () => cb()),
-  onText: (cb) => ipcRenderer.on("pet:text", (_e, p) => cb(p)),
   // TTS 播放中实时音量（RMS 0~1）→ 嘴型 lip-sync
   onTtsLevel: (cb) => ipcRenderer.on("pet:tts-level", (_e, rms) => cb(rms)),
   getAgentConfig: () => ipcRenderer.invoke("pet:get-agent-config"),
@@ -20,4 +19,6 @@ contextBridge.exposeInMainWorld("petAPI", {
   onFxDown: (cb) => ipcRenderer.on("fx:down", (_e, x, y) => cb(x, y)),
   onFxMove: (cb) => ipcRenderer.on("fx:move", (_e, x, y) => cb(x, y)),
   onFxUp: (cb) => ipcRenderer.on("fx:up", () => cb()),
+  // 文字气泡：main.cjs 把桌宠窗口姿态换算成本地坐标后发到这里（fx 层专用）
+  onBubble: (cb) => ipcRenderer.on("pet:bubble", (_e, p) => cb(p)),
 });

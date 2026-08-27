@@ -31,47 +31,4 @@ body:active {
   pointer-events: none;
   z-index: 1;
 }
-
-
-/* 桌宠文字气泡：定位到角色头部右侧，贴近角色（不遮脸、不高高飘在右上）；
-   top 取头部高度（头 CSS y 40~195），left 270px 贴近头部右缘（≈250）留 ~20px 缝隙，
-   由 ::after 小尾巴向左伸进缝隙指向角色（视觉上"连到"角色，不显远）；
-   高于 Spine、鼠标穿透；只显示 mid/final 短消息 */
-#pet-bubble {
-  position: absolute;
-  left: 270px;
-  top: 90px;
-  transform: none;
-  max-width: 220px;
-  padding: 8px 12px;
-  box-sizing: border-box;
-  background: rgba(20, 22, 34, 0.82);
-  border-radius: 14px;
-  color: #fff;
-  font-size: 13px;
-  line-height: 1.45;
-  text-align: left;
-  white-space: pre-line;
-  word-break: break-all;
-  pointer-events: none;
-  z-index: 10;
-  opacity: 1;
-  transition: opacity 0.25s ease;
-}
-
-/* 左指小三角尾巴：从气泡左缘向左伸进气泡与角色头部的缝隙里，指向角色。
-   随父级 hidden / opacity 过渡一起隐藏。top 取气泡中部即可，位置可按需微调 */
-#pet-bubble::after {
-  content: "";
-  position: absolute;
-  left: -12px;
-  top: 50%;
-  transform: translateY(-50%);
-  border-top: 8px solid transparent;
-  border-bottom: 8px solid transparent;
-  border-right: 12px solid rgba(20, 22, 34, 0.82);
-}
-
-#pet-bubble.hidden {
-  opacity: 0;
-}
+/* 文字气泡已迁至全屏特效窗（fx.html 的 .bubble），桌宠窗口只保留角色渲染区 */

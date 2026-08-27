@@ -28,9 +28,9 @@ const AGENT_IDS = [MAIN_AGENT_ID, ...SUB_AGENT_IDS];
 
 const PREFIX = "###PET###";
 const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
-const WIN_W = 580; // 窗口总宽：左侧 320px 为 Spine 角色渲染区，右侧 260px 为文字气泡专用区（避免气泡遮脸）
+const WIN_W = 320; // 窗口 = Spine 角色渲染区本体（收窄以避免透明区域拦截点击造成误触；角色尺寸不变）
 const WIN_H = 674;
-const SUB_OFFSET_X = 620; // 子窗口默认横向错开（> WIN_W，避免角色+气泡区重叠）
+const SUB_OFFSET_X = 340; // 子窗口默认横向错开（略大于 WIN_W）
 const SUB_OFFSET_Y = 40;
 
 // --verbose（src/pet.ts 注入 ARONA_PET_VERBOSE=1 + --enable-logging）：
@@ -282,6 +282,62 @@ ipcMain.on("pet:fx-up", () => {
   if (fxWin && !fxWin.isDestroyed()) fxWin.webContents.send("fx:up");
 });
 
+// ---- 文字气泡：画在全屏特效窗上（桌宠窗口已收窄为角色本体，不再有气泡区） ----
+// 特效窗鼠标穿透（setIgnoreMouseEvents），气泡纯展示不会拦点击；层级高于桌宠。
+// 锚点沿用旧窗口内定位的观感：气泡出现在头部右上方、小尾巴指向角色；右侧越出
+// 所在显示器时翻到左侧（flip，fx 层镜像小尾巴）。
+const BUBBLE_ANCHOR_X = 264;   // 默认：气泡左缘相对桌宠窗口左上角
+const BUBBLE_ANCHOR_Y = 90;
+const BUBBLE_MAX_W = 220;      // 与 fx 层样式 max-width 一致
+const BUBBLE_FLIP_X = -196;    // 翻转：气泡左缘相对桌宠窗口左上角（右缘留 ~24px 缝隙给小尾巴）
+const BUBBLE_FLIP_PAD = 12;    // 翻转阈值缓冲：贴屏幕右缘多少 px 内就算溢出
+
+/** 桌宠窗口当前姿态 → 特效窗本地气泡锚点 { x, y, flip }；特效窗/角色窗不可用时返回 null */
+function bubbleAnchorLocal(agentId) {
+  const bw = windowByAgent(agentId);
+  if (!bw || bw.isDestroyed() || !fxWin || fxWin.isDestroyed()) return null;
+  const [wx, wy] = bw.getPosition();
+  const [fxX, fxY] = fxWin.getPosition();
+  let flip = false;
+  let gx = wx + BUBBLE_ANCHOR_X;
+  try {
+    const d = screen.getDisplayNearestPoint({ x: wx, y: wy });
+    const rightEdge = d.bounds.x + d.bounds.width;
+    if (gx + BUBBLE_MAX_W + BUBBLE_FLIP_PAD > rightEdge) {
+      // 右侧放不下 → 翻到角色左侧
+      flip = true;
+      gx = wx + BUBBLE_FLIP_X;
+    }
+    gx = Math.max(d.bounds.x + BUBBLE_FLIP_PAD, Math.min(gx, rightEdge - BUBBLE_FLIP_PAD));
+    // 垂直方向钳回所在显示器（粗略按气泡最大高度 ~140px 预留）
+    const gy = Math.max(d.bounds.y, Math.min(wy + BUBBLE_ANCHOR_Y, d.bounds.y + d.bounds.height - 140));
+    return { x: Math.round(gx - fxX), y: Math.round(gy - fy), flip };
+  } catch {
+    return { x: Math.round(gx - fxX), y: Math.round(wy + BUBBLE_ANCHOR_Y - fxY), flip };
+  }
+}
+
+/** 把某角色的文字消息转成特效窗上的气泡 show/hide */
+function forwardBubble(agentId, kind, data) {
+  if (!fxWin || fxWin.isDestroyed()) return;
+  if (kind === "tts_end") {
+    fxWin.webContents.send("pet:bubble", { agent: agentId, kind: "hide" });
+    return;
+  }
+  if (typeof data !== "string" || !data) return;
+  const pos = bubbleAnchorLocal(agentId);
+  if (!pos) return;
+  fxWin.webContents.send("pet:bubble", { agent: agentId, kind: "show", data, ...pos });
+}
+
+/** 拖动中/落位后同步气泡锚点（气泡已显示时 fx 层原地位移，未显示则忽略） */
+function syncBubblePosition(agentId) {
+  if (!fxWin || fxWin.isDestroyed()) return;
+  const pos = bubbleAnchorLocal(agentId);
+  if (!pos) return;
+  fxWin.webContents.send("pet:bubble", { agent: agentId, kind: "move", ...pos });
+}
+
 // ---- 全局光标轮询（~60Hz，DIP 坐标系内运算，供渲染层瞳孔跟随 + 按住期间晃动检测补采样） ----
 // 对每个桌宠窗口分别发送窗口本地坐标 + 全局坐标（gx/gy：renderer 按住期间用于晃动检测——
 // 光标快速甩动划出窗口时 mousemove 断流，本轮询不断流，轻微出窗仍能采到晃动）
@@ -324,6 +380,7 @@ ipcMain.on("pet:drag", (e, dx, dy) => {
       if (p && windowByAgent(agentId)) {
         windowByAgent(agentId).setPosition(Math.round(p.x), Math.round(p.y));
         dragPendingMap.delete(agentId);
+        syncBubblePosition(agentId); // 气泡跟随拖动
       }
     }, 16));
   }
@@ -343,6 +400,7 @@ ipcMain.on("pet:dragend", (e) => {
     bw.setPosition(Math.round(pending.x), Math.round(pending.y));
     dragPendingMap.delete(agentId);
   }
+  syncBubblePosition(agentId); // 落位后校正气泡锚点（flip 状态也可能变化）
   const [x, y] = bw.getPosition();
   savePosition(agentId, x, y);
   send({ type: "moved", agent: agentId, x, y });
@@ -385,7 +443,8 @@ function handleMessage(msg) {
       break;
     case "text": {
       const id = msg.agent && AGENTS[msg.agent] ? msg.agent : MAIN_AGENT_ID;
-      sendToAgent(id, "pet:text", { kind: msg.kind, data: msg.data });
+      // 气泡已迁出桌宠窗口（窗口收窄为角色本体），统一渲染在全屏特效窗上
+      forwardBubble(id, msg.kind, msg.data);
       break;
     }
     case "tts_level": {

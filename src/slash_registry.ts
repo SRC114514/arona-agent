@@ -26,7 +26,7 @@ export interface SlashCommandSpec {
 export const SLASH_COMMANDS: SlashCommandSpec[] = [
   { name: "help", aliases: ["?"], description: t("显示命令列表", "Show command list") },
   { name: "exit", aliases: ["quit", "q"], description: t("退出", "Exit") },
-  { name: "new", aliases: ["clear"], description: t("开始新会话（清空上下文）", "Start a new session (clear context)") },
+  { name: "new", aliases: ["clear"], description: t("开始新会话", "Start a new session") },
   { name: "resume", aliases: ["r"], description: t("上下键选择并恢复一个已保存的会话", "Pick and resume a saved session with arrow keys"), interactive: true },
   { name: "export", description: t("导出当前会话为 Markdown", "Export current session as Markdown") },
   { name: "thinking", description: t("开关推理块显示", "Toggle reasoning block display") },
@@ -34,7 +34,7 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
   { name: "compact", description: t("压缩上下文", "Compact context") },
   { name: "tts", description: t("开关文字转语音", "Toggle text-to-speech") },
   { name: "stt", description: t(`开关语音转文字`, `Toggle speech-to-text`) },
-  { name: "skill", description: t("调用技能（/skill <名称>）", "Invoke a skill (/skill <name>)") },
+  { name: "skill", description: t("调用技能", "Invoke a skill") },
   { name: "mcp", description: t("管理 MCP 服务器和工具", "Manage MCP servers and tools") },
   { name: "change-agent", description: t("切换主 Agent + 多选子 Agent", "Switch main agent + multi-select sub agents"), interactive: true },
   { name: "undo", description: t("撤销上一个回合的全部文件改动", "Undo the previous turn's file changes") },

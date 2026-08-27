@@ -135,8 +135,8 @@ export class UndoManager {
 
   /**
    * 启动时调用:加载持久化状态(如有),并在后台异步刷新基线为当前工作目录真实状态。
-   * 基线扫描改为后台异步 + 有界(MAX_SCAN_FILES/深度/系统目录):在 ~/、/ 等巨型目录下
-   * 同步全盘递归会把启动卡死(此前每次启动都在这卡住,子目录正常)。
+   * 基线扫描为后台异步 + 有界(MAX_SCAN_FILES/深度/系统目录):在 ~/、/ 等巨型目录下
+   * 同步全盘递归会卡死启动。
    */
   load(): void {
     try {
@@ -377,7 +377,7 @@ export class UndoManager {
 
   private hashLargeFile(abs: string): string {
     // 只读 4KB 头 + 4KB 尾 + size 当 hash 近似(够用于检测删除)
-    // 用 fd 流式读取,避免把整个大文件读入内存(原实现误用 readFileSync 全量读取)
+    // 用 fd 流式读取,避免把整个大文件读入内存
     let fd: number | null = null;
     try {
       const stat = statSync(abs);
@@ -436,8 +436,7 @@ export class UndoManager {
 
   /**
    * 把 before / after 两个 snapshot 对比,产出 changed files 的 diff。
-   * content 直接取自 snapshot(takeSnapshot 已读出),不再回读文件——
-   * 因为 afterTurn 调用时,文件已是 after 状态,回读会污染 before 内容。
+   * content 直接取自 snapshot（takeSnapshot 已读出）。
    * 无变化返回 null。
    */
   private computeDiff(

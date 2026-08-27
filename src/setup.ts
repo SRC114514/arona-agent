@@ -11,10 +11,10 @@ import {
   type TtsProvider,
 } from "./config.ts";
 import { AGENT_IDS, getAgentLabel, type AgentId } from "./agent_registry.ts";
-import { VOICE_AUDIO, cloneVoice, setVoiceId, getMissingAgents, hasVoice, getGptSovitsVoice, setGptSovitsVoice, deleteGptSovitsVoice } from "./voices.ts";
+import { VOICE_AUDIO, cloneVoice, setVoiceId, getMissingAgents, hasVoice, DEMO_PRECLONED_AGENTS, getGptSovitsVoice, setGptSovitsVoice } from "./voices.ts";
 import { normalizeGptSovitsConfig } from "./tts_provider.ts";
 import { installGptSovitsDeps } from "./gpt_sovits_local.ts";
-import { multiSelect } from "./tui_select.ts";
+import { multiSelect, lockExisting } from "./tui_select.ts";
 import { t, getLang, setLang } from "./locale.ts";
 
 interface Settings {
@@ -46,6 +46,8 @@ interface Settings {
   cuaApiKey?: string;
   pythonPath?: string;
   mcpServers?: Record<string, unknown>;
+  /** 启动时是否从 ~/.agents/skills 补全缺失 Skill（默认 true）；保留手写参数，勿覆盖 */
+  autoLoadSkills?: boolean;
   /** 用户手动维护；setup 向导只读不写。true 时启用演示模式。 */
   demoMode?: boolean;
 }
@@ -122,11 +124,11 @@ async function main() {
     const tried = `"${existing.pythonPath || "python3"}" 与 "python"`;
     if (pyCheck.version === "not found") {
       console.log(chalk.red(t(`\n✗ 未找到可用的 Python（已尝试 ${tried}）。`, `\n✗ No usable Python found (tried ${tried}).`)));
-      console.log(chalk.cyan(t("  ARONA 需要 Python 3.12 或 3.13（不支持 3.14）。", "  ARONA requires Python 3.12 or 3.13 (3.14 is not supported).")));
+      console.log(chalk.cyan(t("  ARONA 需要 Python 3.12 或 3.13。", "  ARONA requires Python 3.12 or 3.13.")));
       console.log(chalk.gray(t("  请安装 Python 后重新运行 arona setup。", "  Install Python and run arona setup again.")));
     } else {
       console.log(chalk.red(t(`\n✗ Python 版本不兼容：${pyCheck.version}`, `\n✗ Incompatible Python version: ${pyCheck.version}`)));
-      console.log(chalk.cyan(t("  ARONA 需要 Python 3.12 或 3.13（不支持 3.14，因 pydantic-core 限制）。", "  ARONA requires Python 3.12 or 3.13 (3.14 not supported due to pydantic-core).")));
+      console.log(chalk.cyan(t("  ARONA 需要 Python 3.12 或 3.13。", "  ARONA requires Python 3.12 or 3.13.")));
       console.log(chalk.gray(t("  请安装正确版本后重新运行 arona setup。", "  Install the correct version and run arona setup again.")));
     }
     process.exit(1);
@@ -160,8 +162,8 @@ async function main() {
     const detected = getLang();
     console.log(chalk.cyan(t(`  检测到系统语言：${detected === "en" ? "英文 (en)" : "中文 (zh)"}`, `  Detected system language: ${detected === "en" ? "English (en)" : "Chinese (zh)"}`)));
     const langInput = (await ask(t(
-      "  语言选择 [auto/en/zh]（默认 auto=按系统）：",
-      "  Language [auto/en/zh] (default auto = follow system): ",
+      "  语言选择 [auto/en/zh]: ",
+      "  Language [auto/en/zh]: ",
     ))).toLowerCase();
     let langSetting: "auto" | "zh" | "en" = "auto";
     if (langInput === "en") { langSetting = "en"; setLang("en"); }
@@ -206,7 +208,7 @@ async function main() {
     // Step 2: 语音配置
     // ============================================================
     console.log(chalk.bold.cyan(t("\nStep 2: 语音配置\n", "\nStep 2: Voice Configuration\n")));
-    console.log(chalk.cyan(t("  百炼 API Key（可选，用于TTS/STT）", "  Dashscope API Key (optional, for TTS/STT)")));
+    console.log(chalk.cyan(t("  百炼 API Key（可选）", "  Dashscope API Key (optional)")));
     console.log(chalk.cyan(t("  获取 API Key: https://help.aliyun.com/zh/model-studio/get-api-key\n", "  Get API Key: https://help.aliyun.com/zh/model-studio/get-api-key\n")));
 
     const existingTtsKey = existing.ttsApiKey || "";
@@ -218,7 +220,7 @@ async function main() {
 
     console.log(chalk.bold.cyan(t("\n  TTS Provider 菜单\n", "\n  TTS Provider Menu\n")));
     const providerOptions = [
-      { id: "aliyun", label: t("阿里云百炼（默认）", "Dashscope") },
+      { id: "aliyun", label: t("阿里云百炼", "Dashscope") },
       { id: "gpt-sovits", label: t("GPT-SoVITS", "GPT-SoVITS") },
     ];
     // 二选一使用 TUI 单选菜单（不要求键盘输入 1/2）
@@ -247,7 +249,7 @@ async function main() {
       console.log(chalk.bold.cyan(t("\n  GPT-SoVITS 配置\n", "\n  GPT-SoVITS Configuration\n")));
       // readline 已在上方 TUI 前关闭；为后续 TUI 选择保持 stdin 空闲
       const deployOptions = [
-        { id: "cloud", label: t("云端 API（远程服务）", "Cloud API (remote)") },
+        { id: "cloud", label: t("云端 API", "Cloud API") },
         { id: "local", label: t("本地模型", "Local model") },
       ];
       const deploySelected = await multiSelect(
@@ -418,7 +420,7 @@ async function main() {
         `  text_lang [${gptSovitsConfig.textLang}] (auto/zh/en/ja/yue/ko): `,
       ));
       const textLang = textLangInput.trim() || gptSovitsConfig.textLang;
-      // prompt_lang 不再全局询问：按每角色参考音频文字内容自动判断（走默认素材固定 zh，见 tts_provider.detectPromptLang）
+      // prompt_lang 按每角色参考音频文字内容自动判断（默认素材固定 zh，见 tts_provider.detectPromptLang）
       gptSovitsConfig = {
         ...gptSovitsConfig,
         mode,
@@ -433,9 +435,16 @@ async function main() {
       };
       rl2.close();
 
-      // 多选要配置音色的角色：全部可编辑（已配置者默认 [*]，取消勾选 = 删除该角色配置）
-      const configured = AGENT_IDS.filter((id) => getGptSovitsVoice(id));
-      const options = AGENT_IDS.map((id) => ({ id, label: getAgentLabel(id), locked: false }));
+      // 多选要配置音色的角色：已配置者经 lockExisting 锁定为已克隆。
+      // 演示模式：硬编码全未克隆，路径信息直接丢弃、不写 voices.json。
+      const configured: AgentId[] = demoMode ? [] : AGENT_IDS.filter((id) => getGptSovitsVoice(id));
+      const options = lockExisting(
+        AGENT_IDS.map((id) => ({
+          id,
+          label: configured.includes(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
+        })),
+        configured,
+      );
       const selected = await multiSelect(
         t("选择要配置 GPT-SoVITS 音色的角色", "Select characters to configure GPT-SoVITS voices"),
         options,
@@ -468,24 +477,37 @@ async function main() {
         if (!selected.has(id)) continue;
         const prev = getGptSovitsVoice(id) || {};
         console.log(chalk.bold.cyan(t(`\n  ${getAgentLabel(id)} 音色配置\n`, `\n  ${getAgentLabel(id)} voice config\n`)));
+        // GPT/SoVITS 权重必填：无既有值默认 [ N/A ]，空输入黄色提示后重新询问。
         const prevCkpt = prev.gptWeightsPath || "";
-        const ckpt = (await ask3(t(
-          prevCkpt
-            ? `    GPT 权重 .ckpt 路径 [${prevCkpt}]: `
-            : "    GPT 权重 .ckpt 路径 [不切换]: ",
-          prevCkpt
-            ? `    GPT weights .ckpt path [${prevCkpt}]: `
-            : "    GPT weights .ckpt path [no switch]: ",
-        ))).trim() || prevCkpt;
+        let ckpt = prevCkpt;
+        for (;;) {
+          const ckptInput = (await ask3(t(
+            ckpt
+              ? `    GPT 权重 .ckpt 路径 [${ckpt}]: `
+              : "    GPT 权重 .ckpt 路径 [ N/A ]: ",
+            ckpt
+              ? `    GPT weights .ckpt path [${ckpt}]: `
+              : "    GPT weights .ckpt path [ N/A ]: ",
+          ))).trim();
+          if (ckptInput) { ckpt = ckptInput; break; }
+          if (prevCkpt) break;
+          console.log(chalk.yellow(t("    请输入路径！", "    Please enter a path!")));
+        }
         const prevPth = prev.sovitsWeightsPath || "";
-        const pth = (await ask3(t(
-          prevPth
-            ? `    SoVITS 权重 .pth 路径 [${prevPth}]: `
-            : "    SoVITS 权重 .pth 路径 [不切换]: ",
-          prevPth
-            ? `    SoVITS weights .pth path [${prevPth}]: `
-            : "    SoVITS weights .pth path [no switch]: ",
-        ))).trim() || prevPth;
+        let pth = prevPth;
+        for (;;) {
+          const pthInput = (await ask3(t(
+            pth
+              ? `    SoVITS 权重 .pth 路径 [${pth}]: `
+              : "    SoVITS 权重 .pth 路径 [ N/A ]: ",
+            pth
+              ? `    SoVITS weights .pth path [${pth}]: `
+              : "    SoVITS weights .pth path [ N/A ]: ",
+          ))).trim();
+          if (pthInput) { pth = pthInput; break; }
+          if (prevPth) break;
+          console.log(chalk.yellow(t("    请输入路径！", "    Please enter a path!")));
+        }
         const prevRef = prev.refAudioPath || "";
         // cloud 模式 ref 必填（无 ref 则该角色 isTtsEnabledFor=false 静音且无解释）；循环重询直至非空
         let ref = prevRef;
@@ -506,8 +528,8 @@ async function main() {
           if (prevRef) break;
           if (mode !== "cloud") break;
           console.log(chalk.yellow(t(
-            `    ref_audio_path 不能为空（云端模式必填）。`,
-            `    ref_audio_path cannot be empty (required in cloud mode).`,
+            `    ref_audio_path 不能为空。`,
+            `    ref_audio_path cannot be empty.`,
           )));
         }
         const prevText = prev.promptText || "";
@@ -515,20 +537,19 @@ async function main() {
           prevText
             ? `    示例音频文字内容 prompt_text [${prevText}]: `
             : mode === "cloud"
-              ? "    示例音频文字内容 prompt_text [必填，文字/本地txt路径/URL]（语言自动判断）: "
-              : "    示例音频文字内容 prompt_text [文字/本地txt路径/URL，缺省用 voice_text.txt]（语言自动判断）: ",
+              ? "    示例音频文字内容 prompt_text [文字/本地txt路径/URL]: "
+              : `    示例音频文字内容 prompt_text [assets/blue-archive/${id}/voice_text.txt]: `,
           prevText
             ? `    Reference audio text prompt_text [${prevText}]: `
             : mode === "cloud"
-              ? "    Reference audio text prompt_text [required, text/local txt path/URL] (lang auto-detected): "
-              : "    Reference audio text prompt_text [text/local txt path/URL, default voice_text.txt] (lang auto-detected): ",
+              ? "    Reference audio text prompt_text [text/local txt path/URL]: "
+              : `    Reference audio text prompt_text [assets/blue-archive/${id}/voice_text.txt]: `,
         ))).trim() || prevText;
         // 每角色音色写 voices.json#gpt-sovits（与百炼 voice_id 共存，不写 settings.json）
-        setGptSovitsVoice(id, { gptWeightsPath: ckpt, sovitsWeightsPath: pth, refAudioPath: ref, promptText: refText });
-      }
-      // 未勾选的原已配置角色 → 删除其配置（幂等）
-      for (const id of AGENT_IDS) {
-        if (configured.includes(id) && !selected.has(id)) deleteGptSovitsVoice(id);
+        // 演示模式：路径信息直接丢弃，不写 voices.json。
+        if (!demoMode) {
+          setGptSovitsVoice(id, { gptWeightsPath: ckpt, sovitsWeightsPath: pth, refAudioPath: ref, promptText: refText });
+        }
       }
       rl3.close();
     }
@@ -588,22 +609,26 @@ async function main() {
         // 多选 TUI 独占 stdin raw mode（此后不再用 rl.question；rl 已在 TTS Provider TUI 前关闭）。
 
         // 已有音色的角色锁定 [*]（迁移已在模块加载时完成，此处读到的 voices.json 已是新格式）。
-        const missing = getMissingAgents();
+        // 演示模式：必然显示 TUI，预标记角色锁定为已克隆，其余未克隆。
+        const missing = demoMode ? AGENT_IDS : getMissingAgents();
         if (missing.length === 0) {
           console.log(chalk.green(t(
             "  所有角色已有音色，无需克隆。如需重新克隆请运行 arona voice add <角色名>。",
             "  All characters already have voices. Use `arona voice add <name>` to re-clone.",
           )));
         } else {
-          const options = AGENT_IDS.map((id) => ({
-            id,
-            label: hasVoice(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
-            locked: hasVoice(id),
-          }));
+          const clonedIds = demoMode ? DEMO_PRECLONED_AGENTS : AGENT_IDS.filter((id) => hasVoice(id));
+          const options = lockExisting(
+            AGENT_IDS.map((id) => ({
+              id,
+              label: clonedIds.includes(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
+            })),
+            clonedIds,
+          );
           const selected = await multiSelect(
             t("选择要克隆音色的角色", "Select characters to clone voices."),
             options,
-            new Set<string>(), // 已有音色者 locked 强制 [*]，未克隆者默认 [ ]
+            new Set<string>(), // 已有音色者经 lockExisting 锁定，未克隆者默认 [ ]
             t(
               "  ↑/↓ 切换 · 空格选中 [*] · 回车克隆 · Esc 取消",
               "  ↑/↓ move · Space select [*] · Enter clone · Esc cancel",
@@ -618,7 +643,7 @@ async function main() {
             )));
             return;
           } else if (selected.size === 0) {
-            console.log(chalk.cyan(t("  未选择任何角色，跳过音色克隆（TTS 将保持静音）。", "  No character selected, skipping voice cloning (TTS stays muted).")));
+            console.log(chalk.cyan(t("  未选择任何角色，跳过音色克隆。", "  No character selected, skipping voice cloning.")));
           } else {
             const model = existing.ttsModel || "qwen-audio-3.0-tts-plus";
             for (const id of AGENT_IDS) {
@@ -629,13 +654,13 @@ async function main() {
                 continue;
               }
               if (demoMode) {
-                // 演示模式：不调用 voice_clone.py、不写 voices.json，静默 5s 后显示成功。
-                console.log(chalk.cyan(t(`  正在克隆 ${getAgentLabel(id)} 的音色...`, `Cloning voice for ${getAgentLabel(id)}...`)));
+                // 演示模式：不调用 voice_clone.py、不写 voices.json，5s 模拟后显示成功。
+                console.log(chalk.cyan(t(`  正在克隆 ${getAgentLabel(id)} 的音色...`, `  Cloning ${getAgentLabel(id)}'s voice...`)));
                 await new Promise((r) => setTimeout(r, 5000));
                 console.log(chalk.green(t(`  ✓ ${getAgentLabel(id)} 音色克隆成功`, `  ✓ ${getAgentLabel(id)} voice cloned.`)));
                 continue;
               }
-              console.log(chalk.cyan(t(`  正在克隆 ${getAgentLabel(id)} 的音色（可能需要 1-2 分钟）...`, `  Cloning ${getAgentLabel(id)}'s voice (may take 1-2 minutes)...`)));
+              console.log(chalk.cyan(t(`  正在克隆 ${getAgentLabel(id)} 的音色...`, `  Cloning ${getAgentLabel(id)}'s voice...`)));
               try {
                 const voiceId = await cloneVoice(id, ttsApiKey, model);
                 setVoiceId(id, voiceId);

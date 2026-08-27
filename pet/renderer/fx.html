@@ -20,10 +20,55 @@
       height: 100%;
       pointer-events: none;
     }
+    /* 文字气泡容器：铺满窗口，纯展示（特效窗整体 setIgnoreMouseEvents） */
+    #fx-bubbles {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+    }
+    /* 角色语音气泡（从桌宠窗口迁入）：位置由 main.cjs 按桌宠窗口姿态换算后下发，
+       显示在角色头部侧上方；.flip 时小尾巴镜像到右侧指向角色。淡出用 opacity 过渡 */
+    .bubble {
+      position: absolute;
+      max-width: 220px;
+      padding: 8px 12px;
+      box-sizing: border-box;
+      background: rgba(20, 22, 34, 0.82);
+      border-radius: 14px;
+      color: #fff;
+      font-size: 13px;
+      line-height: 1.45;
+      text-align: left;
+      white-space: pre-line;
+      word-break: break-all;
+      opacity: 1;
+      transition: opacity 0.25s ease;
+    }
+    .bubble::after {
+      content: "";
+      position: absolute;
+      left: -12px;
+      top: 50%;
+      transform: translateY(-50%);
+      border-top: 8px solid transparent;
+      border-bottom: 8px solid transparent;
+      border-right: 12px solid rgba(20, 22, 34, 0.82);
+    }
+    .bubble.flip::after {
+      left: auto;
+      right: -12px;
+      border-right: none;
+      border-left: 12px solid rgba(20, 22, 34, 0.82);
+    }
+    .bubble.hidden {
+      opacity: 0;
+    }
   </style>
 </head>
 <body>
   <div id="fx"></div>
+  <div id="fx-bubbles"></div>
   <script src="../../node_modules/ba-click-fx/dist/ba-click-fx.iife.js"></script>
   <script src="fx.js"></script>
 </body>

@@ -77,6 +77,10 @@ export class Repl {
   // 斜杠命令菜单（渲染与状态机封装在 SlashMenu 中）
   private menu = new SlashMenu();
   private menuKeyListener: ((s: any, k: any) => void) | null = null;
+  // 本次按键中被菜单消费、需要拦截 readline 内置处理的键名（up/down 的历史回溯）。
+  // 注意 readline 有自己的 stdin "keypress" 监听器，prependListener 只保证我们先执行，
+  // 无法阻止它处理同一按键——因此 start() 里包装 rl._ttyWrite，读到该字段时短路内置逻辑。
+  private swallowedKeyName: string | null = null;
   // 本地快照式 undo/redo 管理器（不依赖 git）
   private undoManager: UndoManager;
 
@@ -170,7 +174,7 @@ export class Repl {
         (this.rl as any).line = "";
         (this.rl as any).cursor = 0;
         process.stdout.write(chalk.yellow("\n[aborted]\n"));
-        // 标记刚中断过，下一次 Ctrl+C 直接退出（不再提示"再按一次"）
+        // 标记刚中断过，下一次 Ctrl+C 直接退出
         this.sigintCount = 1;
         if (this.sigintTimer) clearTimeout(this.sigintTimer);
         this.sigintTimer = setTimeout(() => {
@@ -528,7 +532,23 @@ export class Repl {
       (process.stdin as any).setRawMode?.(true);
     }
 
-    // 解析热键已移除：STT 热键改为全局监听（pynput），见 startHotkeyHook()
+    // 包装 readline 内部的 _ttyWrite：被菜单消费的导航键（见 swallowedKeyName，由
+    // menuKeyListener 置位）在此短路，readline 不再做历史回溯/移动光标。此前菜单打开时
+    // 按 ↑ 会同时触发 menu.move 和内置历史回溯——输入行直接被"上次执行的命令"覆盖。
+    // 每次调用后立即清标志：一个 keypress 事件只吞一次。
+    // _ttyWrite 是 readline 私有 API，带 typeof 守卫：不可用时优雅降级为旧行为。
+    const rlAny = this.rl as any;
+    if (typeof rlAny._ttyWrite === "function") {
+      const origTtyWrite = rlAny._ttyWrite;
+      rlAny._ttyWrite = (s: string, key: any) => {
+        const swallowed = !!key?.name && this.swallowedKeyName === key.name;
+        this.swallowedKeyName = null;
+        if (swallowed) return;
+        origTtyWrite.call(this.rl, s, key);
+      };
+    }
+
+    // STT 热键为全局监听（pynput），见 startHotkeyHook()
 
     this.rl.prompt();
 
@@ -540,8 +560,15 @@ export class Repl {
       if (this.menu.isOpen()) {
         if (key.name === "escape") { this.menu.close(this.rl); return; }
         if (key.name === "up" || key.name === "down") {
-          this.menu.move(key.name === "up" ? -1 : 1, this.rl);
-          return; // 不转发给 readline（避免移动输入光标）
+          if (this.menu.move(key.name === "up" ? -1 : 1, this.rl)) {
+            // 菜单消费了这次导航：吞掉，readline 不再做历史回溯/移动输入光标
+            this.swallowedKeyName = key.name;
+          } else {
+            // 菜单顶部按 ↑（仅此边界）：放行给 readline 做历史回溯——读取上次执行的命令。
+            // 缓冲区被改写后在微任务里刷新菜单（不再是斜杠前缀/完整命令名时自动关闭）。
+            queueMicrotask(() => this.menu.refresh(this.rl));
+          }
+          return;
         }
         // 行末再按 →：把选中指令填入输入框但不执行（用户可随后补参数/编辑，
         // 再自己 Enter）。光标不在行末时落到 readline 正常移动光标。
@@ -632,7 +659,7 @@ export class Repl {
   }
 
   private async processInput(input: string) {
-    // 桌宠手势（摸头/dizzy）不再拼进用户消息：落到主 Agent 发送边界注入（gesture_context.ts），
+    // 桌宠手势（摸头/dizzy）落到主 Agent 发送边界注入（gesture_context.ts），
     // 不进 state.messages → 子 Agent 复制主 session 历史时看不到、会话命名/存储零污染。
     // takeGesture 消费即清空由发送边界扩展完成，只注入最近一次。
     // 展开 @文件 / !命令 后走完整回合生命周期
@@ -771,7 +798,10 @@ export class Repl {
 
     // 子 Agent 的触发消息：固定短句（上下文在复制来的全量日志里，这里只负责"叫醒"它发言）
     const promptText = isSub
-      ? t("（现在轮到你，请简短发言）", "(It's your turn now, speak briefly)")
+      ? t(
+          `（你是${getAgentLabel(agentId)}。现在轮到你发言——保持你自己的身份和语气，不要扮演或模仿其他角色。请简短发言。）`,
+          `(You are ${getAgentLabel(agentId)}. It's your turn — stay in your own character and voice; do not play or mimic another character. Speak briefly.)`,
+        )
       : input;
 
     try {
@@ -855,13 +885,16 @@ export class Repl {
         console.warn(chalk.yellow(t(`撤销快照记录失败：${err instanceof Error ? err.message : err}`, `Failed to record undo snapshot: ${err instanceof Error ? err.message : err}`)));
       }
       this.isProcessing = false;
-      // 回合结束：恢复桌宠到 idle
-      // - TTS 启用 + 无残余播放 → 立即 reset；有残余由 onIdle(play_end) 兜底
-      // - TTS 禁用（--no-voice / 缺音色 / 切到无音色角色）→ 5s 后再撤表情和气泡
       this.turnEnded = true;
-      if (voice.isTtsEnabledFor(this.activeAgentId)) {
-        if (!this.ttsStream.isPending) pet.reset();
-      } else {
+      // 回合结束：恢复桌宠到 idle + 气泡兜底隐藏。
+      // 以"本回合实际是否还有待播内容"（isPending）为准，而非 TTS 配置开关——
+      // 否则 TTS 开启但整段 ≥50 字被 tts_stream.endTurn 整段跳过时，既没有 play_end
+      // 触发 onIdle 隐藏，又不走 5s 兜底定时器，气泡会永久停留在屏幕上。
+      // - 无待播（含 --no-voice / 缺音色 / ≥50 字整段静音）：立即 reset + 5s 后隐藏气泡
+      // - 有残余播放：由队列排空后的 onIdle(play_end) 隐藏气泡并 reset
+      // （onIdle 已先触发的场景下，这里的定时器重复隐藏一次已隐藏的气泡，无害）
+      if (!this.ttsStream.isPending) {
+        pet.reset();
         this.scheduleBubbleHide();
       }
       // 若被 Esc/Ctrl+C 中断，中断处理已重绘提示符，跳过重复 prompt
