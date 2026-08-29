@@ -50,10 +50,24 @@ function physicalLinesForRow(visibleText: string): number {
 
 type PetTextKind = "mid" | "final";
 
+/** 流式渲染配色（说话人前缀/思考行/工具行）；缺省为主/群聊子 Agent 的 magenta/dim/cyan */
+export interface RendererStyle {
+  speaker: (s: string) => string;
+  thinking: (s: string) => string;
+  tool: (s: string) => string;
+}
+
+const DEFAULT_STYLE: RendererStyle = {
+  speaker: (s) => chalk.magenta.bold(s),
+  thinking: (s) => chalk.dim(s),
+  tool: (s) => chalk.cyan(s),
+};
+
 export function createRenderer(
   onTurnEnd?: (text: string) => void,
   onPetText?: (kind: PetTextKind, data: string) => void,
   initialSpeakerLabel?: string,
+  style: RendererStyle = DEFAULT_STYLE,
 ) {
   let speakerLabel = initialSpeakerLabel;
   let inThinking = false;
@@ -105,13 +119,13 @@ export function createRenderer(
       );
       renderLines.push({
         visible: THINKING_PREFIX + visibleMsg,
-        styled: chalk.dim(THINKING_PREFIX + visibleMsg),
+        styled: style.thinking(THINKING_PREFIX + visibleMsg),
       });
     }
     for (const line of showTail) {
       renderLines.push({
         visible: THINKING_PREFIX + line,
-        styled: chalk.dim(THINKING_PREFIX + line),
+        styled: style.thinking(THINKING_PREFIX + line),
       });
     }
 
@@ -194,7 +208,7 @@ export function createRenderer(
                 }
                 inText = true;
                 if (speakerLabel && !textPrefixWritten) {
-                  process.stdout.write(chalk.magenta.bold(speakerLabel + "："));
+                  process.stdout.write(style.speaker(speakerLabel + "："));
                   textPrefixWritten = true;
                 }
               }
@@ -259,7 +273,7 @@ export function createRenderer(
             if (showToolDetails) {
               const name = event.toolName;
               const input = event.input ? JSON.stringify(event.input).slice(0, 100) : "";
-              process.stdout.write(chalk.cyan(`\n  → ${name} ${input}`.trimEnd() + "\n"));
+              process.stdout.write(style.tool(`\n  → ${name} ${input}`.trimEnd() + "\n"));
             }
             break;
 

@@ -554,6 +554,7 @@
     // 且残留 track 会持续 apply 末帧 → 必须在 complete 里显式 clearTrack（track5 不清理会
     // 把睁眼预设的眼睛盖成闭眼末帧）。
     blink() {
+      if (!agent.anims.blink) return false; // 无眨眼动画的角色（编码子Agent NPC 骨架未导出眨眼）
       if (patting) return false;
       if (currentPreset && presetClosedEye) return false;
       const entry = state.setAnimation(TRACK.blink, agent.anims.blink, false);

@@ -283,6 +283,47 @@ const KOHARU = {
   pat: { type: "none" },
 };
 
-const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO, hanako: HANAKO, koharu: KOHARU };
+// ---- Millennium / Justice（编码子Agent：主 Agent 经 create_subagent 派出时的临时窗口）----
+// 精灵图切换式（root/PC_Layer/Halo(halo) 三骨）；动画仅数字预设 00~07+99 + Idle_01，
+// **无 Eye_Close_01 眨眼动画**（anims 不配 blink，spine_layer 空值守卫跳过）。
+// 无情绪/摸头/dizzy/嘴型/TTS：emotions 置空（main.cjs set_emotion 对空映射一律 unknown 拒绝）、
+// 窗口 isMain=false 手势不响应、无 mouth 配置；桌宠只负责待机展示 + 最终报告气泡。
+
+const MILLENNIUM = {
+  id: "millennium",
+  // ⚠️ 目录拼写就是 Millenmium（少一个 n），勿"修正"成 Millennium → 资源 404 白屏
+  spineBase: "../../assets/blue-archive/Millenmium_NPC/spine/",
+  skelFile: "NP0036_spr.skel",
+  atlasFile: "NP0036_spr.atlas.txt",
+  // bounds 721×2606（h/w 3.61，高度占满窗口）→ 1.0
+  extraScale: 1,
+  anims: {
+    idle: "Idle_01",
+  },
+  bones: {},
+  emotions: {},
+  closedEyePresets: [],
+  noGazePresets: [],
+  pat: { type: "none" },
+};
+
+const JUSTICE = {
+  id: "justice",
+  spineBase: "../../assets/blue-archive/Justice_NPC/spine/",
+  skelFile: "Justice_normal1_spr.skel",
+  atlasFile: "Justice_normal1_spr.atlas.txt",
+  // bounds 565×2162（h/w 3.83，高度占满窗口）→ 1.0
+  extraScale: 1,
+  anims: {
+    idle: "Idle_01",
+  },
+  bones: {},
+  emotions: {},
+  closedEyePresets: [],
+  noGazePresets: [],
+  pat: { type: "none" },
+};
+
+const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO, hanako: HANAKO, koharu: KOHARU, millennium: MILLENNIUM, justice: JUSTICE };
 
 module.exports = { AGENTS };

@@ -14,7 +14,12 @@ export type MainAgentId = (typeof MAIN_AGENT_IDS)[number];
 export const SUB_AGENT_IDS = ["shiroko", "hoshino", "hanako", "koharu"] as const;
 export type SubAgentId = (typeof SUB_AGENT_IDS)[number];
 
-export const AGENT_IDS = [...MAIN_AGENT_IDS, ...SUB_AGENT_IDS] as const;
+// 编码子 Agent：仅由主 Agent 经 create_subagent 工具派出（每次调用新建独立 in-memory
+// session），不进 /change-agent、不进 settings、不进群聊轮询。
+export const CODING_AGENT_IDS = ["millennium", "justice"] as const;
+export type CodingAgentId = (typeof CODING_AGENT_IDS)[number];
+
+export const AGENT_IDS = [...MAIN_AGENT_IDS, ...SUB_AGENT_IDS, ...CODING_AGENT_IDS] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 
 /** 角色的中英双语显示名（供 TUI / 命令文案复用）。 */
@@ -32,6 +37,10 @@ export function getAgentLabel(id: AgentId): string {
       return t("浦和花子", "Hanako");
     case "koharu":
       return t("下江小春", "Koharu");
+    case "millennium":
+      return t("千禧年学员", "Millennium Student");
+    case "justice":
+      return t("正义实现部成员", "Justice Task Force Member");
   }
 }
 

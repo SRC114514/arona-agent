@@ -19,36 +19,13 @@ import { webSearchTool, webExtractTool, premiumTavilyTools } from "./tools/tavil
 import { createSkillTools } from "./tools/skill_tools.ts";
 import { readDocsTool } from "./tools/read_docs_tool.ts";
 import { connectMcpServers } from "./mcp.ts";
+import { makeCreateSubagentTool } from "./tools/create_subagent_tool.ts";
 import { InMemoryCredentialStore } from "./in_memory_credentials.ts";
 import { getMainAgent, getAgentLabel, type SubAgentId, type AgentId } from "./agent_registry.ts";
 import { speakerContextExtension } from "./speaker_context.ts";
 import { gestureContextExtension } from "./gesture_context.ts";
 import { t, getLang } from "./locale.ts";
-
-// Asia/Shanghai 当前时间，注入到 system prompt 供情境台词使用；语言随界面
-function nowStr(): string {
-  const locale = getLang() === "en" ? "en-US" : "zh-CN";
-  return new Intl.DateTimeFormat(locale, {
-    timeZone: "Asia/Shanghai",
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date());
-}
-
-/**
- * 由上下文窗口推导压缩预留 token（SDK shouldCompact: contextTokens > contextWindow - reserveTokens）。
- * 取窗口的 ~15% 并钳制在 [4096, 200000]：
- *   - 1M 窗口 → 150000（~85% 水位触发，与历史行为一致）
- *   - 64K → 9600 / 128K → 19200 / 200K → 30000（小窗口不再每轮误触发压缩）
- */
-function reserveTokensFor(contextWindow: number): number {
-  return Math.min(200000, Math.max(4096, Math.round(contextWindow * 0.15)));
-}
+import { nowStr, reserveTokensFor } from "./prompt_utils.ts";
 
 function buildSystemPrompt(memoryContent: string): string {
   const moodBaseline = loadMoodBaseline(memoryContent) || t("（无）", "(none)");
@@ -555,6 +532,8 @@ export async function initAgent(): Promise<{
     // /crawl /map /research 端点强制要求 API Key：无 key 时对 Agent 隐藏
     ...(config.tavilyApiKey ? premiumTavilyTools : []),
     ...mcpTools,
+    // 编码子Agent 派遣工具（仅主 Agent 可见；群聊子 Agent 白名单不含它）
+    makeCreateSubagentTool(modelRuntime, mcpTools),
   ];
 
   // 7. Tool allowlist (built-in + custom)

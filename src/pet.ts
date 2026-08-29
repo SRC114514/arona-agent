@@ -283,6 +283,16 @@ class PetBridge {
     this.send({ type: "text", agent: agentId, kind, data });
   }
 
+  /** 动态创建编码子Agent 临时窗口（create_subagent 派遣时；已存在则桌宠侧幂等忽略） */
+  spawnAgent(agentId: AgentId): void {
+    this.send({ type: "spawn_agent", agent: agentId });
+  }
+
+  /** 关闭编码子Agent 临时窗口（桌宠侧先隐藏气泡防残留漂浮，再关窗） */
+  closeAgent(agentId: AgentId): void {
+    this.send({ type: "close_agent", agent: agentId });
+  }
+
   /** 播放中实时音量（RMS 0~1）→ 桌宠嘴型 lip-sync */
   sendTtsLevel(agentId: AgentId, rms: number): void {
     this.send({ type: "tts_level", agent: agentId, rms });

@@ -456,6 +456,24 @@ function handleMessage(msg) {
     case "quit":
       app.quit();
       break;
+    case "spawn_agent": {
+      // 编码子Agent 临时窗口：合法 id 且未存在才创建（幂等）；index 用当前窗口数 →
+      // 默认位置在既有窗口之后错开
+      const id = msg.agent;
+      if (AGENTS[id] && !petWins.has(id)) createPetWindow(id, petWins.size);
+      break;
+    }
+    case "close_agent": {
+      const id = msg.agent && AGENTS[msg.agent] ? msg.agent : null;
+      if (id && petWins.has(id)) {
+        // 气泡画在全屏特效窗上，不随窗口关闭消失 → 先隐藏防残留漂浮
+        if (fxWin && !fxWin.isDestroyed()) {
+          fxWin.webContents.send("pet:bubble", { agent: id, kind: "hide" });
+        }
+        petWins.get(id)?.close(); // closed 回调负责从 petWins 删除
+      }
+      break;
+    }
   }
 }
 
