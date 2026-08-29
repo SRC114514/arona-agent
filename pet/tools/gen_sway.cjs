@@ -58,6 +58,26 @@ const SWAY_TARGETS = {
       bandMin: 800, bandMax: 1350, ampScale: 1, dyRatio: 0.35,
     },
   },
+  // Kei 身体 = CH0335C1(下身 y219~1195) + CH0335C(中身) + CH0335(上身) 三 mesh。
+  // 裙摆带 560~800：y<550 袜子/脚钉死；bandMax=800 避开 y=809.57 的 C1/C 共享顶点
+  // （deform 只动 C1，若共享顶点入带会造成两 mesh 接缝撕裂）。
+  kei: {
+    idle: "Idle_01",
+    main: {
+      slot: "CH0335C1", att: "CH0335C1", mode: "band",
+      bandMin: 560, bandMax: 800, ampScale: 1, dyRatio: 0.35,
+    },
+  },
+  // Aris 全身单 mesh（21 verts y243~2242，含拖地长发 ±766）：顶点稀疏，band 850~1500
+  // 只直接动裙摆区 (-452,1020)/(222,1489)，经三角形传导带动长发尾端轻微漂动（共用拓扑，
+  // 无法硬隔离，amp 保持小值）。
+  aris: {
+    idle: "Idle_01",
+    main: {
+      slot: "aris", att: "aris", mode: "band",
+      bandMin: 850, bandMax: 1500, ampScale: 1, dyRatio: 0.35,
+    },
+  },
 };
 
 function smoothstep(x) {
@@ -119,7 +139,7 @@ function main() {
   const args = process.argv.slice(2);
   const id = args.find((x) => !x.startsWith("--"));
   if (!id || !SWAY_TARGETS[id]) {
-    console.error("用法: node pet/tools/gen_sway.cjs <shiroko|hoshino|hanako|koharu> [--amp 4] [--keys 12] [--band=mn:mx]");
+    console.error("用法: node pet/tools/gen_sway.cjs <shiroko|hoshino|hanako|koharu|kei|aris> [--amp 4] [--keys 12] [--band=mn:mx]");
     process.exit(2);
   }
   const cfg = SWAY_TARGETS[id];
@@ -138,11 +158,15 @@ function main() {
 
   // 几何来源 = json 资产里的 mesh vertices（Hoshino 身体经 meshify_region 网格化后 skel 二进制里
   // 没有 mesh；Shiroko 的数值与 skel 一致，统一从 json 读最简单）
+  const is42 = require("../agents.cjs").AGENTS[id]?.spineVersion === "4.2";
   const jsonPath = path.join(base, `${id}_spr.json`);
   const root = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
   const anim = (root.animations[cfg.idle] ??= {});
-  const deform = (anim.deform ??= {});
-  const perSkin = (deform["default"] ??= {});
+  // deform 注入路径按版本：3.8 = deform.<skin>.<slot>.<att>；4.2 = attachments.<skin>.<slot>.<att>
+  //（帧内 vertices 语义两版相同 = 相对 setup 的增量，runtime 加回 setup）
+  const perSkin = is42
+    ? ((anim.attachments ??= {})["default"] ??= {})
+    : ((anim.deform ??= {})["default"] ??= {});
   const jsonSkin = (root.skins.find((s) => s.name === "default") || root.skins[0]).attachments;
 
   for (let tgt of [cfg.main]) {
@@ -158,7 +182,8 @@ function main() {
     const att = { vertices: attMap.vertices }; // genForTarget 只用 vertices
     const frames = genForTarget(att, tgt, amp * (tgt.ampScale ?? 1), keys, T);
     const perSlot = (perSkin[tgt.slot] ??= {});
-    perSlot[tgt.att] = frames;
+    // 3.8：attachment 名 → 帧数组；4.2：attachment 名 → { deform: 帧数组 }
+    perSlot[tgt.att] = is42 ? { deform: frames } : frames;
     // 报告参与摆动的顶点与权重
     const nv = att.vertices.length / 2;
     const parts = [];

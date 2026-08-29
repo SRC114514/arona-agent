@@ -9,7 +9,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { config, settingsExist, PROJECT_ROOT } from "./config.ts";
 import { t } from "./locale.ts";
-import { AGENT_IDS, getMainAgent } from "./agent_registry.ts";
+import { VOICE_AGENT_IDS, getMainAgent } from "./agent_registry.ts";
 import { getVoiceId, getGptSovitsVoice } from "./voices.ts";
 import { spawnCompat } from "./utils/spawn.ts";
 
@@ -305,8 +305,8 @@ async function main(): Promise<void> {
         if (badPaths.length > 0) {
           item("warn", t(`模型权重路径不存在：${badPaths.join("、")}`, `Model weight path(s) not found: ${badPaths.join(", ")}`));
         } else {
-          const hasGpt = !!gsv.gptModelPath || AGENT_IDS.some((id) => !!getGptSovitsVoice(id)?.gptWeightsPath?.trim());
-          const hasSovits = !!gsv.sovitsModelPath || AGENT_IDS.some((id) => !!getGptSovitsVoice(id)?.sovitsWeightsPath?.trim());
+          const hasGpt = !!gsv.gptModelPath || VOICE_AGENT_IDS.some((id) => !!getGptSovitsVoice(id)?.gptWeightsPath?.trim());
+          const hasSovits = !!gsv.sovitsModelPath || VOICE_AGENT_IDS.some((id) => !!getGptSovitsVoice(id)?.sovitsWeightsPath?.trim());
           if (hasGpt && hasSovits) {
             item("ok", t("模型权重已配置", "Model weights configured"));
           } else {

@@ -10,7 +10,7 @@ import {
   resolveModelPrefix,
   type TtsProvider,
 } from "./config.ts";
-import { AGENT_IDS, getAgentLabel, type AgentId } from "./agent_registry.ts";
+import { VOICE_AGENT_IDS, getAgentLabel, type AgentId } from "./agent_registry.ts";
 import { VOICE_AUDIO, cloneVoice, setVoiceId, getMissingAgents, hasVoice, DEMO_PRECLONED_AGENTS, getGptSovitsVoice, setGptSovitsVoice } from "./voices.ts";
 import { normalizeGptSovitsConfig } from "./tts_provider.ts";
 import { installGptSovitsDeps } from "./gpt_sovits_local.ts";
@@ -437,9 +437,9 @@ async function main() {
 
       // 多选要配置音色的角色：已配置者经 lockExisting 锁定为已克隆。
       // 演示模式：硬编码全未克隆，路径信息直接丢弃、不写 voices.json。
-      const configured: AgentId[] = demoMode ? [] : AGENT_IDS.filter((id) => getGptSovitsVoice(id));
+      const configured: AgentId[] = demoMode ? [] : VOICE_AGENT_IDS.filter((id) => getGptSovitsVoice(id));
       const options = lockExisting(
-        AGENT_IDS.map((id) => ({
+        VOICE_AGENT_IDS.map((id) => ({
           id,
           label: configured.includes(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
         })),
@@ -473,7 +473,7 @@ async function main() {
           rl3.question(prompt, (answer) => resolve(answer.trim()));
         });
 
-      for (const id of AGENT_IDS) {
+      for (const id of VOICE_AGENT_IDS) {
         if (!selected.has(id)) continue;
         const prev = getGptSovitsVoice(id) || {};
         console.log(chalk.bold.cyan(t(`\n  ${getAgentLabel(id)} 音色配置\n`, `\n  ${getAgentLabel(id)} voice config\n`)));
@@ -610,16 +610,16 @@ async function main() {
 
         // 已有音色的角色锁定 [*]（迁移已在模块加载时完成，此处读到的 voices.json 已是新格式）。
         // 演示模式：必然显示 TUI，预标记角色锁定为已克隆，其余未克隆。
-        const missing = demoMode ? AGENT_IDS : getMissingAgents();
+        const missing = demoMode ? VOICE_AGENT_IDS : getMissingAgents();
         if (missing.length === 0) {
           console.log(chalk.green(t(
             "  所有角色已有音色，无需克隆。如需重新克隆请运行 arona voice add <角色名>。",
             "  All characters already have voices. Use `arona voice add <name>` to re-clone.",
           )));
         } else {
-          const clonedIds = demoMode ? DEMO_PRECLONED_AGENTS : AGENT_IDS.filter((id) => hasVoice(id));
+          const clonedIds = demoMode ? DEMO_PRECLONED_AGENTS : VOICE_AGENT_IDS.filter((id) => hasVoice(id));
           const options = lockExisting(
-            AGENT_IDS.map((id) => ({
+            VOICE_AGENT_IDS.map((id) => ({
               id,
               label: clonedIds.includes(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
             })),
@@ -646,7 +646,7 @@ async function main() {
             console.log(chalk.cyan(t("  未选择任何角色，跳过音色克隆。", "  No character selected, skipping voice cloning.")));
           } else {
             const model = existing.ttsModel || "qwen-audio-3.0-tts-plus";
-            for (const id of AGENT_IDS) {
+            for (const id of VOICE_AGENT_IDS) {
               if (!selected.has(id)) continue;
               const voiceMp3 = VOICE_AUDIO[id];
               if (!existsSync(voiceMp3)) {

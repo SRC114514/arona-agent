@@ -291,8 +291,8 @@ class GptSovitsTtsProvider implements TtsProvider {
       sovitsWeightsPath: v?.sovitsWeightsPath?.trim() || "",
       refAudioPath,
       promptText,
-      // 参考语言：走默认素材固定 zh；自定义文字按内容自动判断（空→zh）
-      promptLang: usingBundled ? "zh" : detectPromptLang(promptText),
+      // 参考语言：按 voice_text.txt 内容自动判断（日文素材含假名判 ja，中文判 zh；空→zh）
+      promptLang: detectPromptLang(promptText),
       textLang: this.cfg.textLang,
     };
   }

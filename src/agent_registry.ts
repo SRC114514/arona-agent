@@ -1,6 +1,6 @@
 // Agent 注册表：主 Agent + 子 Agent 的桌宠形象与人格。
 // 主 Agent（arona | plana）由 /change-agent 单选，持久化到 settings.json#mainAgent。
-// 子 Agent（shiroko | hoshino | hanako | koharu）由 /change-agent 多选，持久化到 settings.json#subAgents。
+// 子 Agent（shiroko | hoshino | hanako | koharu | kei | aris）由 /change-agent 多选，持久化到 settings.json#subAgents。
 // 桌宠侧对应 pet/agents.cjs（ARONA_AGENT env 选主、ARONA_SUB_AGENTS env 选子窗口），
 // 人格侧对应 agent.ts 的 buildPrompt* + initSubAgent。
 
@@ -11,7 +11,7 @@ import { t } from "./locale.ts";
 export const MAIN_AGENT_IDS = ["arona", "plana"] as const;
 export type MainAgentId = (typeof MAIN_AGENT_IDS)[number];
 
-export const SUB_AGENT_IDS = ["shiroko", "hoshino", "hanako", "koharu"] as const;
+export const SUB_AGENT_IDS = ["shiroko", "hoshino", "hanako", "koharu", "kei", "aris"] as const;
 export type SubAgentId = (typeof SUB_AGENT_IDS)[number];
 
 // 编码子 Agent：仅由主 Agent 经 create_subagent 工具派出（每次调用新建独立 in-memory
@@ -21,6 +21,10 @@ export type CodingAgentId = (typeof CODING_AGENT_IDS)[number];
 
 export const AGENT_IDS = [...MAIN_AGENT_IDS, ...SUB_AGENT_IDS, ...CODING_AGENT_IDS] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
+
+/** 可配置音色的角色（主 + 聊天子 Agent）。编码子 Agent 无 voice.mp3/voice_sovits.mp3 素材，
+ *  不进 arona setup / arona voice add 的克隆与音色配置菜单。 */
+export const VOICE_AGENT_IDS = [...MAIN_AGENT_IDS, ...SUB_AGENT_IDS] as const;
 
 /** 角色的中英双语显示名（供 TUI / 命令文案复用）。 */
 export function getAgentLabel(id: AgentId): string {
@@ -37,6 +41,10 @@ export function getAgentLabel(id: AgentId): string {
       return t("浦和花子", "Hanako");
     case "koharu":
       return t("下江小春", "Koharu");
+    case "kei":
+      return t("天童凯伊", "Kei");
+    case "aris":
+      return t("天童爱丽丝", "Aris");
     case "millennium":
       return t("千禧年学员", "Millennium Student");
     case "justice":

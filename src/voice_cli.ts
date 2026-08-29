@@ -9,7 +9,7 @@ import * as readline from "readline";
 import { existsSync, readFileSync } from "fs";
 import chalk from "chalk";
 import { SETTINGS_FILE, verbose } from "./config.ts";
-import { AGENT_IDS, getAgentLabel, type AgentId } from "./agent_registry.ts";
+import { VOICE_AGENT_IDS, getAgentLabel, type AgentId } from "./agent_registry.ts";
 import { cloneVoice, hasVoice, setVoiceId, DEMO_PRECLONED_AGENTS, getGptSovitsVoice, setGptSovitsVoice } from "./voices.ts";
 import { multiSelect, lockExisting } from "./tui_select.ts";
 import { t } from "./locale.ts";
@@ -45,7 +45,7 @@ function readDemoMode(): boolean {
 }
 
 function isValidAgentId(id: string): id is AgentId {
-  return (AGENT_IDS as readonly string[]).includes(id);
+  return (VOICE_AGENT_IDS as readonly string[]).includes(id);
 }
 
 /**
@@ -59,8 +59,8 @@ async function configureGptSovitsVoice(name: string | undefined, demoMode: boole
   if (name) {
     if (!isValidAgentId(name)) {
       console.log(chalk.red(t(
-        `未知角色 "${name}"。可用角色：${AGENT_IDS.join("、")}`,
-        `Unknown character "${name}". Available: ${AGENT_IDS.join(", ")}`,
+        `未知角色 "${name}"。可用角色：${VOICE_AGENT_IDS.join("、")}`,
+        `Unknown character "${name}". Available: ${VOICE_AGENT_IDS.join(", ")}`,
       )));
       process.exit(1);
     }
@@ -68,9 +68,9 @@ async function configureGptSovitsVoice(name: string | undefined, demoMode: boole
   } else {
     // 已配置者经 lockExisting 锁定为已克隆。
     // 演示模式：硬编码全未克隆。
-    const configured: AgentId[] = demoMode ? [] : AGENT_IDS.filter((id) => getGptSovitsVoice(id));
+    const configured: AgentId[] = demoMode ? [] : VOICE_AGENT_IDS.filter((id) => getGptSovitsVoice(id));
     const options = lockExisting(
-      AGENT_IDS.map((id) => ({
+      VOICE_AGENT_IDS.map((id) => ({
         id,
         label: configured.includes(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
       })),
@@ -89,7 +89,7 @@ async function configureGptSovitsVoice(name: string | undefined, demoMode: boole
       console.log(chalk.cyan(t("已取消。", "Cancelled.")));
       return;
     }
-    targets.push(...AGENT_IDS.filter((id) => selected.has(id)));
+    targets.push(...VOICE_AGENT_IDS.filter((id) => selected.has(id)));
   }
 
   if (targets.length === 0) {
@@ -261,8 +261,8 @@ async function run(argv: string[]): Promise<void> {
     // 指定单个角色
     if (!isValidAgentId(name)) {
       console.log(chalk.red(t(
-        `未知角色 "${name}"。可用角色：${AGENT_IDS.join("、")}`,
-        `Unknown character "${name}". Available: ${AGENT_IDS.join(", ")}`,
+        `未知角色 "${name}"。可用角色：${VOICE_AGENT_IDS.join("、")}`,
+        `Unknown character "${name}". Available: ${VOICE_AGENT_IDS.join(", ")}`,
       )));
       process.exit(1);
     }
@@ -283,9 +283,9 @@ async function run(argv: string[]): Promise<void> {
 
   // 无参：TUI 展示全部角色（主 Agent + 子 Agent）。
   // 演示模式：Arona/Plana/Shiroko/Hoshino 显示为已克隆，其余显示为未克隆。
-  const clonedIds = demoMode ? DEMO_PRECLONED_AGENTS : AGENT_IDS.filter((id) => hasVoice(id));
+  const clonedIds = demoMode ? DEMO_PRECLONED_AGENTS : VOICE_AGENT_IDS.filter((id) => hasVoice(id));
   const options = lockExisting(
-    AGENT_IDS.map((id) => ({
+    VOICE_AGENT_IDS.map((id) => ({
       id,
       label: clonedIds.includes(id) ? `${getAgentLabel(id)}${t("（已克隆）", " (cloned)")}` : getAgentLabel(id),
     })),
@@ -311,7 +311,7 @@ async function run(argv: string[]): Promise<void> {
     return;
   }
 
-  for (const id of AGENT_IDS) {
+  for (const id of VOICE_AGENT_IDS) {
     if (!selected.has(id)) continue;
     await cloneOne(id, ttsApiKey, ttsModel, demoMode);
   }

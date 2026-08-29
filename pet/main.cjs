@@ -28,9 +28,11 @@ const AGENT_IDS = [MAIN_AGENT_ID, ...SUB_AGENT_IDS];
 
 const PREFIX = "###PET###";
 const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
-const WIN_W = 320; // 窗口 = Spine 角色渲染区本体（收窄以避免透明区域拦截点击造成误触；角色尺寸不变）
+const WIN_W = 480; // 窗口 = Spine 角色渲染区本体；480 使宽骨架角色（kei 长发/aris 拖地发）满高显示不裁切。
+                   // 透明区拦点击的副作用由「动态穿透」兜底：初始 setIgnoreMouseEvents(true,{forward})，
+                   // renderer 按光标处 alpha 经 pet:clickable 切换（见 pet:clickable IPC）
 const WIN_H = 674;
-const SUB_OFFSET_X = 340; // 子窗口默认横向错开（略大于 WIN_W）
+const SUB_OFFSET_X = 500; // 子窗口默认横向错开（略大于 WIN_W）
 const SUB_OFFSET_Y = 40;
 
 // --verbose（src/pet.ts 注入 ARONA_PET_VERBOSE=1 + --enable-logging）：
@@ -126,6 +128,9 @@ function createPetWindow(agentId, index) {
     },
   });
   bw.setAlwaysOnTop(true, "screen-saver");
+  // 初始鼠标穿透（透明区放行点击）；renderer 启动后按光标处像素 alpha 经 pet:clickable 切换。
+  // forward:true = 穿透期间仍收 mousemove（renderer 不依赖它采样，主进程轮询兜底，双保险）
+  bw.setIgnoreMouseEvents(true, { forward: true });
   if (process.platform === "darwin") {
     bw.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   }
@@ -408,6 +413,12 @@ ipcMain.on("pet:dragend", (e) => {
 
 ipcMain.on("pet:shake", (e) => send({ type: "shake", agent: agentBySender(e.sender) }));
 ipcMain.on("pet:dizzy", (e) => send({ type: "dizzy", agent: agentBySender(e.sender) }));
+
+// 动态鼠标穿透：光标在角色不透明像素上 → 窗口可点（拖动/摸头）；透明区 → 放行点击到下层应用
+ipcMain.on("pet:clickable", (e, flag) => {
+  const bw = windowByAgent(agentBySender(e.sender));
+  if (bw && !bw.isDestroyed()) bw.setIgnoreMouseEvents(!flag, { forward: true });
+});
 
 ipcMain.handle("pet:get-agent-config", (e) => {
   const agentId = agentBySender(e.sender);

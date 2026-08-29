@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("petAPI", {
   dizzy: () => ipcRenderer.send("pet:dizzy"),
   // gx/gy：全局屏幕坐标（按住期间 renderer 用于晃动检测补采样，出窗不断流）
   onCursor: (cb) => ipcRenderer.on("pet:cursor", (_e, x, y, gx, gy) => cb(x, y, gx, gy)),
+  // 动态鼠标穿透：光标在角色不透明像素上 = true → 窗口可点；透明区 false → 点击放行
+  setClickable: (flag) => ipcRenderer.send("pet:clickable", flag),
   // 点击/拖尾特效：桌宠窗口发全局屏幕坐标 → 主进程 → 全屏特效窗口收
   fxDown: (x, y) => ipcRenderer.send("pet:fx-down", x, y),
   fxMove: (x, y) => ipcRenderer.send("pet:fx-move", x, y),

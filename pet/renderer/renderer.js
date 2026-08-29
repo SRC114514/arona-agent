@@ -126,6 +126,26 @@ let dizzyTimer = null;    // 松手后的延迟恢复定时器
 // 堵"摸头触发→离开头部区退出→继续大幅晃又触发 dizzy"（及反向）的串扰。
 let interactionDone = false;
 
+// ---- 动态鼠标穿透（窗口 480 宽，透明区放行点击到下层应用）----
+// 光标处 alpha（spine_layer 渲染循环内采样，经 onCursor 时机读取）滞回阈值防角色边缘抖动：
+// 进入可点 ≥24，退出 <10；拖动/摸头手势期间强制可点（松手瞬间的 mouseup 不能丢）。
+const CLICK_ALPHA_ON = 24;
+const CLICK_ALPHA_OFF = 10;
+let clickable = false;
+function updateClickable() {
+  let want;
+  if (dragging || shaking) {
+    want = true;
+  } else {
+    const a = window.SpineLayer.getPickAlpha ? window.SpineLayer.getPickAlpha() : 255;
+    want = clickable ? a >= CLICK_ALPHA_OFF : a >= CLICK_ALPHA_ON;
+  }
+  if (want !== clickable) {
+    clickable = want;
+    window.petAPI.setClickable(clickable);
+  }
+}
+
 // 采样入列 + 600ms 窗口裁剪（mousemove 与主进程光标轮询两路共用）
 function pushSample(x, y) {
   const now = performance.now();
@@ -287,6 +307,7 @@ function onMouseUp() {
   window.petAPI.fxUp();
   dragging = false;
   samples = [];
+  updateClickable(); // 松手后按光标处 alpha 重估（可能落在透明区 → 恢复穿透）
   if (shaking) {
     // 松手结束摸头：crossfade 回 Idle，头部随平滑系数回正
     shaking = false;
@@ -335,6 +356,7 @@ async function init() {
   window.petAPI.onCursor((x, y, gx, gy) => {
     window.SpineLayer.setCursor(x, y);
     if (dragging) pushSample(gx, gy);
+    updateClickable();
   });
   // 基底稳定态：开启空闲注视 + 眨眼调度
   window.SpineLayer.setGaze(true);

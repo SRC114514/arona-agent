@@ -283,6 +283,93 @@ const KOHARU = {
   pat: { type: "none" },
 };
 
+// ---- Kei / Aris（游戏开发部，精灵图切换式）----
+// 结构与 hanako/koharu 同构（root/PC_Layer/Halo 三骨）；预设：
+//   kei = 00~33 + 99（35 个，含 04_embarassed 素材原生拼写）；aris = 00~19 + 99（21 个）。
+// aris = skel_to_json(3.8.96 二进制) + gen_sway（全身单 mesh，band 850~1500），3.8 runtime。
+// kei 源骨骼是 **Spine 4.2.33**（3.8 runtime 不兼容，降级转换有 region 附件错位缺陷已弃用），
+//   走原生 4.2 双运行时（spineVersion: "4.2"，pet/vendor/spine/spine-webgl-4.2.js）：
+//   kei_spr.json = wang606/SpineSkeletonDataConverter 同版本 skel→JSON（供 gen_sway 注入 deform；
+//   4.2 JSON 的 deform 路径是 attachments.<skin>.<slot>.<att>，3.8 是 deform.<skin>.<slot>.<att>），
+//   atlas/png 用素材原生 4.x 文件（CH0335_noweapon_spr.*，4.2 解析器原生支持）。
+// 重新生成顺序：aris = skel_to_json → gen_sway；kei = （wang606 同版本转 JSON）→ gen_sway。
+
+const KEI = {
+  id: "kei",
+  spineVersion: "4.2",
+  spineBase: "../../assets/blue-archive/kei/spine/",
+  skelFile: "kei_spr.json",
+  atlasFile: "CH0335_noweapon_spr.atlas.txt",
+  // bounds 1261×2171：480 窗宽下恰好高度占满（hair 391px < 480 无裁切）→ 保持 1.0
+  extraScale: 1,
+  anims: {
+    idle: "Idle_01",
+    blink: "Eye_Close_01",
+  },
+  bones: {},
+  // 数字预设 00~33+99；01~06 与 hanako 同名附件（01_normal~06_depressed），映射初版复制
+  // hanako，07~33 差异预设经 emotion_map_editor 网页目视重调
+  emotions: {
+    angry: "25",
+    assured: "03",
+    curious: "02",
+    delighted: "03",
+    desire: "03",
+    dizzy: "99",
+    doubt: "23",
+    dreaming: "99",
+    enjoy: "99",
+    excited: "03",
+    jealous: "23",
+    love: "08",
+    saying: "02",
+    scared: "17",
+    shame: "21",
+    smile: "19",
+    tired: "99",
+  },
+  closedEyePresets: [],
+  noGazePresets: [],
+  pat: { type: "none" },
+};
+
+const ARIS = {
+  id: "aris",
+  spineBase: "../../assets/blue-archive/aris/spine/",
+  skelFile: "aris_spr.json",
+  atlasFile: "aris_spr.atlas.txt",
+  // bounds 1530×2118：480 窗宽下 hair 480px 恰好满宽、高度 fill 98.5% → 保持 1.0
+  extraScale: 1,
+  anims: {
+    idle: "Idle_01",
+    blink: "Eye_Close_01",
+  },
+  bones: {},
+  // 数字预设 00~19+99；01~06 与 hanako 同名附件，映射初版复制 hanako
+  emotions: {
+    angry: "04",
+    assured: "00",
+    curious: "01",
+    delighted: "03",
+    desire: "03",
+    dizzy: "10",
+    doubt: "12",
+    dreaming: "99",
+    enjoy: "07",
+    excited: "03",
+    jealous: "04",
+    love: "03",
+    saying: "03",
+    scared: "10",
+    shame: "13",
+    smile: "03",
+    tired: "99",
+  },
+  closedEyePresets: [],
+  noGazePresets: [],
+  pat: { type: "none" },
+};
+
 // ---- Millennium / Justice（编码子Agent：主 Agent 经 create_subagent 派出时的临时窗口）----
 // 精灵图切换式（root/PC_Layer/Halo(halo) 三骨）；动画仅数字预设 00~07+99 + Idle_01，
 // **无 Eye_Close_01 眨眼动画**（anims 不配 blink，spine_layer 空值守卫跳过）。
@@ -324,6 +411,6 @@ const JUSTICE = {
   pat: { type: "none" },
 };
 
-const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO, hanako: HANAKO, koharu: KOHARU, millennium: MILLENNIUM, justice: JUSTICE };
+const AGENTS = { arona: ARONA, plana: PLANA, shiroko: SHIROKO, hoshino: HOSHINO, hanako: HANAKO, koharu: KOHARU, kei: KEI, aris: ARIS, millennium: MILLENNIUM, justice: JUSTICE };
 
 module.exports = { AGENTS };

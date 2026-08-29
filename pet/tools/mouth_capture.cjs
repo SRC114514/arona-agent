@@ -78,7 +78,7 @@ function zoom(cap, src) {
 app.whenReady().then(() => {
   fs.mkdirSync(OUT, { recursive: true });
   win = new BrowserWindow({
-    width: 320, height: 674, transparent: true, frame: false, show: true,
+    width: 480, height: 674, transparent: true, frame: false, show: true,
     webPreferences: { preload: path.join(PET, "preload.cjs"), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
   });
   win.webContents.on("console-message", (_e, _a, b) => console.log("[R]", b));

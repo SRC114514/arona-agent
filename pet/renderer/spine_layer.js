@@ -53,6 +53,11 @@
   let canvasRenderer2d = null;  // spine.canvas.SkeletonRenderer（降级模式）
   let mode = "webgl";           // "webgl" | "canvas2d"（WebGL 创建失败自动降级）
   let cam2d = { scale: 1, cx: 0, cy: 0, cw: 1, ch: 1 }; // 2D 模式投影参数（fitCamera 填充）
+  // 双运行时（init 时按 agent.spineVersion 选）：S = spine 核心 API，SW = webgl 模块。
+  // 3.8：spine / spine.webgl（vendored UMD 全局）；4.2：window.spine42（iife bundle，扁平导出，
+  // SW = spine42 本身）。4.2 用于 kei（源骨骼 4.2.33，3.8 降级转换有 region 附件错位缺陷）。
+  let S = null;
+  let SW = null;
   let assetManager = null;
   let skeleton = null;
   let state = null;
@@ -96,7 +101,7 @@
     const cw = canvas.clientWidth || window.innerWidth;
     const ch = canvas.clientHeight || window.innerHeight;
     if (mode === "webgl") {
-      const p = new spine.webgl.Vector3(x, y, 0);
+      const p = new SW.Vector3(x, y, 0);
       renderer.camera.screenToWorld(p, cw, ch);
       return { x: p.x, y: p.y };
     }
@@ -110,8 +115,8 @@
   // extraScale 按角色参数化（agents.cjs）：Arona 1.0；Plana 1.10——其 bounds 比例偏宽、
   // 宽度先顶格导致身高只占窗口 91%，放大后接近 Arona 的满窗高度（数据见 CLAUDE.md A4）
   function fitCamera() {
-    const offset = new spine.Vector2();
-    const size = new spine.Vector2();
+    const offset = new S.Vector2();
+    const size = new S.Vector2();
     skeleton.getBounds(offset, size, []);
     const cw = canvas.clientWidth || window.innerWidth;
     const ch = canvas.clientHeight || window.innerHeight;
@@ -323,6 +328,32 @@
     }
   }
 
+  // ---- 光标处 alpha 采样（动态鼠标穿透用）：渲染循环内每 2 帧读 1×1 像素 ----
+  // 必须在 draw 同一任务内 readPixels（默认 framebuffer 无 preserveDrawingBuffer，跨任务读是清除态）。
+  // B16 提示的 "GPU stall due to ReadPixels" 属 Performance 级驱动噪音，非 verbose 已静默缓冲。
+  let pickFrame = 0;
+  let pickAlpha = 0; // 0~255；光标在画布外 = 0
+  function pickCursorAlpha() {
+    pickAlpha = 0;
+    if (!cursorPos || !canvas) return;
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    const x = cursorPos.x;
+    const y = cursorPos.y;
+    if (x < 0 || y < 0 || x >= cw || y >= ch) return;
+    const dpr = window.devicePixelRatio || 1;
+    const px = Math.min(canvas.width - 1, Math.max(0, Math.round(x * dpr)));
+    // GL readPixels 原点在左下：翻转 y
+    const py = Math.min(canvas.height - 1, Math.max(0, Math.round(canvas.height - y * dpr)));
+    if (mode === "webgl") {
+      const buf = new Uint8Array(4);
+      gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      pickAlpha = buf[3];
+    } else {
+      pickAlpha = ctx2d.getImageData(px, py, 1, 1).data[3];
+    }
+  }
+
   function loop(now) {
     const dt = clamp((now - lastT) / 1000, 0, 0.1); // 防标签页休眠跳变
     lastT = now;
@@ -335,7 +366,7 @@
     state.apply(skeleton);
     applyMouth();
     applyManualBones();
-    skeleton.updateWorldTransform();
+    skeleton.updateWorldTransform(S.Physics ? S.Physics.update : undefined);
     if (mode === "webgl") {
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -355,6 +386,7 @@
       c.translate(-cam2d.cx, -cam2d.cy);
       canvasRenderer2d.draw(skeleton);
     }
+    if ((pickFrame++ & 1) === 0) pickCursorAlpha();
     requestAnimationFrame(loop);
   }
 
@@ -374,6 +406,16 @@
     // 先取当前 Agent 配置（agents.cjs 单一事实源，经主进程 IPC 注入）
     agent = await window.petAPI.getAgentConfig();
     if (!agent) throw new Error("pet:get-agent-config 未返回配置");
+    // 双运行时选择：3.8 = 全局 spine（webgl 在 spine.webgl）；4.2 = spine-webgl-4.2.js 注入的
+    // window.spine42（扁平导出，core 与 webgl 类同层）。kei 用 4.2（源骨骼 4.2.33）。
+    if (agent.spineVersion === "4.2") {
+      S = window.spine42;
+      SW = window.spine42;
+      if (!S) throw new Error("spine42 运行时未加载（检查 index.html 是否引入 spine-webgl-4.2.js）");
+    } else {
+      S = window.spine;
+      SW = window.spine.webgl;
+    }
     canvas = targetCanvas;
     gl = canvas.getContext("webgl", {
       alpha: true,
@@ -383,18 +425,22 @@
     if (gl) {
       // ---- WebGL 模式（macOS 主路径；Windows 需 enable-unsafe-swiftshader 软渲染）----
       mode = "webgl";
-      assetManager = new spine.webgl.AssetManager(gl, agent.spineBase);
+      assetManager = new SW.AssetManager(gl, agent.spineBase);
       // 纹理上传时预乘（UNPACK_PREMULTIPLY_ALPHA_WEBGL），与 drawSkeleton(skeleton, true) 的
-      // premultiplied 混合配套。注意：本 vendored 3.8 构建的 GLTexture 只有 (context, image, useMipMaps)
-      // 三个参数、无 premultiply 开关——必须在上传前手动设 pixelStorei，否则边缘 RGB 不预乘
-      // 会与 premultiplied 混合冲突，半透明边缘爆白（"白边像抠图没抠好"+ 虹膜被冲淡成白）。
+      // premultiplied 混合配套。3.8/4.2 的 GLTexture 均只有 (context, image, useMipMaps) 且上传
+      // 时不主动设预乘——必须在上传前手动设 pixelStorei，否则边缘 RGB 不预乘会与 premultiplied
+      // 混合冲突，半透明边缘爆白（"白边像抠图没抠好"+ 虹膜被冲淡成白）。
       assetManager.textureLoader = (image) => {
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-        const tex = new spine.webgl.GLTexture(gl, image, false);
+        const tex = new SW.GLTexture(gl, image, false);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
         return tex;
       };
     } else {
+      if (agent.spineVersion === "4.2") {
+        // 4.2 未 vendor spine-canvas（2D 渲染器与 webgl bundle 的 core 混用有 instanceof 风险）
+        throw new Error("4.2 运行时暂无 Canvas 2D 降级（WebGL 不可用）");
+      }
       // ---- Canvas 2D 降级（WebGL 不可用时的保险丝，如 Windows 软渲染失败/远程桌面）----
       // getContext("webgl") 返回 null 不锁定 canvas 类型，可再取 2d。
       // canvas 2D 无 premultiplied 管线问题（drawImage 由浏览器按 straight alpha 合成）。
@@ -402,7 +448,7 @@
       console.warn("[pet:render] WebGL 不可用，已降级 Canvas 2D 渲染（性能较低，仅兜底）");
       ctx2d = canvas.getContext("2d");
       if (!ctx2d) throw new Error("Canvas 2D 也不可用");
-      assetManager = new spine.AssetManager(
+      assetManager = new S.AssetManager(
         (img) => ({ getImage: () => img }), // 最小 Texture：仅需 getImage()（drawImages 只读图）
         agent.spineBase
       );
@@ -417,17 +463,17 @@
     if (!ok) throw new Error("Spine 资源加载失败: " + JSON.stringify(assetManager.errors));
 
     const atlas = assetManager.get(agent.atlasFile);
-    const atlasLoader = new spine.AtlasAttachmentLoader(atlas);
+    const atlasLoader = new S.AtlasAttachmentLoader(atlas);
     const skelData = isJson
-      ? new spine.SkeletonJson(atlasLoader).readSkeletonData(
+      ? new S.SkeletonJson(atlasLoader).readSkeletonData(
           JSON.parse(assetManager.get(agent.skelFile))
         )
-      : new spine.SkeletonBinary(atlasLoader).readSkeletonData(
+      : new S.SkeletonBinary(atlasLoader).readSkeletonData(
           assetManager.get(agent.skelFile)
         );
-    skeleton = new spine.Skeleton(skelData);
+    skeleton = new S.Skeleton(skelData);
     skeleton.setToSetupPose();
-    skeleton.updateWorldTransform();
+    skeleton.updateWorldTransform(S.Physics ? S.Physics.update : undefined);
 
     headBone = agent.bones?.head ? skeleton.findBone(agent.bones.head) : null;
     headRestRot = headBone ? headBone.data.rotation : 0;
@@ -439,13 +485,13 @@
     // 嘴型 lip-sync 配置（无嘴槽角色缺省 mouth → 静默关闭）
     mouthCfg = agent.mouth && agent.mouth.slot ? agent.mouth : null;
 
-    const stateData = new spine.AnimationStateData(skelData);
+    const stateData = new S.AnimationStateData(skelData);
     stateData.defaultMix = DEFAULT_MIX;
-    state = new spine.AnimationState(stateData);
+    state = new S.AnimationState(stateData);
     state.setAnimation(TRACK.main, agent.anims.idle, true);
 
     if (mode === "webgl") {
-      renderer = new spine.webgl.SceneRenderer(canvas, gl, true);
+      renderer = new SW.SceneRenderer(canvas, gl, true);
     } else {
       canvasRenderer2d = new spine.canvas.SkeletonRenderer(ctx2d);
       // drawImages 模式会跳过 mesh attachment（骨架网格变形部分不显示），
@@ -653,6 +699,11 @@
       pinBodyT = t === undefined ? 0 : t;
     },
 
+    // 光标处不透明度（0~255；循环内每 2 帧采样一次，renderer 据此切动态鼠标穿透）
+    getPickAlpha() {
+      return pickAlpha;
+    },
+
     // ---- 嘴型 lip-sync（音量 RMS → 3 档）----
     // renderer 在 pet:tts-level 事件时调用；rms 为裸音量 0~1，包络/档位在此内部处理
     setMouthLevel(rms) {
@@ -662,13 +713,13 @@
     setMouthOverride(name) {
       mouthOverride = name || null;
     },
-    // 嘴型图库：枚举嘴槽所有可选 attachment 名（skin 定义；无 mouth 配置返回空数组）
+    // 嘴型图库：枚举嘴槽所有可选 attachment 名（skin 定义；无 mouth 配置返回空数组）。
+    // 经 Skin.getAttachments() 遍历（3.8 的 skin.attachments 对象键结构在 4.2 已变，勿用）。
     getMouthOptions() {
       if (!skeleton || !mouthCfg) return [];
-      // skin.attachments 以 slotIndex 为键（非 slot 名），须经 findSlotIndex 转换
-      const idx = skeleton.findSlotIndex(mouthCfg.slot);
-      const atts = skeleton.data.defaultSkin.attachments[idx];
-      return atts ? Object.keys(atts) : [];
+      const idx = skeleton.findSlot(mouthCfg.slot).data.index;
+      const atts = skeleton.data.defaultSkin.getAttachments().filter((e) => e.slotIndex === idx);
+      return atts.map((e) => e.name);
     },
   };
 })();

@@ -145,7 +145,7 @@ async function synthPat(downX, downY, shakeAmp) {
 
 app.whenReady().then(() => {
   win = new BrowserWindow({
-    width: 320,
+    width: 480,
     height: 674,
     transparent: true,
     frame: false,
