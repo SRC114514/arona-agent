@@ -36,6 +36,9 @@ npm u -g arona-agent
 # Launch with TTS/STT disabled
 arona --no-voice
 
+# Launch in GUI mode
+arona --gui
+
 # Clone/re-clone a character's voice
 arona voice add [<character-name>]   # omit the name to enter the TUI for missing voices
 
@@ -90,6 +93,7 @@ All configuration lives in the JSON file `~/.arona/settings.json`, mostly genera
 | `tavilyApiKey` | Tavily API key | — |
 | `pythonPath` | Python path | `python3` |
 | `autoLoadSkills` | Automatically load missing Skills from `~/.agents` on startup | `true` |
+| `GUIEnabled` | Launch the GUI when running bare `arona` | `false` |
 | `mcpServers` | MCP server JSON | `{}` |
 
 Model prefix auto-detection: if `model` contains no `/`, a `provider/` prefix is added automatically based on the model name prefix or the `apiBaseUrl` domain.

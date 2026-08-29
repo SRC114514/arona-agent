@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, rmSync } from "fs";
 import { join } from "path";
 import { MEMORY_FILE, SESSIONS_DIR } from "./config.ts";
 import { t, getLang } from "./locale.ts";
@@ -279,6 +279,44 @@ export function listSessions(): SessionInfo[] {
   // Sort by timestamp descending (newest first)
   sessions.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   return sessions;
+}
+
+/** 删除会话文件（GUI 侧栏右键菜单）。文件不存在时静默成功。 */
+export function deleteSession(filepath: string): void {
+  try {
+    rmSync(filepath, { force: true });
+  } catch (err) {
+    console.warn(`deleteSession: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/**
+ * 重命名会话（更新 header preview 并同步改文件名）。
+ * 返回新路径；解析失败返回 null（不动原文件）。
+ */
+export function renameSession(filepath: string, title: string): string | null {
+  try {
+    const content = readFileSync(filepath, "utf-8");
+    const lines = content.split("\n");
+    const header = JSON.parse(lines[0]) as SessionHeader;
+    if (header.type !== "arona-session") return null;
+
+    const preview = title.trim().slice(0, 50) || header.preview;
+    header.preview = preview;
+    lines[0] = JSON.stringify(header);
+
+    // 沿用原文件名的时间戳前缀，替换预览 slug
+    const stamp = filepath.split("/").pop()?.split("__")[0] ?? new Date().toISOString().replace(/[:.]/g, "-");
+    const safePreview = preview.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_").slice(0, 30);
+    const newPath = join(SESSIONS_DIR, `${stamp}__${safePreview}.jsonl`);
+
+    writeFileSync(newPath, lines.join("\n"));
+    if (newPath !== filepath) unlinkSync(filepath);
+    return newPath;
+  } catch (err) {
+    console.warn(`renameSession: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
 }
 
 export function loadSession(filepath: string): any[] {

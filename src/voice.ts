@@ -71,7 +71,7 @@ export function stripMarkdown(text: string): string {
 /**
  * Listen for speech via Qwen ASR (阿里云百炼), return transcribed text.
  */
-export async function listen(): Promise<string> {
+export async function listen(signal?: AbortSignal, gracefulSignal?: AbortSignal): Promise<string> {
   if (!config.sttApiKey) {
     console.warn("STT: QWEN_STT_API_KEY not configured");
     return "";
@@ -84,9 +84,11 @@ export async function listen(): Promise<string> {
       QWEN_STT_MODEL: config.sttModel,
       QWEN_STT_FORMAT: config.sttFormat,
       QWEN_STT_SAMPLE_RATE: String(config.sttSampleRate),
-    }, 60000);
+    }, 60000, signal, gracefulSignal);
     return text;
   } catch (err) {
+    // 用户主动取消（GUI 麦克风再点一次停止录音）：静默返回空串
+    if (signal?.aborted) return "";
     console.warn(`STT error: ${err instanceof Error ? err.message : err}`);
     return "";
   }

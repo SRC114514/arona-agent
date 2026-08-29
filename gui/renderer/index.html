@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Arona Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="sb-expanded">
+
+  <!-- 主界面 -->
+  <div id="main-page" class="page hidden">
+    <aside id="sidebar">
+      <div class="sb-top">
+        <button id="btn-collapse" class="sb-icon-btn" title="收起侧栏">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+        </button>
+        <button id="btn-expand" class="sb-icon-btn hidden" title="展开侧栏">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/></svg>
+        </button>
+      </div>
+
+      <button id="btn-new" class="sb-new">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+        <span class="sb-new-label">新会话</span>
+      </button>
+
+      <div class="sb-title">会话</div>
+      <div id="session-list"></div>
+
+      <!-- 多选模式操作条 -->
+      <div id="session-mode-bar" class="hidden">
+        <button id="btn-multi-cancel">取消</button>
+        <button id="btn-multi-delete" class="danger">删除</button>
+      </div>
+
+      <div class="sb-foot">
+        <button id="btn-settings" class="sb-row-btn">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span class="sb-row-label">设置</span>
+        </button>
+      </div>
+    </aside>
+
+    <main id="center">
+      <div id="chat">
+        <div id="welcome">
+          <div class="wl-hero">
+            <img class="wl-mark" src="assets/logo.png" alt="" draggable="false">
+            <span class="wl-title">Arona Agent</span>
+          </div>
+          <p class="wl-sub">有什么可以帮你的？输入 / 查看可用指令</p>
+        </div>
+      </div>
+      <div id="composer-wrap">
+        <div id="slash-menu" class="hidden"></div>
+        <div id="composer">
+          <textarea id="input" rows="1" placeholder="输入消息，/ 为命令，Enter 发送"></textarea>
+          <div id="composer-bar">
+            <button id="btn-mic" class="icon-btn" title="录音">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+            </button>
+            <div class="cb-spacer"></div>
+            <button id="btn-send" class="icon-btn round" title="发送">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+            <button id="btn-stop" class="icon-btn round hidden" title="停止">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 提示 toast：固定悬浮，2s 自动消失，不进入聊天流 -->
+    <div id="toasts"></div>
+  </div>
+
+  <!-- 首次运行 setup -->
+  <div id="setup-page" class="page hidden">
+    <div id="setup-card">
+      <div id="setup-head">
+        <h1 id="setup-title">ARONA 初始化</h1>
+        <p id="setup-sub"></p>
+      </div>
+      <div id="setup-body"></div>
+      <div id="setup-foot">
+        <div id="setup-log"></div>
+        <button id="setup-cancel">取消</button>
+        <button id="setup-submit">开始配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 通用弹窗 -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal">
+      <div class="modal-title"><span id="modal-title-text"></span><button class="modal-close" id="modal-close">×</button></div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer hidden" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <!-- 删除确认框：背景高斯模糊，层级仅次于 toast -->
+  <div id="confirm-backdrop" class="hidden">
+    <div id="confirm-box">
+      <div class="confirm-title">删除会话</div>
+      <div class="confirm-text" id="confirm-text"></div>
+      <div class="confirm-actions">
+        <button id="confirm-cancel">取消</button>
+        <button id="confirm-ok">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="setup.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

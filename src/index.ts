@@ -48,6 +48,13 @@ async function main() {
     refreshLanguage();
   }
 
+  // GUI 模式（settings.json GUIEnabled: true；--gui 由 bin/arona.mjs 直接路由到 src/gui/index.ts）
+  if (config.guiEnabled) {
+    const { runGui } = await import("./gui/index.ts");
+    await runGui();
+    return;
+  }
+
   if (!config.apiKey) {
     console.log(chalk.yellow(t("警告：未找到 LLM API Key，请运行 arona setup 配置。", "Warning: LLM API Key not found. Run `arona setup` to configure.")));
   }

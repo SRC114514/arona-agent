@@ -20,6 +20,7 @@ import os
 import sys
 import uuid
 import asyncio
+import signal
 import traceback
 
 from _i18n import t
@@ -29,6 +30,15 @@ CHUNK_DURATION_MS = 200
 MAX_RECORDING_SECONDS = 15
 SILENCE_THRESHOLD = 500      # RMS 阈值
 SILENCE_DURATION_MS = 1500   # 静音超过此时长则结束
+
+# 优雅停止标志：SIGUSR1/SIGINT（GUI 麦克风再点一次）置位后，录音循环提前跳出，
+# 走正常 finish-task 流程把已说内容识别出来（区别于 SIGTERM 直接终止=丢弃）。
+_stop_recording = False
+
+
+def _request_stop(*_args):
+    global _stop_recording
+    _stop_recording = True
 
 
 def build_uri(workspace_id):
@@ -164,7 +174,7 @@ async def stt_recognize(api_key, workspace_id, model, audio_format, sample_rate)
 
             print(t("正在录音…请说话", "Recording... (speak now)"), file=sys.stderr)
 
-            while total_chunks < max_chunks:
+            while total_chunks < max_chunks and not _stop_recording:
                 audio_data = stream.read(frames_per_buffer, exception_on_overflow=False)
 
                 # 静音检测
@@ -231,6 +241,15 @@ def main():
     if not api_key:
         print(t("STT: 未设置 QWEN_STT_API_KEY", "STT: QWEN_STT_API_KEY not set"), file=sys.stderr)
         sys.exit(1)
+
+    # 优雅停止：提前结束录音但仍识别已上传内容（Windows 无 SIGUSR1，仅注册存在的信号）
+    for sig_name in ("SIGUSR1", "SIGINT"):
+        sig = getattr(signal, sig_name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _request_stop)
+            except (ValueError, OSError):
+                pass
 
     text = asyncio.run(stt_recognize(api_key, workspace_id, model, audio_format, sample_rate))
     print(text)

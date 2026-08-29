@@ -15,8 +15,9 @@ const args = process.argv.slice(2);
 const isSetup = args[0] === 'setup';
 const isVoice = args[0] === 'voice';
 const isDoctor = args[0] === 'doctor';
-const target = isSetup ? 'src/setup.ts' : isVoice ? 'src/voice_cli.ts' : isDoctor ? 'src/doctor.ts' : 'src/index.ts';
-const passArgs = (isSetup || isVoice || isDoctor) ? args.slice(1) : args;
+const isGui = args.includes('--gui');
+const target = isSetup ? 'src/setup.ts' : isVoice ? 'src/voice_cli.ts' : isDoctor ? 'src/doctor.ts' : isGui ? 'src/gui/index.ts' : 'src/index.ts';
+const passArgs = (isSetup || isVoice || isDoctor) ? args.slice(1) : isGui ? args.filter((a) => a !== '--gui') : args;
 
 // tsx ships a CLI binary alongside the package. We prefer the local install.
 const tsxBin = process.platform === 'win32'

@@ -14,6 +14,8 @@ export async function runPython(
   stdinData?: string,
   env?: Record<string, string>,
   timeoutMs = 60000,
+  signal?: AbortSignal,
+  gracefulSignal?: AbortSignal,
 ): Promise<string> {
   const scriptPath = join(PYTHON_DIR, scriptName);
   // ARONA_LANG 传给 Python 侧做 i18n（覆盖仅靠 LANG 不可靠的场景）；PYTHONUTF8 让子进程 stdin/stdout/stderr 走 UTF-8
@@ -29,9 +31,29 @@ export async function runPython(
     let stderr = "";
     let settled = false;
 
+    // 外部取消（如 GUI 麦克风再点一次停止录音）：kill 子进程并 reject
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { proc.kill("SIGTERM"); } catch {}
+      reject(new Error(t("已取消", "Aborted")));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    // 优雅停止（如 GUI 麦克风再点一次=提前结束录音并识别已说内容）：只发信号，
+    // 由脚本自行收尾输出，Promise 等待正常 resolve
+    const gracefulName = process.platform === "win32" ? "SIGINT" : "SIGUSR1";
+    const onGraceful = () => {
+      try { proc.kill(gracefulName); } catch {}
+    };
+    gracefulSignal?.addEventListener("abort", onGraceful, { once: true });
+
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        gracefulSignal?.removeEventListener("abort", onGraceful);
         try { proc.kill("SIGTERM"); } catch {}
         reject(new Error(t(`Python ${scriptName} 执行超时（${timeoutMs}ms）`, `Python ${scriptName} timed out after ${timeoutMs}ms`)));
       }
@@ -52,6 +74,8 @@ export async function runPython(
     });
     proc.on("close", (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      gracefulSignal?.removeEventListener("abort", onGraceful);
       if (settled) return;
       settled = true;
       if (code === 0) {
@@ -62,6 +86,8 @@ export async function runPython(
     });
     proc.on("error", (err) => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      gracefulSignal?.removeEventListener("abort", onGraceful);
       if (settled) return;
       settled = true;
       reject(new Error(t(`无法启动 Python 子进程：${err.message}`, `Failed to spawn Python: ${err.message}`)));
