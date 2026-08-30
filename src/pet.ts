@@ -42,6 +42,15 @@ class PetBridge {
   private pendingSelection: { main: AgentId; subs: AgentId[] } | null = null;
   // 最近一次桌宠手势（摸头/dizzy）：只保留最新一次，供下一条用户消息注入一次后即消费清空
   private latestGesture: PetGestureType | null = null;
+  // 桌宠进程握手（hello 行）与 HTTP 下行通道：Windows 下 GUI 子系统 Electron 的 stdin 数据
+  // 不可达（GUI 白屏坑③同族问题），pet/main.cjs 起 127.0.0.1 随机端口 + 随机 token 的 HTTP
+  // 服务并经 hello 行告知；hello 前入队，收到后按序经 HTTP 串行下发。httpPort=0（HTTP 起
+  // 失败）退回 stdin 写入（非 Windows 平台 stdin 本来就通）。
+  private helloReceived = false;
+  private queuedMessages: Record<string, unknown>[] = [];
+  private petHttpPort = 0;
+  private petHttpToken = "";
+  private httpChain: Promise<void> = Promise.resolve(); // 串行链保序（HTTP 异步，并发会乱序）
 
   /**
    * Electron 42+ 把二进制下载从 postinstall 挪到了首次 require。这里在 spawn 之前
@@ -78,6 +87,12 @@ class PetBridge {
     if (!electronPath) return;
 
     this.intentionalStop = false;
+    // 重置握手状态：新进程会发新 hello（新端口/token），旧通道必须作废
+    this.helloReceived = false;
+    this.petHttpPort = 0;
+    this.petHttpToken = "";
+    this.queuedMessages = [];
+    this.httpChain = Promise.resolve();
 
     try {
       // 剔除 ELECTRON_RUN_AS_NODE，否则 Electron 会退化为纯 Node 运行；
@@ -132,11 +147,18 @@ class PetBridge {
       vlog("spawn error:", err.message);
       console.warn(chalk.yellow(t(`桌宠：进程错误（${err.message}），已降级。`, `Pet: process error (${err.message}), degraded.`)));
       this.proc = null;
+      this.helloReceived = false;
+      this.petHttpPort = 0;
+      this.queuedMessages = [];
     });
 
     this.proc.on("close", (code, signal) => {
       vlog("process closed", { code, signal, intentional: this.intentionalStop, pendingSelection: this.pendingSelection });
       this.proc = null;
+      this.helloReceived = false;
+      this.petHttpPort = 0;
+      this.petHttpToken = "";
+      this.queuedMessages = [];
       if (this.pendingSelection) {
         // 切换角色：旧进程已退出，以新角色组合重新拉起（stop 时 intentionalStop=true 不会走退避重启）
         const sel = this.pendingSelection;
@@ -183,7 +205,19 @@ class PetBridge {
       return;
     }
     vlog("recv", JSON.stringify(msg));
-    if (msg.type === "ready") {
+    if (msg.type === "hello") {
+      // 桌宠进程握手：解锁排队消息；httpPort>0 时后续消息走本机 HTTP 通道
+      //（Windows 下 GUI 子系统 Electron 的 stdin 数据不可达，根治手段与 GUI 桥同款）
+      this.helloReceived = true;
+      this.petHttpPort = Number(msg.httpPort) || 0;
+      this.petHttpToken = String(msg.token || "");
+      const queued = this.queuedMessages;
+      this.queuedMessages = [];
+      if (verbose && queued.length) {
+        console.error(chalk.gray("[pet:verbose]"), "hello received (httpPort=" + this.petHttpPort + "), flushing", queued.length, "queued messages");
+      }
+      for (const m of queued) this.send(m);
+    } else if (msg.type === "ready") {
       this.restartCount = 0; // 成功启动后重置退避计数
     } else if (msg.type === "error") {
       console.error(chalk.gray("[pet]"), msg.message);
@@ -213,11 +247,36 @@ class PetBridge {
 
   private send(msg: Record<string, unknown>): void {
     if (!this.proc || this.proc.killed) return;
+    if (!this.helloReceived) {
+      // 握手前入队（进程已起但通道未就绪）。设上限防 hello 永不到来时无限增长。
+      if (this.queuedMessages.length >= 200) this.queuedMessages.shift();
+      this.queuedMessages.push(msg);
+      return;
+    }
     vlog("send", JSON.stringify(msg));
+    if (this.petHttpPort) {
+      this.httpChain = this.httpChain.then(() => this.postEvent(msg));
+      return;
+    }
     try {
       this.proc.stdin.write(JSON.stringify(msg) + "\n");
     } catch {
       // stdin 已关闭，忽略
+    }
+  }
+
+  /** 经本机 HTTP 通道下发消息（pet/main.cjs 的 127.0.0.1 随机端口服务，token 鉴权） */
+  private async postEvent(msg: Record<string, unknown>): Promise<void> {
+    try {
+      await fetch(`http://127.0.0.1:${this.petHttpPort}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-arona-token": this.petHttpToken },
+        body: JSON.stringify(msg),
+      });
+    } catch (err) {
+      if (verbose) {
+        console.error(chalk.gray("[pet:verbose]"), "http send failed:", err instanceof Error ? err.message : err);
+      }
     }
   }
 

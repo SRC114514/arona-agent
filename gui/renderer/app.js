@@ -1,5 +1,15 @@
 // ARONA GUI 渲染层主逻辑：###GUI### 协议 → DOM（侧栏会话列表 / 斜杠菜单 / 消息流 / 麦克风 / 弹窗）
+// 全局错误陷阱：未捕获异常打进 console.error（经 main.cjs 以 [gui:render:3] 转发终端）——
+// 定位"页面加载正常但 .page 保持 hidden → 白屏"时 app.js 中途崩溃的情况
+window.addEventListener("error", (e) => {
+  console.error("[app.js] window error:", e.message, e.filename + ":" + e.lineno);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  console.error("[app.js] unhandled rejection:", e.reason);
+});
+
 (function () {
+  console.log("[app.js] boot");
   const $ = (sel) => document.querySelector(sel);
   const api = window.guiAPI;
   const chat = $("#chat");
@@ -24,7 +34,17 @@
   let codingRunsByCall = new Map();
   const menu = { open: false, items: [], index: 0 };
   let currentMsg = null;
-  let sessionsData = { currentPath: null, sessions: [] };
+  let sessionsData = { currentPath: null, currentWorkspace: "", homeDir: "", knownWorkspaces: [], sessions: [] };
+  // 工作区分组展示状态（key = 工作区路径，"" = 未分组旧会话）：
+  // wsCollapsed 折叠的组；wsShown 各组展开显示的条数（默认 WS_PAGE 条）
+  const WS_PAGE = 5;
+  const wsCollapsed = new Set();
+  const wsShown = new Map();
+  // 「移动到工作区」弹窗里点了「选择其他文件夹…」：暂存目标会话，
+  // 原生目录框回传（ws_folder_picked）时按此分流为 move_session 而非 set_workspace
+  let moveTargetSession = null;
+  // 已上报过的活动工作区（null = 尚未收到首个 sessions 事件；用于区分「切换」与「首次推送」）
+  let activeWsSeen = null;
   let settingsModalOpen = false;
   let settingsInfoEl = null;
   // 录音中手动停止（再点麦克风）：stt_result 空串时静默（不发"未检测到语音"）
@@ -70,9 +90,18 @@
     } catch { return null; }
   })();
 
-  /** 富文本渲染：Markdown → HTML（回复正文、工具输出共用）。 */
+  /** 富文本渲染：Markdown → HTML（回复正文、工具输出共用）。
+   *  例外：完整 HTML 文档（read index.html 等）不交给 marked——marked 会把源码透传成
+   *  真实 DOM（script 被净化、meta/link 不可见、空 div），视觉上整块空白；按源码块显示。 */
   function richRender(el, text) {
     const src = String(text);
+    if (/^\s*(<!DOCTYPE\s+html|<html[\s>])/i.test(src)) {
+      el.innerHTML = "";
+      const pre = document.createElement("pre");
+      pre.textContent = src;
+      el.appendChild(pre);
+      return;
+    }
     if (mdParse) {
       // 不做预转义：&/< 的转义交给 marked，防注入由 mdParse 的 DOM 净化负责（否则实体被二次转义）
       el.innerHTML = mdParse(src);
@@ -120,6 +149,35 @@
     document.body.classList.toggle("has-msg", started);
   }
 
+  // ── 工作区分组 ────────────────────────────────
+  /** 工作区显示名：取目录名；家目录「用户目录」；根目录 /；空值 = 旧会话未记录工作区（「未分组」）。 */
+  function wsLabel(ws) {
+    if (!ws) return "未分组";
+    if (ws === "/") return "/";
+    if (sessionsData.homeDir && ws === sessionsData.homeDir) return "用户目录";
+    const base = String(ws).replace(/\/+$/, "").split("/").pop();
+    return base || ws;
+  }
+  /** 按工作区分组：组内/组间按最新会话时间倒序；未分组恒排最后。与后端 workspace.ts 同构。 */
+  function groupSessions(sessions) {
+    const byKey = new Map();
+    for (const s of sessions) {
+      const k = s.workspace || "";
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(s);
+    }
+    const groups = [...byKey.entries()].map(([workspace, list]) => {
+      list.sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
+      return { workspace: workspace || null, label: wsLabel(workspace), sessions: list };
+    });
+    groups.sort((a, b) => {
+      if (!a.workspace) return 1;
+      if (!b.workspace) return -1;
+      return String(b.sessions[0]?.timestamp || "").localeCompare(String(a.sessions[0]?.timestamp || ""));
+    });
+    return groups;
+  }
+
   // ── SVG 图标库（stroke 风格；工具行 / 思考块共用，须先于 THINK_SVG 初始化）──
   const ICONS = {
     terminal: '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
@@ -132,6 +190,7 @@
     task: '<polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
     box: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
     wrench: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+    folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
     chev: '<polyline points="6 9 12 15 18 9"/>',
   };
   function svgIcon(name, size) {
@@ -602,7 +661,49 @@
     if (settingsModalOpen) refreshSettingsModal();
   }
 
-  // ── 侧栏会话列表 ──────────────────────────────
+  // ── 侧栏会话列表（工作区嵌套会话分组）──────────
+  /** 单条会话行（点击 resume；右键重命名/删除/多选；多选模式为勾选行）。 */
+  function buildSessionRow(s) {
+    const row = document.createElement("button");
+    row.className = "session-item" + (s.path === sessionsData.currentPath ? " current" : "");
+    row.title = multiSelect ? "" : s.preview;
+    if (multiSelect) {
+      row.classList.toggle("selected", multiSelected.has(s.path));
+      const check = document.createElement("span");
+      check.className = "sess-check";
+      check.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+      row.appendChild(check);
+    }
+    const title = document.createElement("span");
+    title.className = "s-title";
+    title.textContent = s.preview || "(untitled)";
+    const time = document.createElement("span");
+    time.className = "s-time";
+    time.textContent = relTime(s.timestamp);
+    row.appendChild(title);
+    row.appendChild(time);
+    if (multiSelect) {
+      row.addEventListener("click", () => {
+        if (multiSelected.has(s.path)) multiSelected.delete(s.path);
+        else multiSelected.add(s.path);
+        row.classList.toggle("selected", multiSelected.has(s.path));
+        updateMultiBar();
+      });
+    } else {
+      row.addEventListener("click", () => api.send({ type: "resume_session", path: s.path }));
+      row.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        openContextMenu(e.clientX, e.clientY, [
+          { label: "重命名", onClick: () => openRenameModal(s) },
+          { label: "移动到工作区", onClick: () => openMoveWsModal(s) },
+          { label: "删除", danger: true, onClick: () => confirmDeleteSessions([s]) },
+          { label: "多选", onClick: () => setMultiSelect(true) },
+        ]);
+      });
+    }
+    return row;
+  }
+
   function renderSessions() {
     sessionListEl.innerHTML = "";
     sessionListEl.classList.toggle("multi", multiSelect);
@@ -614,44 +715,67 @@
       updateMultiBar();
       return;
     }
-    for (const s of sessionsData.sessions) {
-      const row = document.createElement("button");
-      row.className = "session-item" + (s.path === sessionsData.currentPath ? " current" : "");
-      row.title = multiSelect ? "" : s.preview;
-      if (multiSelect) {
-        row.classList.toggle("selected", multiSelected.has(s.path));
-        const check = document.createElement("span");
-        check.className = "sess-check";
-        check.innerHTML = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-        row.appendChild(check);
-      }
-      const title = document.createElement("span");
-      title.className = "s-title";
-      title.textContent = s.preview || "(untitled)";
-      const time = document.createElement("span");
-      time.className = "s-time";
-      time.textContent = relTime(s.timestamp);
-      row.appendChild(title);
-      row.appendChild(time);
-      if (multiSelect) {
-        row.addEventListener("click", () => {
-          if (multiSelected.has(s.path)) multiSelected.delete(s.path);
-          else multiSelected.add(s.path);
-          row.classList.toggle("selected", multiSelected.has(s.path));
-          updateMultiBar();
-        });
-      } else {
-        row.addEventListener("click", () => api.send({ type: "resume_session", path: s.path }));
-        row.addEventListener("contextmenu", (e) => {
-          e.preventDefault();
-          openContextMenu(e.clientX, e.clientY, [
-            { label: "重命名", onClick: () => openRenameModal(s) },
-            { label: "删除", danger: true, onClick: () => confirmDeleteSessions([s]) },
-            { label: "多选", onClick: () => setMultiSelect(true) },
-          ]);
+    const groups = groupSessions(sessionsData.sessions);
+    // 当前会话所在组始终展开（组头折叠状态由用户点击驱动）
+    const curGroup = groups.find((g) => g.sessions.some((s) => s.path === sessionsData.currentPath));
+    if (curGroup) wsCollapsed.delete(curGroup.workspace || "");
+    for (const g of groups) {
+      const key = g.workspace || "";
+      const collapsed = wsCollapsed.has(key);
+      const groupEl = document.createElement("div");
+      groupEl.className = "ws-group" + (collapsed ? " collapsed" : "");
+      groupEl.dataset.ws = key;
+
+      // 组头：文件夹图标 + 工作区名 + 数量 + 折叠箭头（多选模式下仅展示）
+      const head = document.createElement(multiSelect ? "div" : "button");
+      head.className = "ws-head";
+      head.title = g.workspace || "";
+      head.innerHTML = `<span class="ws-folder">${svgIcon("folder", 14)}</span>`
+        + `<span class="ws-name">${esc(g.label)}</span>`
+        + `<span class="ws-count">${g.sessions.length}</span>`
+        + `<span class="ws-chev">${CHEV_SVG}</span>`;
+      if (!multiSelect) {
+        head.addEventListener("click", () => {
+          // 只切状态类：collapse-body 的 grid 过渡自动播放（不重建 DOM，重建会跳过动画）
+          const next = !wsCollapsed.has(key);
+          if (next) wsCollapsed.add(key);
+          else wsCollapsed.delete(key);
+          groupEl.classList.toggle("collapsed", next);
+          body.classList.toggle("collapsed", next);
         });
       }
-      sessionListEl.appendChild(row);
+      groupEl.appendChild(head);
+
+      // 组体：collapse-body 工具类包裹（折叠/展开过渡动画，见 style.css 工具类说明）
+      const body = document.createElement("div");
+      body.className = "collapse-body" + (collapsed ? " collapsed" : "");
+      const bodyInner = document.createElement("div");
+      bodyInner.className = "collapse-inner ws-body";
+
+      const shown = Math.min(wsShown.get(key) ?? WS_PAGE, g.sessions.length);
+      for (const s of g.sessions.slice(0, shown)) bodyInner.appendChild(buildSessionRow(s));
+      if (shown < g.sessions.length) {
+        const more = document.createElement("button");
+        more.className = "ws-more";
+        more.textContent = `显示更多（${g.sessions.length - shown}）`;
+        more.addEventListener("click", () => {
+          wsShown.set(key, shown + WS_PAGE);
+          renderSessions();
+        });
+        bodyInner.appendChild(more);
+      } else if (shown > WS_PAGE) {
+        const less = document.createElement("button");
+        less.className = "ws-more";
+        less.textContent = "收起";
+        less.addEventListener("click", () => {
+          wsShown.delete(key);
+          renderSessions();
+        });
+        bodyInner.appendChild(less);
+      }
+      body.appendChild(bodyInner);
+      groupEl.appendChild(body);
+      sessionListEl.appendChild(groupEl);
     }
     updateMultiBar();
   }
@@ -713,6 +837,7 @@
     if (e.key === "Escape") {
       closeConfirm();
       closeContextMenu();
+      closeWsMenu();
       if (multiSelect) setMultiSelect(false);
     }
   });
@@ -774,6 +899,24 @@
     openModal("重命名会话", div, footer);
     inputEl.focus();
     inputEl.select();
+  }
+
+  /** 移动会话到工作区：列已知工作区 + 「选择其他文件夹…」（原生目录框，ws_folder_picked 分流）。 */
+  function openMoveWsModal(s) {
+    const items = (sessionsData.knownWorkspaces || []).map((ws) => ({
+      label: wsLabel(ws),
+      meta: ws,
+      onPick: () => api.send({ type: "move_session", path: s.path, workspace: ws }),
+    }));
+    items.push({
+      label: "选择其他文件夹…",
+      meta: "",
+      onPick: () => {
+        moveTargetSession = s.path;
+        api.send({ type: "pick_workspace_folder" });
+      },
+    });
+    openModal("移动到工作区", pickList(items, (i) => i.meta || ""));
   }
 
   // ── 斜杠菜单（combobox：Enter 只补全不执行）─────
@@ -906,6 +1049,100 @@
     $("#btn-collapse").classList.remove("hidden");
   });
   $("#btn-settings").addEventListener("click", openSettingsModal);
+
+  // ── 欢迎页工作区选择器（初始页输入框左下角，麦克风左侧）──
+  $("#ws-picker-icon").innerHTML = svgIcon("folder", 14);
+  $("#ws-picker-chev").innerHTML = CHEV_SVG;
+
+  /** 同步选择器文案：当前工作区名（GUI 后端启动目录）。 */
+  function updateWsPicker() {
+    $("#ws-picker-label").textContent = sessionsData.currentWorkspace
+      ? wsLabel(sessionsData.currentWorkspace)
+      : "会话";
+    $("#ws-picker").title = sessionsData.currentWorkspace || "";
+  }
+
+  /** 侧栏定位展开某工作区分组：全量显示并滚动到组头（下拉「显示更多」/ 组头点击联动）。 */
+  function revealGroupInSidebar(key) {
+    wsCollapsed.delete(key);
+    wsShown.set(key, Infinity);
+    document.body.classList.remove("sb-collapsed");
+    document.body.classList.add("sb-expanded");
+    $("#btn-expand").classList.add("hidden");
+    $("#btn-collapse").classList.remove("hidden");
+    renderSessions();
+    sessionListEl.querySelector(`.ws-group[data-ws="${CSS.escape(key)}"]`)?.scrollIntoView({ block: "start" });
+  }
+
+  function buildWsMenu() {
+    const menu = $("#ws-menu");
+    menu.innerHTML = "";
+    // 各工作区的会话数（knownWorkspaces 可能含无会话的历史选择项）
+    const countByWs = new Map();
+    for (const s of sessionsData.sessions) {
+      const k = s.workspace || "";
+      countByWs.set(k, (countByWs.get(k) || 0) + 1);
+    }
+
+    // 工作区列表（settings 选择历史 ∪ 会话推导，后端已合并去重；当前项高亮）
+    for (const ws of sessionsData.knownWorkspaces || []) {
+      const row = document.createElement("button");
+      row.className = "ws-all" + (ws === sessionsData.currentWorkspace ? " current" : "");
+      row.title = ws;
+      row.innerHTML = `<span class="ws-folder">${svgIcon("folder", 14)}</span>`
+        + `<span class="ws-name">${esc(wsLabel(ws))}</span>`
+        + (countByWs.has(ws) ? `<span class="ws-count">${countByWs.get(ws)}</span>` : "");
+      row.addEventListener("click", () => {
+        closeWsMenu();
+        api.send({ type: "set_workspace", path: ws });
+      });
+      menu.appendChild(row);
+    }
+
+    if (!(sessionsData.knownWorkspaces || []).length) {
+      const empty = document.createElement("div");
+      empty.className = "ws-empty";
+      empty.textContent = "暂无工作区";
+      menu.appendChild(empty);
+    }
+
+    // 选择其他位置的文件夹：Electron 原生目录对话框（main.cjs 弹出后经 ws_folder_picked 回传）
+    const pick = document.createElement("button");
+    pick.className = "ws-all ws-pick";
+    pick.innerHTML = `<span class="ws-folder">${svgIcon("folder", 14)}</span><span class="ws-name">选择本地文件夹…</span>`;
+    pick.addEventListener("click", () => {
+      moveTargetSession = null;
+      closeWsMenu();
+      api.send({ type: "pick_workspace_folder" });
+    });
+    menu.appendChild(pick);
+  }
+
+  function toggleWsMenu() {
+    const menu = $("#ws-menu");
+    if (menu.classList.contains("hidden")) {
+      buildWsMenu();
+      glassClear(menu);
+      menu.classList.remove("hidden");
+      $("#ws-picker").classList.add("open");
+    } else {
+      closeWsMenu();
+    }
+  }
+  function closeWsMenu() {
+    const menu = $("#ws-menu");
+    if (menu.classList.contains("hidden")) return;
+    glassHide(menu);
+    $("#ws-picker").classList.remove("open");
+  }
+  $("#ws-picker").addEventListener("click", toggleWsMenu);
+  document.addEventListener("pointerdown", (e) => {
+    const menu = $("#ws-menu");
+    if (!menu.classList.contains("hidden")
+      && !menu.contains(e.target) && !$("#ws-picker").contains(e.target)) {
+      closeWsMenu();
+    }
+  });
 
   // ── 弹窗 ──────────────────────────────────────
   function openModal(title, bodyNode, footerNode) {
@@ -1166,6 +1403,7 @@
 
   // ── 协议分发 ──────────────────────────────────
   api.on((msg) => {
+    if (msg.type === "mode") console.log("[app.js] mode ->", msg.mode); // 白屏排查：确认事件到达渲染层
     switch (msg.type) {
       case "mode":
         $("#main-page").classList.toggle("hidden", msg.mode !== "main");
@@ -1183,9 +1421,32 @@
       case "notice":
         statusLine(msg.text, msg.level === "info" ? "" : msg.level);
         break;
-      case "sessions":
-        sessionsData = { currentPath: msg.currentPath, sessions: msg.sessions };
+      case "sessions": {
+        const prevWs = sessionsData.currentWorkspace;
+        sessionsData = {
+          currentPath: msg.currentPath,
+          currentWorkspace: msg.currentWorkspace || "",
+          homeDir: msg.homeDir || "",
+          knownWorkspaces: msg.knownWorkspaces || [],
+          sessions: msg.sessions || [],
+        };
         renderSessions();
+        updateWsPicker();
+        // 工作区被切换（选择器操作后端确认回推）：侧栏展开定位到新工作区分组
+        if (activeWsSeen !== null && prevWs !== sessionsData.currentWorkspace) {
+          revealGroupInSidebar(sessionsData.currentWorkspace);
+        }
+        activeWsSeen = sessionsData.currentWorkspace;
+        break;
+      }
+      case "ws_folder_picked":
+        // 原生目录框回传：移动会话弹窗发起 → move_session；选择器发起 → set_workspace
+        if (moveTargetSession) {
+          api.send({ type: "move_session", path: moveTargetSession, workspace: msg.path });
+          moveTargetSession = null;
+        } else {
+          api.send({ type: "set_workspace", path: msg.path });
+        }
         break;
       case "skills":
         openSkillsModal(msg.skills);
@@ -1227,4 +1488,5 @@
   });
 
   updateSendState(); // 初始为空输入：发送按钮置灰
+  console.log("[app.js] listener ready"); // 白屏排查：走到此处 = app.js 完整执行、api.on 已注册
 })();

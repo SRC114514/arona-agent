@@ -25,6 +25,7 @@ import { getMainAgent, getAgentLabel, type SubAgentId, type AgentId } from "./ag
 import { speakerContextExtension } from "./speaker_context.ts";
 import { gestureContextExtension } from "./gesture_context.ts";
 import { t, getLang } from "./locale.ts";
+import { currentWorkspace } from "./workspace.ts";
 import { nowStr, reserveTokensFor } from "./prompt_utils.ts";
 
 function buildSystemPrompt(memoryContent: string): string {
@@ -497,7 +498,7 @@ export async function initAgent(): Promise<{
     modelRuntime,
   });
   if (cliModel.error) {
-    console.warn(`Model resolution warning: ${cliModel.error}`);
+    console.warn(t(`模型解析警告：${cliModel.error}`, `Model resolution warning: ${cliModel.error}`));
   }
 
   // 3. Load memory
@@ -507,7 +508,7 @@ export async function initAgent(): Promise<{
 
   // 4. Create ResourceLoader with custom system prompt
   const loader = new DefaultResourceLoader({
-    cwd: process.cwd(),
+    cwd: currentWorkspace(),
     agentDir: ARONA_DIR,
     systemPromptOverride: () => buildSystemPrompt(memoryContent),
     appendSystemPromptOverride: () => [],
@@ -546,7 +547,7 @@ export async function initAgent(): Promise<{
   // 压缩阈值：按上下文窗口动态推导 reserveTokens（约 85% 水位触发压缩），
   // 避免硬编码 150000 导致小窗口模型（如 DeepSeek 64K/128K）每轮误触发压缩
   // （多一次总结调用 + 前缀每轮变化 → 缓存永不命中）。
-  const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
+  const settingsManager = SettingsManager.create(currentWorkspace(), ARONA_DIR);
   settingsManager.applyOverrides({
     compaction: {
       enabled: true,
@@ -555,7 +556,7 @@ export async function initAgent(): Promise<{
     },
   });
   const { session } = await createAgentSession({
-    cwd: process.cwd(),
+    cwd: currentWorkspace(),
     agentDir: ARONA_DIR,
     model: cliModel.model,
     thinkingLevel: config.thinkingLevel as any,
@@ -682,7 +683,7 @@ function buildSubSystemPrompt(id: SubAgentId, memoryContent: string): string {
 - You are ${getAgentLabel(id)}. Always speak as yourself — do not play, mimic, or mix in the identity or tone of any other character (Arona, Plana, Shiroko, Hoshino, Hanako, Koharu, Kei, Aris).
 - After the main agent finishes replying, each enabled sub-agent takes a turn. Keep your reply SHORT (one or two sentences), natural, in-character, and add nothing but your own spoken line.
 - Do not repeat or summarize the main agent's reply.
-- In the conversation history, assistant messages carry a \`Name:\` prefix showing who said them (e.g. "Arona:", "Shiroko:", etc.); user inputs are Sensei speaking. When you reply, do NOT add any name prefix.
+- In the conversation history, assistant messages carry a \`Name:\` prefix showing who said them (e.g. "Arona:", "Shiroko:", etc.); user inputs are Sensei speaking. When you reply, do NOT add any name prefix — never start your reply with your own name and a colon (e.g. "${getAgentLabel(id)}:"), not even in a script/subtitle style. Output only the words you actually say.
 - Your reply may be read aloud by TTS; keep each sentence under 50 characters/words when possible.
 - If you have nothing to add, call keep_silent instead of writing filler text.
 
@@ -696,7 +697,7 @@ Available tools: change_emotion (set the emotion before speaking), keep_silent (
 - 你是${getAgentLabel(id)}。始终以自己的身份发言，禁止扮演或模仿或混用其他角色（阿洛娜、普拉娜、白子、星野、花子、小春、凯伊、爱丽丝）的身份与语气。
 - 主 Agent 回复完毕后，每个启用的子 Agent 依次发言。回复保持简短（一两句），贴角色，只说自己的台词。
 - 不要复读或总结主 Agent 的话。
-- 对话历史中，assistant 消息带「角色名：」前缀标明发言者（如「阿洛娜：」「砂狼白子：」等）；用户输入是 Sensei 说的。你发言时不要加名字前缀。
+- 对话历史中，assistant 消息带「角色名：」前缀标明发言者（如「阿洛娜：」「砂狼白子：」等）；用户输入是 Sensei 说的。你发言时不要加名字前缀——绝不要以「自己的名字＋冒号」（如「${getAgentLabel(id)}：」）开头，也不要写成剧本/字幕格式，直接说台词本身。
 - 你的回复可能被 TTS 朗读，尽量每句 <50 字。
 - 无话可说就调用 keep_silent，不要写废话。
 
@@ -734,7 +735,7 @@ export async function initSubAgent(
 ): Promise<{ session: AgentSession; loader: DefaultResourceLoader; customTools: ToolDefinition[] }> {
   const cliModel = resolveCliModel({ cliModel: config.model, modelRuntime });
   if (cliModel.error) {
-    console.warn(`Model resolution warning (${agentId}): ${cliModel.error}`);
+    console.warn(t(`模型解析警告（${agentId}）：${cliModel.error}`, `Model resolution warning (${agentId}): ${cliModel.error}`));
   }
 
   const memoryContent = loadMemory();
@@ -742,7 +743,7 @@ export async function initSubAgent(
   // 子 Agent 若再次快照会把基线推进到当前内容，导致主 Agent 首轮 getMemoryDelta() 漏报
   // 启动后、首次输入前发生的 MEMORY.md 变更。
   const loader = new DefaultResourceLoader({
-    cwd: process.cwd(),
+    cwd: currentWorkspace(),
     agentDir: ARONA_DIR,
     // 子 Agent 默认不注入项目文档（CLAUDE.md/AGENTS.md）——SDK 会按 cwd 自动把上下文文件
     // 塞进 system prompt，子 Agent 是纯聊天角色、不需要工作目录约定。需要时由 Agent 主动
@@ -766,7 +767,7 @@ export async function initSubAgent(
     ...(config.tavilyApiKey ? premiumTavilyTools : []),
   ];
 
-  const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
+  const settingsManager = SettingsManager.create(currentWorkspace(), ARONA_DIR);
   settingsManager.applyOverrides({
     compaction: {
       enabled: true,
@@ -776,7 +777,7 @@ export async function initSubAgent(
   });
 
   const { session } = await createAgentSession({
-    cwd: process.cwd(),
+    cwd: currentWorkspace(),
     agentDir: ARONA_DIR,
     model: cliModel.model,
     thinkingLevel: config.thinkingLevel as any,

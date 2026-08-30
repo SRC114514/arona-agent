@@ -170,7 +170,7 @@ function zoom(cap, src) {
 app.whenReady().then(() => {
   fs.mkdirSync(OUT, { recursive: true });
   win = new BrowserWindow({
-    width: 480, height: 674, transparent: true, frame: false, show: true,
+    width: 480, height: 780, transparent: true, frame: false, show: true,
     // 窗口被遮挡/后台时 rAF 与 DOM 合成会被节流 → capturePage 拿到过期纹理；关闭节流
     webPreferences: { preload: path.join(PET, "preload.cjs"), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
   });

@@ -1,5 +1,5 @@
 import * as readline from "readline";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import chalk from "chalk";
@@ -67,7 +67,9 @@ function loadExistingSettings(): Settings {
  */
 function checkPythonVersion(pythonPath: string): { ok: boolean; version: string } {
   try {
-    const output = execSync(`${pythonPath} --version`, { stdio: "pipe" }).toString().trim();
+    // execFileSync（不经 shell）：Windows 上 Python 常装在含空格路径（C:\Program Files\...），
+    // execSync 字符串拼接会把路径拆成多个 token。
+    const output = execFileSync(pythonPath, ["--version"], { stdio: "pipe", encoding: "utf-8" }).trim();
     const match = output.match(/Python\s+(\d+)\.(\d+)\.(\d+)/);
     if (!match) return { ok: false, version: output || "unknown" };
     const major = parseInt(match[1]);
@@ -560,12 +562,18 @@ async function main() {
     console.log(chalk.bold.cyan("\nStep 3: Install Python Dependencies\n"));
 
     const requirementsFile = join(PROJECT_ROOT, "requirements.txt");
+    const pipMirror = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple";
     const pipCmd = demoMode
-      ? `pip3.13 install -r "${requirementsFile}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`
-      : `${pythonPath} -m pip install -r "${requirementsFile}" -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple`;
+      ? `pip3.13 install -r "${requirementsFile}" -i ${pipMirror}`
+      : `${pythonPath} -m pip install -r "${requirementsFile}" -i ${pipMirror}`;
     let depsOk = false;
     try {
-      execSync(pipCmd, { stdio: "inherit" });
+      // execFileSync 参数数组执行：同 checkPythonVersion，避免 shell 拼接在含空格路径下出错
+      if (demoMode) {
+        execFileSync("pip3.13", ["install", "-r", requirementsFile, "-i", pipMirror], { stdio: "inherit" });
+      } else {
+        execFileSync(pythonPath, ["-m", "pip", "install", "-r", requirementsFile, "-i", pipMirror], { stdio: "inherit" });
+      }
       console.log(chalk.green(t("\n  ✓ Python 依赖安装完成", "\n  ✓ Python dependencies installed")));
       depsOk = true;
     } catch {
@@ -597,7 +605,7 @@ async function main() {
       if (!demoMode) {
         // Check dashscope package (safety fallback even after pip install)
         try {
-          execSync(`${pythonPath} -c "import dashscope"`, { stdio: "pipe" });
+          execFileSync(pythonPath, ["-c", "import dashscope"], { stdio: "pipe" });
           dashscopeOk = true;
         } catch {
           console.log(chalk.yellow(t("  dashscope 包仍不可用。跳过音色克隆。", "  The dashscope package is still unavailable. Skipping voice cloning.")));

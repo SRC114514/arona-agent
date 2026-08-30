@@ -19,7 +19,8 @@ import { computerUseTools } from "./tools/computer_use.ts";
 import { webSearchTool, webExtractTool, premiumTavilyTools } from "./tools/tavily_tools.ts";
 import { type CodingAgentId } from "./agent_registry.ts";
 import { nowStr, reserveTokensFor } from "./prompt_utils.ts";
-import { getLang } from "./locale.ts";
+import { getLang, t } from "./locale.ts";
+import { currentWorkspace } from "./workspace.ts";
 
 const CODING_PERSONA_ZH: Record<CodingAgentId, string> = {
   millennium: `你是千年科技学园工程部所属的学生，研究员气质，严谨精确，接受来自什亭之箱方面的委托。
@@ -140,11 +141,11 @@ export async function initCodingAgent(
 ): Promise<{ session: AgentSession; loader: DefaultResourceLoader; customTools: ToolDefinition[] }> {
   const cliModel = resolveCliModel({ cliModel: config.model, modelRuntime });
   if (cliModel.error) {
-    console.warn(`Model resolution warning (${agentId}): ${cliModel.error}`);
+    console.warn(t(`模型解析警告（${agentId}）：${cliModel.error}`, `Model resolution warning (${agentId}): ${cliModel.error}`));
   }
 
   const loader = new DefaultResourceLoader({
-    cwd: process.cwd(),
+    cwd: currentWorkspace(),
     agentDir: ARONA_DIR,
     // 不设 noContextFiles：与主 Agent 一致走 SDK 默认注入链路（CLAUDE.md/AGENTS.md）
     systemPromptOverride: () => buildCodingSystemPrompt(agentId),
@@ -162,7 +163,7 @@ export async function initCodingAgent(
     ...mcpTools,
   ];
 
-  const settingsManager = SettingsManager.create(process.cwd(), ARONA_DIR);
+  const settingsManager = SettingsManager.create(currentWorkspace(), ARONA_DIR);
   settingsManager.applyOverrides({
     compaction: {
       enabled: true,
@@ -172,7 +173,7 @@ export async function initCodingAgent(
   });
 
   const { session } = await createAgentSession({
-    cwd: process.cwd(),
+    cwd: currentWorkspace(),
     agentDir: ARONA_DIR,
     model: cliModel.model,
     thinkingLevel: config.thinkingLevel as any,

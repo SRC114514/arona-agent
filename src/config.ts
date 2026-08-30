@@ -140,6 +140,10 @@ interface Settings {
   autoLoadSkills?: boolean;
   // CLI 模式开关（用户手写字段；true 时裸 `arona` 启动进命令行，默认 GUI）
   CLIEnabled?: boolean;
+  // GUI 选择过的工作区文件夹（最近选择在前，上限 12 条）
+  workspaces?: string[];
+  // GUI 上次活动的工作区（启动时恢复）
+  lastWorkspace?: string;
 }
 
 /**
@@ -171,6 +175,24 @@ export function updateSettings(patch: Record<string, unknown>): void {
   } catch (err) {
     console.warn(t(`settings.json 写入失败：${err instanceof Error ? err.message : err}`, `Failed to write settings.json: ${err instanceof Error ? err.message : err}`));
   }
+}
+
+/** GUI 选择过的工作区列表（最近选择在前）。 */
+export function getStoredWorkspaces(): string[] {
+  const s = loadSettings();
+  return Array.isArray(s.workspaces) ? s.workspaces.filter((w): w is string => typeof w === "string" && w.length > 0) : [];
+}
+
+/** GUI 上次活动的工作区（启动恢复用；未记录返回 null）。 */
+export function getLastWorkspace(): string | null {
+  const s = loadSettings();
+  return typeof s.lastWorkspace === "string" && s.lastWorkspace ? s.lastWorkspace : null;
+}
+
+/** 记住一次工作区选择：置顶列表并写入 lastWorkspace。 */
+export function rememberWorkspace(workspace: string): void {
+  const rest = getStoredWorkspaces().filter((w) => w !== workspace);
+  updateSettings({ workspaces: [workspace, ...rest].slice(0, 12), lastWorkspace: workspace });
 }
 
 // ============================================================

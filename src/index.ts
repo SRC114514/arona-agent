@@ -16,16 +16,19 @@ import chalk from "chalk";
  * 独立进程写 settings.json，主进程随后 reloadConfig 即可（ESM 缓存无法重建单例）。
  */
 function runSetupWizard(): Promise<number> {
-  const tsxBin = process.platform === "win32"
-    ? join(PROJECT_ROOT, "node_modules", ".bin", "tsx.cmd")
-    : join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
+  // 与 bin/arona.mjs 同款：用当前 node 直跑内置 tsx CLI。不依赖 node_modules/.bin shim
+  //（Windows 全局包装不出 .cmd，且 shell:true 的字符串拼接在含空格路径下易错）。
+  const tsxCli = join(PROJECT_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
   const wizardArgs = process.argv.slice(2).filter((a) => a !== "--cli");
   return new Promise((resolve) => {
-    const child = spawn(tsxBin, [join(PROJECT_ROOT, "src", "setup.ts"), ...wizardArgs], {
+    const child = spawn(process.execPath, [tsxCli, join(PROJECT_ROOT, "src", "setup.ts"), ...wizardArgs], {
       cwd: process.cwd(),
       stdio: "inherit",
-      shell: process.platform === "win32",
       env: { ...process.env, ARONA_AUTO_SETUP: "1" },
+    });
+    child.on("error", (err) => {
+      console.error(chalk.red(t(`无法启动初始化向导：${err.message}`, `Failed to launch setup wizard: ${err.message}`)));
+      resolve(1);
     });
     child.on("exit", (code) => resolve(code ?? 0));
   });
@@ -64,6 +67,13 @@ async function runCli() {
     if (synced > 0) {
       console.log(chalk.cyan(t(`已同步 ${synced} 个 Skill`, `Synced ${synced} skill(s)`)));
     }
+  }
+
+  // 旧会话工作区一次性回填（按内容推断；/resume 分组展示前完成）
+  const { backfillLegacyWorkspaces } = await import("./memory.ts");
+  const migrated = backfillLegacyWorkspaces();
+  if (migrated > 0) {
+    console.log(chalk.cyan(t(`已将 ${migrated} 个历史会话按内容归入工作区`, `Assigned ${migrated} legacy session(s) to their workspaces`)));
   }
 
   let { session, modelRuntime, loader } = await initAgent();
@@ -114,6 +124,16 @@ async function runCli() {
 }
 
 async function main() {
+  // Headless Linux（无显示服务器）：GUI 窗口/桌宠都无法启动，直接回退命令行（与 pet.ts 同款守卫）。
+  const headless = process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+  if (headless) {
+    console.warn(chalk.yellow(t(
+      "未检测到显示服务器，进入命令行模式。",
+      "No display server detected; falling back to CLI mode.",
+    )));
+    await runCli();
+    return;
+  }
   // 默认启动 GUI；--cli / settings.json CLIEnabled: true 时进入命令行。
   // --resume= 恢复会话历史仅在终端 REPL 里展示，也一并路由到 CLI 以保持原行为。
   if (process.argv.includes("--cli") || config.cliEnabled || process.argv.some((a) => a.startsWith("--resume="))) {

@@ -1,15 +1,21 @@
 // 图形化 setup 后端：表单数据 → Python 检查 / pip 依赖 / 音色克隆 / 写盘。
 // 步骤与字段对齐 CLI src/setup.ts（该文件模块加载即跑 CLI 向导，不能 import，独立实现）。
-import { spawn, execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { ARONA_DIR, SETTINGS_FILE, PROJECT_ROOT, resolveModelPrefix } from "../config.ts";
 import { VOICE_AGENT_IDS } from "../agent_registry.ts";
 import { VOICE_AUDIO, cloneVoice, setVoiceId, setGptSovitsVoice } from "../voices.ts";
-import { normalizeGptSovitsConfig } from "../tts_provider.ts";
+import { normalizeGptSovitsConfig, type GptSovitsModelVersion } from "../tts_provider.ts";
 import { installGptSovitsDeps } from "../gpt_sovits_local.ts";
 import { t } from "../locale.ts";
+import { spawnCompat } from "../utils/spawn.ts";
 import type { GuiEvent } from "./protocol.ts";
+
+/** 前端表单的 modelVersion 字符串 → 合法枚举（未知值回退 v2，与 normalizeGptSovitsConfig 一致）。 */
+function normalizeModelVersion(raw: string | undefined): GptSovitsModelVersion {
+  return raw === "v2Pro" || raw === "v3" || raw === "v4" || raw === "v2" ? raw : "v2";
+}
 
 export interface GuiSetupForm {
   language: "auto" | "zh" | "en";
@@ -74,7 +80,8 @@ function loadExistingSettings(): ExistingSettings {
 /** Python 须为 3.12/3.13（与 CLI setup.checkPythonVersion 一致）。 */
 function checkPythonVersion(pythonPath: string): { ok: boolean; version: string } {
   try {
-    const output = execSync(`${pythonPath} --version`, { stdio: "pipe" }).toString().trim();
+    // execFileSync（不经 shell）：兼容含空格的 Python 路径（Windows C:\Program Files\...）
+    const output = execFileSync(pythonPath, ["--version"], { stdio: "pipe", encoding: "utf-8" }).trim();
     const match = output.match(/Python\s+(\d+)\.(\d+)\.(\d+)/);
     if (!match) return { ok: false, version: output || "unknown" };
     const major = parseInt(match[1]);
@@ -90,7 +97,8 @@ function checkPythonVersion(pythonPath: string): { ok: boolean; version: string 
 /** 流式执行命令：逐行转发输出，resolve 退出码。 */
 function streamCommand(cmd: string, args: string[], emit: Emit, step: string): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // spawnCompat：Windows 上命令解析为 .bat/.cmd 时自动补 shell（否则 spawn 直接 EINVAL）
+    const child = spawnCompat(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
     const pump = (data: Buffer) => {
       for (const line of data.toString().split(/[\r\n]+/)) {
         if (line.trim()) emit({ type: "setup_log", step, line });
@@ -144,7 +152,7 @@ export async function runGuiSetup(form: GuiSetupForm, emit: Emit): Promise<boole
   // ---- 音色配置 / 克隆 ----
   const ttsProvider = form.ttsProvider;
   let gptSovitsConfig = normalizeGptSovitsConfig((existing.ttsConfig as Record<string, unknown>)?.["gpt-sovits"]);
-  delete (gptSovitsConfig as Record<string, unknown>).voices;
+  delete gptSovitsConfig.voices;
 
   if (ttsProvider === "gpt-sovits") {
     const gs = form.gptSovits;
@@ -159,7 +167,7 @@ export async function runGuiSetup(form: GuiSetupForm, emit: Emit): Promise<boole
       cnhubertPath: gs.mode === "local" ? (gs.cnhubertPath || "") : "",
       baseUrl: gs.baseUrl || gptSovitsConfig.baseUrl,
       textLang: gs.textLang || gptSovitsConfig.textLang,
-      modelVersion: gs.mode === "cloud" ? "v2" : (gs.modelVersion || "v2"),
+      modelVersion: gs.mode === "cloud" ? "v2" : normalizeModelVersion(gs.modelVersion),
     };
 
     // 本地部署：可选依赖安装（api_v2.py 同目录 requirements 优先）
@@ -192,7 +200,7 @@ export async function runGuiSetup(form: GuiSetupForm, emit: Emit): Promise<boole
     } else if (depsOk) {
       let dashscopeOk = false;
       try {
-        execSync(`${pythonPath} -c "import dashscope"`, { stdio: "pipe" });
+        execFileSync(pythonPath, ["-c", "import dashscope"], { stdio: "pipe" });
         dashscopeOk = true;
       } catch {
         emit({ type: "setup_log", step: "clone", line: t("dashscope 包不可用，跳过音色克隆。", "dashscope package unavailable, skipping voice cloning.") });

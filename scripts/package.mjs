@@ -40,6 +40,8 @@ const PBS_NPMMIRROR = "https://registry.npmmirror.com/-/binary/python-build-stan
 // Node / Electron 默认镜像：华为云（electron_bin.ts 的 Electron 下载同源）
 const NODE_DEFAULT_MIRROR = "https://mirrors.huaweicloud.com/nodejs";
 const ELECTRON_MIRROR = "https://mirrors.huaweicloud.com/electron/";
+// npm 元数据/包镜像（补齐交叉平台 npm 原生包用）
+const NPM_MIRROR = "https://registry.npmmirror.com";
 
 const require = createRequire(import.meta.url);
 const pkgVersion = require(join(projectRoot(), "package.json")).version;
@@ -371,6 +373,66 @@ function swapElectronDistToWin(cacheDir, opts) {
   writeFileSync(join(electronDir, "path.txt"), "electron.exe");
 }
 
+// ---------- 补齐目标平台 npm 原生包（交叉打包时） ----------
+
+/**
+ * 构建机的 node_modules 只含本平台的 npm 可选依赖（如 @esbuild/darwin-arm64），
+ * 目标平台那份（@esbuild/win32-x64，esbuild/tsx 运行必需）根本不存在——裁剪只能删
+ * 多余的，缺的要从镜像补。这里扫描 staging 里所有 package.json 的
+ * optionalDependencies，把匹配目标平台且缺失的包从 npm 镜像下载补齐。
+ */
+function installNpmPlatformDeps(cacheDir, opts, tp) {
+  if (!isCross(tp)) return;
+  if (tp !== "win32") return;
+  const nm = join(stagingDir(opts), "node_modules");
+  // x64 Windows 包只补 win32-x64 系
+  const marker = /win32-x64/;
+
+  const needed = new Map(); // name -> version range
+  const scan = (dir, depth) => {
+    if (depth <= 0 || !existsSync(dir)) return;
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      const pj = join(dir, e.name, "package.json");
+      if (existsSync(pj)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pj, "utf8"));
+          for (const [name, range] of Object.entries(pkg.optionalDependencies || {})) {
+            if (marker.test(name) && !existsSync(join(nm, name))) needed.set(name, range);
+          }
+        } catch {}
+      }
+      scan(join(dir, e.name), depth - 1);
+    }
+  };
+  scan(nm, 3);
+  if (needed.size === 0) return;
+
+  console.log("  补齐 Windows 平台 npm 原生包…");
+  for (const [name, range] of needed) {
+    const exact = /^\d+\.\d+\.\d+$/.test(range) ? range : null;
+    let version = exact;
+    let tarball;
+    if (version) {
+      const meta = JSON.parse(fetchText(`${NPM_MIRROR}/${name}/${version}`));
+      tarball = meta.dist?.tarball;
+    } else {
+      // 非精确版本号：取满足程度最高的 latest（当前树里 esbuild 等都是精确 pin）
+      const meta = JSON.parse(fetchText(`${NPM_MIRROR}/${name}`));
+      version = meta["dist-tags"]?.latest;
+      tarball = meta.versions?.[version]?.dist?.tarball;
+      console.log(`  ! ${name} 版本范围 ${range} 非精确，回退 latest ${version}`);
+    }
+    if (!tarball) throw new Error(`无法解析 ${name}@${version} 的下载地址`);
+    const archive = join(cacheDir, basename(tarball));
+    if (!existsSync(archive)) download(tarball, archive);
+    const dest = join(nm, name);
+    rmSync(dest, { recursive: true, force: true });
+    extract(archive, dest); // tgz 顶层是 package/，strip 1 层
+    console.log(`  ✓ ${name}@${version}`);
+  }
+}
+
 // ---------- 精简 ----------
 
 const PYTHON_TRIM_DIRS = ["test", "tests", "idlelib", "turtledemo", "tkinter", "config-3.13-*"];
@@ -680,6 +742,7 @@ function main() {
   prepareNode(cacheDir, opts, tp);
   const sp = installPythonDeps(pyRoot, opts, tp);
   if (isCross(tp) && tp === "win32") swapElectronDistToWin(cacheDir, opts);
+  installNpmPlatformDeps(cacheDir, opts, tp);
   trimPackage(opts, tp, sp);
   if (!isCross(tp)) {
     if (platform === "darwin") fixDarwinDylibs(stagingDir(opts));
@@ -691,6 +754,8 @@ function main() {
       join(pyRoot, "python.exe"),
       join(stagingDir(opts), "runtime", "node", "node.exe"),
       join(stagingDir(opts), "node_modules", "electron", "dist", "electron.exe"),
+      join(stagingDir(opts), "node_modules", "@esbuild", "win32-x64", "esbuild.exe"),
+      join(stagingDir(opts), "node_modules", "tsx", "dist", "cli.mjs"),
       join(sp, "pyaudio"),
       join(sp, "numpy"),
       join(sp, "dashscope"),
