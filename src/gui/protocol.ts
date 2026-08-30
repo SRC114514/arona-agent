@@ -15,8 +15,6 @@ export type GuiEvent =
   | { type: "agent_event"; agentId: string; event: Record<string, unknown> }
   // 命令/操作反馈文本
   | { type: "notice"; level: "info" | "warn" | "error" | "success"; text: string }
-  // 显示开关状态（thinking/details）
-  | { type: "display"; thinking: boolean; toolDetails: boolean }
   // 会话列表（侧栏数据源；currentPath=当前恢复会话，用于高亮）
   | { type: "sessions"; currentPath: string | null; sessions: Array<{ path: string; preview: string; timestamp: string; model: string }> }
   // 技能列表（/skill 弹窗数据）
@@ -26,6 +24,8 @@ export type GuiEvent =
   | { type: "stt_state"; recording: boolean }
   // resume 回放：历史消息数组（renderSavedMessages 同构）
   | { type: "history"; messages: unknown[] }
+  // resume 回放：编码子代理执行过程（与 history 中 create_subagent 的 toolCallId 关联；不进主 Agent 上下文）
+  | { type: "coding_runs"; runs: Array<{ agent: string; toolCallId: string; task: string; timestamp: string; messages: unknown[] }> }
   // change-agent 弹窗数据
   | { type: "agents"; main: string[]; subs: string[]; currentMain: string; currentSubs: string[] }
   // /mcp 面板数据
@@ -36,6 +36,8 @@ export type GuiEvent =
   | { type: "setup_clone_progress"; agent: string; status: "cloning" | "done" | "failed"; message?: string }
   // setup 完成信号（配置已写盘，前端切换到主界面）
   | { type: "setup_done" }
+  // setup 失败信号（未写盘；前端解除提交锁定，允许修正后重试）
+  | { type: "setup_failed" }
   // setup 页数据：可配置音色的角色列表
   | { type: "setup_info"; agents: Array<{ id: string; label: string }> }
   // 斜杠命令清单（菜单与帮助面板数据源，单一事实源 slash_registry.ts）
@@ -85,8 +87,6 @@ export type GuiRequest =
   | { type: "invoke_skill"; name: string }
   // 切换角色
   | { type: "change_agent"; main: string; subs: string[] }
-  // 显示开关
-  | { type: "set_display"; thinking?: boolean; toolDetails?: boolean }
   // MCP 工具调用
   | { type: "mcp_call"; server: string; tool: string; args: Record<string, unknown> }
   // setup 表单提交

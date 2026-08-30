@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, rmSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, rmSync, appendFileSync } from "fs";
 import { join } from "path";
 import { MEMORY_FILE, SESSIONS_DIR } from "./config.ts";
 import { t, getLang } from "./locale.ts";
@@ -189,9 +189,9 @@ function firstUserPreview(messages: any[]): string {
   return preview;
 }
 
-export function saveSession(messages: any[], model: string): string | null {
+export function saveSession(messages: any[], model: string, silent = false): string | null {
   if (!hasConversation) {
-    console.log(t("无对话可保存。", "No conversation to save."));
+    if (!silent) console.log(t("无对话可保存。", "No conversation to save."));
     return null;
   }
 
@@ -216,7 +216,7 @@ export function saveSession(messages: any[], model: string): string | null {
     lines.push(JSON.stringify(msg));
   }
   writeFileSync(filepath, lines.join("\n"));
-  console.log(t(`会话已保存到 ${filepath}`, `Session saved to ${filepath}`));
+  if (!silent) console.log(t(`会话已保存到 ${filepath}`, `Session saved to ${filepath}`));
   return filepath;
 }
 
@@ -225,7 +225,7 @@ export function saveSession(messages: any[], model: string): string | null {
  * 用于 /resume 恢复的会话退出时保存回原文件，而非另存为新文件。
  * 保留原文件的 header（timestamp/preview），仅更新 model 字段。
  */
-export function saveSessionToPath(filepath: string, messages: any[], model: string): void {
+export function saveSessionToPath(filepath: string, messages: any[], model: string, silent = false): void {
   let header: SessionHeader;
   try {
     const content = readFileSync(filepath, "utf-8");
@@ -248,12 +248,12 @@ export function saveSessionToPath(filepath: string, messages: any[], model: stri
     lines.push(JSON.stringify(msg));
   }
   writeFileSync(filepath, lines.join("\n"));
-  console.log(t(`会话已保存到 ${filepath}`, `Session saved to ${filepath}`));
+  if (!silent) console.log(t(`会话已保存到 ${filepath}`, `Session saved to ${filepath}`));
 }
 
 export function listSessions(): SessionInfo[] {
   if (!existsSync(SESSIONS_DIR)) return [];
-  const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".jsonl"));
+  const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".jsonl") && !f.endsWith(".coding.jsonl"));
   const sessions: SessionInfo[] = [];
 
   for (const filename of files) {
@@ -281,10 +281,11 @@ export function listSessions(): SessionInfo[] {
   return sessions;
 }
 
-/** 删除会话文件（GUI 侧栏右键菜单）。文件不存在时静默成功。 */
+/** 删除会话文件及其子代理过程 sidecar（GUI 侧栏右键菜单）。文件不存在时静默成功。 */
 export function deleteSession(filepath: string): void {
   try {
     rmSync(filepath, { force: true });
+    rmSync(codingSidecarPath(filepath), { force: true });
   } catch (err) {
     console.warn(`deleteSession: ${err instanceof Error ? err.message : err}`);
   }
@@ -311,7 +312,19 @@ export function renameSession(filepath: string, title: string): string | null {
     const newPath = join(SESSIONS_DIR, `${stamp}__${safePreview}.jsonl`);
 
     writeFileSync(newPath, lines.join("\n"));
-    if (newPath !== filepath) unlinkSync(filepath);
+    if (newPath !== filepath) {
+      unlinkSync(filepath);
+      // 子代理过程 sidecar 跟随改名
+      const oldSidecar = codingSidecarPath(filepath);
+      if (existsSync(oldSidecar)) {
+        try {
+          appendFileSync(codingSidecarPath(newPath), readFileSync(oldSidecar, "utf-8"));
+          unlinkSync(oldSidecar);
+        } catch (err) {
+          console.warn(`renameSession sidecar: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    }
     return newPath;
   } catch (err) {
     console.warn(`renameSession: ${err instanceof Error ? err.message : err}`);
@@ -331,4 +344,55 @@ export function loadSession(filepath: string): any[] {
   }
 
   return messages;
+}
+
+// ============================================================
+// 编码子代理过程留痕（sidecar：`<会话名>.coding.jsonl`）
+// 单独存放：不出现在会话列表（header 类型不同被过滤），loadSession 不读它（不进主 Agent 上下文）。
+// ============================================================
+
+export interface CodingRun {
+  agent: string;        // millennium | justice
+  toolCallId: string;   // 主会话中 create_subagent 调用 id，回放时按此关联
+  task: string;
+  timestamp: string;
+  messages: any[];      // 子代理 session 的全量消息快照
+}
+
+function codingSidecarPath(filepath: string): string {
+  return filepath.replace(/\.jsonl$/, ".coding.jsonl");
+}
+
+/** 追加一条子代理执行记录到会话的 sidecar 文件（自动建 header）。 */
+export function appendCodingRun(filepath: string, run: CodingRun): void {
+  const sidecar = codingSidecarPath(filepath);
+  try {
+    const chunks: string[] = [];
+    if (!existsSync(sidecar)) {
+      chunks.push(JSON.stringify({ type: "arona-coding-log", version: 1 }));
+    }
+    chunks.push(JSON.stringify(run));
+    appendFileSync(sidecar, chunks.join("\n") + "\n");
+  } catch (err) {
+    console.warn(`appendCodingRun: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+/** 读取会话的全部子代理执行记录（按发生顺序）。sidecar 不存在返回空数组。 */
+export function loadCodingRuns(filepath: string): CodingRun[] {
+  const sidecar = codingSidecarPath(filepath);
+  if (!existsSync(sidecar)) return [];
+  try {
+    const runs: CodingRun[] = [];
+    for (const line of readFileSync(sidecar, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      const parsed = JSON.parse(line);
+      if (parsed.type === "arona-coding-log") continue; // header
+      runs.push(parsed as CodingRun);
+    }
+    return runs;
+  } catch (err) {
+    console.warn(`loadCodingRuns: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
 }

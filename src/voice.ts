@@ -1,5 +1,5 @@
 import { runPython } from "./utils/python.ts";
-import { config, verbose } from "./config.ts";
+import { config, updateSettings, verbose } from "./config.ts";
 import { getMainAgent, type AgentId } from "./agent_registry.ts";
 import { getTtsProvider } from "./tts_provider.ts";
 
@@ -41,6 +41,7 @@ export function isTtsEnabled(): boolean {
 export function setTtsEnabled(enabled: boolean): void {
   if (config.noVoice) return;
   ttsEnabled = enabled;
+  updateSettings({ ttsEnabled: enabled }); // 持久化：重启后仍生效
 }
 
 export function isSttEnabled(): boolean {
@@ -50,6 +51,7 @@ export function isSttEnabled(): boolean {
 export function setSttEnabled(enabled: boolean): void {
   if (config.noVoice) return;
   sttEnabled = enabled;
+  updateSettings({ sttEnabled: enabled }); // 持久化：重启后仍生效
 }
 
 /**

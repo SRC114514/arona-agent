@@ -18,7 +18,7 @@
     fieldDiv.appendChild(inputEl);
     if (tip) {
       const tipEl = document.createElement("div");
-      tipEl.style.cssText = "font-size:11.5px;color:var(--text-dim);margin-top:3px;";
+      tipEl.style.cssText = "font-size:11.5px;color:var(--text-3);margin-top:3px;";
       tipEl.textContent = tip;
       fieldDiv.appendChild(tipEl);
     }
@@ -289,6 +289,12 @@
           break;
         case "setup_done":
           log("配置完成，正在启动 ARONA…");
+          break;
+        case "setup_failed":
+          // 失败后解除提交锁定，允许用户修正表单重试
+          submitting = false;
+          $("#setup-submit").disabled = false;
+          log("✗ 配置失败，请查看上方日志，修正后重试。");
           break;
       }
     },

@@ -6,6 +6,7 @@ import { pet } from "../pet.ts";
 import { getAgentLabel, type CodingAgentId } from "../agent_registry.ts";
 import { initCodingAgent } from "../coding_agent.ts";
 import { createRenderer, type RendererStyle } from "../renderer.ts";
+import { recordCodingRun, emitCodingEvent } from "../coding_process.ts";
 
 // 终端配色与主/群聊子 Agent（magenta）区分，且不用灰/黑：millennium = blue，justice = yellow
 const CODING_AGENT_STYLE: Record<CodingAgentId, RendererStyle> = {
@@ -51,7 +52,7 @@ export function makeCreateSubagentTool(modelRuntime: ModelRuntime, mcpTools: Too
         }),
       ),
     }),
-    execute: async (_id, params) => {
+    execute: async (toolCallId, params) => {
       const agentId: CodingAgentId = params.agent ?? "millennium";
       const style = CODING_AGENT_STYLE[agentId];
       const label = getAgentLabel(agentId);
@@ -65,13 +66,27 @@ export function makeCreateSubagentTool(modelRuntime: ModelRuntime, mcpTools: Too
         const inited = await initCodingAgent(agentId, modelRuntime, mcpTools);
         session = inited.session;
 
-        // 无 TTS、无气泡；仅终端流式渲染
-        const renderer = createRenderer(undefined, undefined, label, style);
-        unsub = renderer.subscribe(session);
+        if (process.env.ARONA_GUI === "1") {
+          // GUI：事件实时转发前端渲染（stdout renderer 会把过程打进启动 GUI 的终端）
+          unsub = session.subscribe((event) => emitCodingEvent(agentId, event));
+        } else {
+          // CLI：终端流式渲染（专用配色）
+          const renderer = createRenderer(undefined, undefined, label, style);
+          unsub = renderer.subscribe(session);
+        }
 
         await session.prompt(params.task);
 
         const report = extractFinalReport(session.agent.state.messages as any[]);
+
+        // 过程留痕：子代理 session 全量消息快照交给 sink（GUI 落盘 sidecar；CLI 无 sink 直接丢弃）
+        recordCodingRun({
+          agent: agentId,
+          toolCallId,
+          task: params.task,
+          timestamp: new Date().toISOString(),
+          messages: session.agent.state.messages as any[],
+        });
 
         return {
           content: [{

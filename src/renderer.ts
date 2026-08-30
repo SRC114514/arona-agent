@@ -3,16 +3,12 @@ import { t } from "./locale.ts";
 import { getAgentLabel, getMainAgent } from "./agent_registry.ts";
 import { countTextUnits } from "./text_split.ts";
 
-let showThinking = true;
-let showToolDetails = true;
-
-export function setShowThinking(v: boolean) { showThinking = v; }
-export function getShowThinking() { return showThinking; }
-export function setShowToolDetails(v: boolean) { showToolDetails = v; }
-export function getShowToolDetails() { return showToolDetails; }
+// 思考块与工具详情始终显示（开关已移除）
+const showThinking = true;
+const showToolDetails = true;
 
 const THINKING_TAIL_LINES = 3; // 流式与历史回放统一：只显示思考尾部 N 行
-const PET_MAX_BUBBLE_LEN = 50;
+const PET_MAX_BUBBLE_LEN = 50; // 气泡字数上限（countTextUnits 口径）：≥50 的回复不上气泡
 
 // ── 显示宽度 & 行数工具（CJK/全角算 2，ANSI 控制符算 0）────────────
 function charWidth(code: number): number {
@@ -157,19 +153,9 @@ export function createRenderer(
     thinkingBuffer = "";
   }
 
-  // 回合文本累积：只保留最后一个 assistant message 的文本（TTS 与气泡都在 agent_end 收尾）
+  // 回合文本累积：只保留最后一个 assistant message 的文本（TTS 在 agent_end 收尾）
   let curMsgText = ""; // 当前 message 的 text_delta 累积
   let lastText = ""; // 最近一个 message 的完整文本（候选：中间段会被后续覆盖）
-
-  /** 把 lines 按"最早的优先保留、最后一条优先被挤掉"裁到总字数 < maxUnits。 */
-  function trimBubbleLines(lines: string[], maxUnits: number): string[] {
-    let total = lines.reduce((s, l) => s + countTextUnits(l), 0);
-    while (total > maxUnits && lines.length > 1) {
-      total -= countTextUnits(lines[0]);
-      lines.shift();
-    }
-    return lines;
-  }
 
   return {
     setSpeakerLabel(label: string | undefined) {
@@ -250,18 +236,14 @@ export function createRenderer(
           }
 
           case "agent_end": {
-            // 回合全部文字输出完毕：只取最后一个 message 的文本收尾 TTS（中间过程性发言不朗读），
-            // 气泡与 TTS 同步，一次性上屏最后一段（只发 final）。
+            // 回合全部文字输出完毕：只取最后一个 message 的文本收尾 TTS（中间过程性发言不朗读）。
+            // 桌宠气泡以最后一轮输出为准：仅 <50 字上气泡；≥50 字不显示气泡。
             if (lastText) {
               onTurnEnd?.(lastText);
               if (onPetText) {
                 const units = countTextUnits(lastText);
-                if (units > 0) {
-                  if (units >= PET_MAX_BUBBLE_LEN) {
-                    onPetText("final", lastText);
-                  } else {
-                    onPetText("final", trimBubbleLines([lastText], PET_MAX_BUBBLE_LEN).join("\n"));
-                  }
+                if (units > 0 && units < PET_MAX_BUBBLE_LEN) {
+                  onPetText("final", lastText);
                 }
               }
             }

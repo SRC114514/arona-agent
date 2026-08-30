@@ -29,8 +29,6 @@ export const SLASH_COMMANDS: SlashCommandSpec[] = [
   { name: "new", aliases: ["clear"], description: t("开始新会话", "Start a new session") },
   { name: "resume", aliases: ["r"], description: t("上下键选择并恢复一个已保存的会话", "Pick and resume a saved session with arrow keys"), interactive: true },
   { name: "export", description: t("导出当前会话为 Markdown", "Export current session as Markdown") },
-  { name: "thinking", description: t("开关推理块显示", "Toggle reasoning block display") },
-  { name: "details", description: t("开关工具执行详情显示", "Toggle tool execution detail display") },
   { name: "compact", description: t("压缩上下文", "Compact context") },
   { name: "tts", description: t("开关文字转语音", "Toggle text-to-speech") },
   { name: "stt", description: t(`开关语音转文字`, `Toggle speech-to-text`) },

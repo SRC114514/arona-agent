@@ -211,6 +211,8 @@ export class Repl {
       loader: this.loader,
       exit: () => this.doExit(),
       newSession: async () => {
+        // 切换前落盘当前对话（resume 会话覆盖原文件 / 新会话仅有有效对话时另存）
+        this.saveCurrentSessionIfNeeded();
         // 重建会话：旧 session 已 dispose，需把 Repl 的引用和 renderer 订阅绑到新 session
         const result = await this.onNewSession();
         this.session = result.session;
@@ -426,19 +428,20 @@ export class Repl {
   }
 
   /**
-   * 保存当前会话。
+   * 保存当前会话。silent=true 用于自动保存（回合结束/新建/切换），不产生任何输出；
+   * 退出时 silent=false，保留保存提示。
    * - currentSessionPath 非 null（resume 的会话）：必保存，覆盖原文件（不走 hasConversation 判断）
    * - currentSessionPath 为 null（新会话）：仅在 hasConversation 为 true 时另存为新文件
    */
-  private saveCurrentSessionIfNeeded() {
+  private saveCurrentSessionIfNeeded(silent = true) {
     const messages = this.session.messages;
     const model = this.session.model?.id || "unknown";
     if (this.currentSessionPath) {
       // resume 的会话：必保存（覆盖原文件），即使没有新增对话也保留原内容
-      memory.saveSessionToPath(this.currentSessionPath, messages, model);
+      memory.saveSessionToPath(this.currentSessionPath, messages, model, silent);
     } else if (memory.getHasConversation()) {
-      // 新会话：仅有有效对话时才保存
-      memory.saveSession(messages, model);
+      // 新会话：仅有有效对话时才保存；记录路径，后续回合覆盖同一文件
+      this.currentSessionPath = memory.saveSession(messages, model, silent);
     }
   }
 
@@ -886,6 +889,8 @@ export class Repl {
       }
       this.isProcessing = false;
       this.turnEnded = true;
+      // 每回合结束自动保存（静默：有效对话才落盘；resume 会话覆盖原文件）
+      this.saveCurrentSessionIfNeeded();
       // 回合结束：恢复桌宠到 idle + 气泡兜底隐藏。
       // 以"本回合实际是否还有待播内容"（isPending）为准，而非 TTS 配置开关——
       // 否则 TTS 开启但整段 ≥50 字被 tts_stream.endTurn 整段跳过时，既没有 play_end
@@ -908,8 +913,8 @@ export class Repl {
   }
 
   private async doExit() {
-    // 保存当前会话（resume 的会话覆盖原文件，新会话另存为新文件）
-    this.saveCurrentSessionIfNeeded();
+    // 保存当前会话（退出保留提示；resume 的会话覆盖原文件，新会话另存为新文件）
+    this.saveCurrentSessionIfNeeded(false);
 
     // Cleanup keypress listener so the process can actually exit
     if (this.menuKeyListener) {

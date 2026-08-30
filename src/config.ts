@@ -1,6 +1,6 @@
 import { homedir } from "os";
 import { join, resolve } from "path";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { t, type LanguageSetting } from "./locale.ts";
 
 export const ARONA_DIR = join(homedir(), ".arona");
@@ -160,6 +160,16 @@ function loadSettings(): Settings {
   } catch {
     console.warn(t("settings.json 解析失败，使用默认配置", "Failed to parse settings.json, using defaults"));
     return {};
+  }
+}
+
+/** 局部更新 settings.json（合并写入；TTS/STT 等运行时开关的持久化入口）。 */
+export function updateSettings(patch: Record<string, unknown>): void {
+  try {
+    const merged = { ...loadSettings(), ...patch };
+    writeFileSync(SETTINGS_FILE, JSON.stringify(merged, null, 2) + "\n");
+  } catch (err) {
+    console.warn(t(`settings.json 写入失败：${err instanceof Error ? err.message : err}`, `Failed to write settings.json: ${err instanceof Error ? err.message : err}`));
   }
 }
 

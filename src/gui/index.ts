@@ -135,9 +135,12 @@ class GuiBridge {
       this.emit({ type: "ready", state: this.controller.buildState() });
       this.controller.pushSessions();
       const { SLASH_COMMANDS } = await import("../slash_registry.ts");
+      // GUI 菜单不展示的命令：恢复走侧栏列表、语音走设置开关、new/exit 走按钮（CLI 不受影响）。
+      // 仅隐藏菜单项；handleCommand 分发仍解析它们。
+      const GUI_HIDDEN_COMMANDS = new Set(["help", "exit", "new", "resume", "tts", "stt", "change-agent"]);
       this.emit({
         type: "commands",
-        commands: SLASH_COMMANDS.map((c) => ({
+        commands: SLASH_COMMANDS.filter((c) => !GUI_HIDDEN_COMMANDS.has(c.name)).map((c) => ({
           name: c.name,
           aliases: c.aliases ?? [],
           description: c.description,
@@ -159,6 +162,7 @@ class GuiBridge {
       case "setup_submit": {
         const ok = await runGuiSetup(req.form as unknown as GuiSetupForm, (ev) => this.emit(ev));
         if (ok) await this.startMain();
+        else this.emit({ type: "setup_failed" });
         break;
       }
       case "exit":
@@ -207,9 +211,6 @@ class GuiBridge {
       case "change_agent":
         await this.controller?.applyAgentSelection(req.main, req.subs);
         break;
-      case "set_display":
-        this.controller?.setDisplay(req.thinking, req.toolDetails);
-        break;
       case "mcp_call": {
         try {
           const result = await callMcpTool(req.server, req.tool, req.args);
@@ -244,6 +245,9 @@ class GuiBridge {
 }
 
 export async function runGui(): Promise<void> {
+  // GUI 模式标记：设置到本进程环境（create_subagent 等模块据此把子代理事件转发前端而非打印终端），
+  // 同时随 Electron 子进程 env 传递
+  process.env.ARONA_GUI = "1";
   const bridge = new GuiBridge();
   await bridge.start();
 }

@@ -8,7 +8,6 @@ import * as memory from "./memory.ts";
 import * as voice from "./voice.ts";
 import * as mcp from "./mcp.ts";
 import * as skills from "./skills.ts";
-import { setShowThinking, getShowThinking, setShowToolDetails, getShowToolDetails } from "./renderer.ts";
 import { resolveSlashCommand } from "./slash_registry.ts";
 import { MAIN_AGENT_IDS, SUB_AGENT_IDS, getMainAgent, getSubAgents, getAgentLabel, setMainAgent, setSubAgents, type MainAgentId, type SubAgentId, type AgentId } from "./agent_registry.ts";
 import { pet } from "./pet.ts";
@@ -78,8 +77,6 @@ ${chalk.bold("Session")}
   /export          Export current session as Markdown
 
 ${chalk.bold("Display")}
-  /thinking        Toggle thinking/reasoning block display
-  /details         Toggle tool execution detail display
   /compact         Compact current context to save tokens
 
 ${chalk.bold("Voice")}
@@ -140,16 +137,6 @@ export async function handleCommand(input: string, ctx: CommandContext): Promise
       } catch {
         // 静默：错误信息已由 compaction_end 事件输出
       }
-      return true;
-
-    case "thinking":
-      setShowThinking(!getShowThinking());
-      console.log(chalk.cyan(t(`思考块显示：${getShowThinking() ? "开" : "关"}`, `Thinking display: ${getShowThinking() ? "on" : "off"}`)));
-      return true;
-
-    case "details":
-      setShowToolDetails(!getShowToolDetails());
-      console.log(chalk.cyan(t(`工具详情显示：${getShowToolDetails() ? "开" : "关"}`, `Tool details display: ${getShowToolDetails() ? "on" : "off"}`)));
       return true;
 
     case "tts":

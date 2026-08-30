@@ -25,19 +25,11 @@ import {
 } from "../agent_registry.ts";
 import * as skills from "../skills.ts";
 import { SLASH_COMMANDS, resolveSlashCommand } from "../slash_registry.ts";
+import { setCodingRunSink, setCodingEventSink } from "../coding_process.ts";
+import type { CodingRun } from "../memory.ts";
 import type { GuiEvent, GuiState } from "./protocol.ts";
 
-const PET_MAX_BUBBLE_LEN = 50;
-
-/** 把 lines 按"最早的优先保留"裁到总字数 < maxUnits（与 renderer.trimBubbleLines 一致）。 */
-function trimBubbleLines(lines: string[], maxUnits: number): string[] {
-  let total = lines.reduce((s, l) => s + countTextUnits(l), 0);
-  while (total > maxUnits && lines.length > 1) {
-    total -= countTextUnits(lines[0]);
-    lines.shift();
-  }
-  return lines;
-}
+const PET_MAX_BUBBLE_LEN = 50; // 气泡字数上限（countTextUnits 口径）：≥50 的回复不上气泡
 
 export class GuiController {
   private session: AgentSession;
@@ -46,8 +38,6 @@ export class GuiController {
   private isProcessing = false;
   private aborted = false;
   private turnEnded = false;
-  private showThinking = true;
-  private showToolDetails = true;
   private recording = false;
   private sttAbort: AbortController | null = null;
   private sttGraceful: AbortController | null = null;
@@ -72,6 +62,8 @@ export class GuiController {
   private rendererUnsub: (() => void) | null = null;
   private currentSessionPath: string | null = null;
   private undoManager: UndoManager;
+  // 尚未落盘的子代理执行记录（会话文件建立后一次性写入 sidecar）
+  private pendingCodingRuns: CodingRun[];
 
   // 回合文本累积（与 renderer.ts 同构：只保留最后一个 assistant message 的文本）
   private curMsgText = "";
@@ -97,6 +89,22 @@ export class GuiController {
 
     this.undoManager = new UndoManager(process.cwd());
     this.undoManager.load();
+
+    // 编码子代理过程留痕：会话文件已存在 → 直接写 sidecar；
+    // 尚未落盘（新会话首回合）→ 缓冲，saveCurrentSessionIfNeeded 建文件后回填。
+    this.pendingCodingRuns = [];
+    setCodingRunSink((run) => {
+      if (this.currentSessionDeleted) return;
+      if (this.currentSessionPath) {
+        memory.appendCodingRun(this.currentSessionPath, run);
+      } else {
+        this.pendingCodingRuns.push(run);
+      }
+    });
+    // 编码子代理事件实时转发前端（agentId 区分角色，前端以对应角色名义渲染）
+    setCodingEventSink((agentId, event) => {
+      this.emit({ type: "agent_event", agentId, event: event as Record<string, unknown> });
+    });
 
     this.rendererUnsub = this.subscribeTo(session);
   }
@@ -174,29 +182,22 @@ export class GuiController {
           this.lastText = this.curMsgText.trim();
           this.curMsgText = "";
           break;
-        case "agent_end": {
-          // TTS 与气泡收尾（与 renderer agent_end 分支一致）
-          if (this.lastText) {
-            this.ttsStream.endTurn(this.lastText);
+      case "agent_end": {
+        // TTS 收尾 + 桌宠气泡：以角色最后一轮输出为准，仅 <50 字上气泡；≥50 字不显示气泡
+        if (this.lastText) {
+          this.ttsStream.endTurn(this.lastText);
+          if (pet.isRunning) {
             const units = countTextUnits(this.lastText);
-            if (units > 0 && pet.isRunning) {
-              const data = units >= PET_MAX_BUBBLE_LEN
-                ? this.lastText
-                : trimBubbleLines([this.lastText], PET_MAX_BUBBLE_LEN).join("\n");
-              pet.sendText(this.activeAgentId, "final", data);
+            if (units > 0 && units < PET_MAX_BUBBLE_LEN) {
+              pet.sendText(this.activeAgentId, "final", this.lastText);
             }
           }
-          this.lastText = "";
-          break;
         }
+        this.lastText = "";
+        break;
       }
-      // 协议转发（含上述事件原文，前端自行分流渲染）
-      if (event.type === "message_update") {
-        const ae = event.assistantMessageEvent;
-        if (ae?.type === "thinking_delta" && !this.showThinking) return;
       }
-      if (event.type === "tool_execution_start" && !this.showToolDetails) return;
-      if (event.type === "tool_execution_end" && !this.showToolDetails) return;
+      // 协议转发（思考块与工具详情始终显示，前端自行分流渲染）
       this.emit({ type: "agent_event", agentId: this.activeAgentId, event: event as Record<string, unknown> });
     });
   }
@@ -295,16 +296,6 @@ export class GuiController {
         } catch {
           // 错误信息已由 compaction_end 事件输出（经 agent_event 转发）
         }
-        return;
-
-      case "thinking":
-        this.showThinking = !this.showThinking;
-        this.emit({ type: "display", thinking: this.showThinking, toolDetails: this.showToolDetails });
-        return;
-
-      case "details":
-        this.showToolDetails = !this.showToolDetails;
-        this.emit({ type: "display", thinking: this.showThinking, toolDetails: this.showToolDetails });
         return;
 
       case "tts":
@@ -499,6 +490,7 @@ export class GuiController {
   // ============================================================
 
   private async newSession(): Promise<void> {
+    this.saveCurrentSessionIfNeeded(); // 切换前静默落盘当前会话
     const result = await this.onNewSession();
     this.session = result.session;
     this.modelRuntime = result.modelRuntime;
@@ -507,6 +499,7 @@ export class GuiController {
     this.activeAgentId = getMainAgent();
     this.currentSessionPath = null;
     this.currentSessionDeleted = false;
+    this.pendingCodingRuns = []; // 新会话：丢弃旧会话未落盘的子代理记录
     this.resetSubSessions();
     this.rendererUnsub?.();
     this.rendererUnsub = this.subscribeTo(this.session);
@@ -545,22 +538,39 @@ export class GuiController {
       memory.resetConversationFlag();
       this.currentSessionPath = path;
       this.currentSessionDeleted = false;
+      // 先下发子代理过程（前端按 toolCallId 建关联），再下发历史触发回放渲染
+      this.emit({ type: "coding_runs", runs: memory.loadCodingRuns(path) });
       this.emit({ type: "history", messages });
       this.pushSessions();
-      this.notice("success", t("已恢复会话。", "Session resumed."));
     } catch (err) {
       this.notice("error", `Failed to load session: ${err instanceof Error ? err.message : err}`);
     }
   }
 
-  private saveCurrentSessionIfNeeded(): void {
+  /**
+   * 保存当前会话。silent=true（默认）用于自动保存，不产生任何提示；
+   * 退出时 silent=false，GUI 弹「已保存」提示。
+   * - currentSessionPath 非 null：覆盖原文件
+   * - 为 null：仅有有效对话时另存为新文件并记录路径
+   */
+  private saveCurrentSessionIfNeeded(silent = true): void {
     if (this.currentSessionDeleted) return; // 用户已删除该会话，不再回写
     const messages = this.session.messages;
     const model = this.session.model?.id || "unknown";
     if (this.currentSessionPath) {
-      memory.saveSessionToPath(this.currentSessionPath, messages, model);
+      memory.saveSessionToPath(this.currentSessionPath, messages, model, silent);
     } else if (memory.getHasConversation()) {
-      memory.saveSession(messages, model);
+      this.currentSessionPath = memory.saveSession(messages, model, silent);
+      if (this.currentSessionPath && !silent) {
+        this.notice("success", t(`会话已保存`, "Session saved"));
+      }
+    }
+    // 首次落盘后，回填期间缓冲的子代理执行记录
+    if (this.currentSessionPath && this.pendingCodingRuns.length) {
+      for (const run of this.pendingCodingRuns) {
+        memory.appendCodingRun(this.currentSessionPath, run);
+      }
+      this.pendingCodingRuns = [];
     }
   }
 
@@ -732,6 +742,9 @@ export class GuiController {
       }
       this.isProcessing = false;
       this.turnEnded = true;
+      // 每回合结束自动保存（静默：有效对话才落盘；resume 会话覆盖原文件），并刷新侧栏让新会话可见
+      this.saveCurrentSessionIfNeeded();
+      this.pushSessions();
       if (!this.ttsStream.isPending) {
         pet.reset();
         this.scheduleBubbleHide();
@@ -791,14 +804,8 @@ export class GuiController {
     this.sttGraceful?.abort();
   }
 
-  setDisplay(thinking?: boolean, toolDetails?: boolean): void {
-    if (thinking !== undefined) this.showThinking = thinking;
-    if (toolDetails !== undefined) this.showToolDetails = toolDetails;
-    this.emit({ type: "display", thinking: this.showThinking, toolDetails: this.showToolDetails });
-  }
-
   async doExit(): Promise<void> {
-    this.saveCurrentSessionIfNeeded();
+    this.saveCurrentSessionIfNeeded(false); // 退出保留保存提示
     this.ttsStream.shutdown();
     stopGptSovitsLocalServer();
     stopComputerUse();

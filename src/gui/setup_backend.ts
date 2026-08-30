@@ -220,6 +220,9 @@ export async function runGuiSetup(form: GuiSetupForm, emit: Emit): Promise<boole
       emit({ type: "setup_log", step: "clone", line: t("Python 依赖未安装成功，跳过音色克隆。", "Python dependencies not installed, skipping voice cloning.") });
     }
   }
+  if (ttsProvider === "aliyun" && !form.ttsApiKey?.trim() && !demoMode) {
+    emit({ type: "setup_log", step: "clone", line: t("未填写百炼 API Key，跳过音色克隆（TTS/STT 将不可用）。", "No Bailian API key provided; skipping voice cloning (TTS/STT will be unavailable).") });
+  }
 
   // ---- 写盘（demo 模式不写） ----
   if (!demoMode) {
