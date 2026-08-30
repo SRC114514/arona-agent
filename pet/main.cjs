@@ -8,6 +8,11 @@ const fs = require("fs");
 const os = require("os");
 const { AGENTS } = require("./agents.cjs");
 
+// 与 GUI（gui/main.cjs）是两个 Electron 进程：默认共用 userData（%APPDATA%/arona-agent）会竞争磁盘
+// 缓存锁（Windows 日志表现：Unable to move the cache 0x5 / Gpu Cache Creation failed / DIPS SQLite
+// 初始化失败），ready 前按进程隔离。
+app.setPath("userData", path.join(app.getPath("appData"), "arona-agent-pet"));
+
 // Windows 透明无边框窗口在部分显卡驱动下会触发渲染进程崩溃；禁 GPU 硬件加速（须在 app ready 前调用）。
 // 注意：不能用 app.disableHardwareAcceleration()——Electron 43 里它会顺带 --disable-software-rasterizer，
 // 把软件 WebGL 一并堵死（实测 getGPUFeatureStatus().webgl === "disabled_off"，Spine 直接白屏）。

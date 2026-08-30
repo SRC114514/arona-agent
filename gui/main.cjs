@@ -1,8 +1,19 @@
 // ARONA GUI Electron 主进程：单窗口，与 Node 后端父进程经 stdin/stdout JSON lines 通信
 // （协议行前缀 ###GUI### 过滤 Electron 日志；与桌宠桥同模式）。
-const { app, BrowserWindow, ipcMain, nativeImage } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, nativeImage } = require("electron");
 const fs = require("fs");
 const path = require("path");
+
+// Windows：GUI 是纯 HTML/CSS（无 WebGL），默认硬件加速下页面加载/脚本均正常但不 paint（白屏，
+// 无 did-fail-load / render-process-gone / renderer 报错）——本机硬件 GPU 合成路径有问题，禁 GPU 走
+// 软件渲染（桌宠同款已验证配置）。ARONA_GUI_GPU=1 可强制恢复硬件加速用于排障对比。
+if (process.platform === "win32" && process.env.ARONA_GUI_GPU !== "1") {
+  app.commandLine.appendSwitch("disable-gpu");
+}
+// 桌宠（pet/main.cjs）与本 GUI 是两个 Electron 进程，默认共用 userData（%APPDATA%/arona-agent）会
+// 竞争磁盘缓存锁（日志表现：Unable to move the cache 0x5 / Gpu Cache Creation failed / DIPS SQLite
+// 初始化失败），ready 前按进程隔离。
+app.setPath("userData", path.join(app.getPath("appData"), "arona-agent-gui"));
 
 const APP_TITLE = "Arona Agent";
 const ICON_PATH = path.join(__dirname, "renderer", "assets", "icon.png");
@@ -226,8 +237,10 @@ function createWindow() {
     minHeight: 480,
     title: APP_TITLE,
     backgroundColor: "#f6f7f9",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 16 },
+    // hiddenInset/trafficLightPosition 是 macOS 专用（Windows 忽略 titleBarStyle，标准边框 + 无菜单）
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 16 } }
+      : {}),
     icon: ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -246,6 +259,16 @@ function createWindow() {
   win.on("closed", () => { win = null; rendererReady = false; });
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     console.error(`[gui] did-fail-load ${code} ${desc} ${url}`);
+  });
+  // renderer console → stderr：GUI 白屏等"进程活着但无画面"问题时可见。error 级无条件转发，
+  // 其余仅 VERBOSE（Electron 43 规范签名为单事件对象 event.{message,level,lineNumber}，与桌宠同）
+  win.webContents.on("console-message", (event) => {
+    const msg = typeof event.message === "string" ? event.message : "";
+    if (!msg) return;
+    if (VERBOSE || event.level === 3) {
+      const line = event.lineNumber ? `:${event.lineNumber}` : "";
+      console.error(`[gui:render:${event.level ?? "?"}]${line} ${msg}`);
+    }
   });
   if (VERBOSE) win.webContents.openDevTools({ mode: "detach" });
 }
@@ -279,10 +302,22 @@ app.on("window-all-closed", () => {
 });
 
 app.whenReady().then(() => {
+  // Windows 上默认应用菜单（File/Edit/View/Window）画进窗口顶部，GUI 用不到 → 移除
+  //（须在 ready 后调用；Ctrl+C/V 等编辑快捷键是原生行为不受影响，仅去掉 Reload/DevTools 默认键）
+  if (process.platform === "win32") Menu.setApplicationMenu(null);
   // macOS 开发模式下 Dock 图标默认是 Electron 图标，用 LOGO 替换（打包后由应用 bundle 提供）
   if (process.platform === "darwin" && app.dock) {
     const icon = nativeImage.createFromPath(ICON_PATH);
     if (!icon.isEmpty()) app.dock.setIcon(icon);
+  }
+  if (VERBOSE) {
+    // GPU 功能状态：Windows 白屏排查关键（disable-gpu 下预期 gpu_compositing=disabled_software 且可正常上屏）
+    try {
+      console.error("[gui:verbose] GPU feature status:", JSON.stringify(app.getGPUFeatureStatus()));
+    } catch (e) {
+      console.error("[gui:verbose] getGPUFeatureStatus failed:", e.message);
+    }
+    console.error("[gui:verbose] platform:", process.platform, "electron:", process.versions.electron, "chrome:", process.versions.chrome);
   }
   createWindow();
 });

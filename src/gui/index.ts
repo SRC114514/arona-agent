@@ -41,7 +41,14 @@ class GuiBridge {
     const env: NodeJS.ProcessEnv = { ...process.env, ARONA_GUI: "1" };
     delete env.ELECTRON_RUN_AS_NODE;
     const args = ["--no-sandbox"];
-    if (verbose) args.push("--enable-logging");
+    if (verbose) {
+      // --enable-logging：渲染进程 console（GPU 初始化失败等）原样打进 stderr，白屏根因不传则完全不可见；
+      // ARONA_GUI_VERBOSE：接通 gui/main.cjs 的 VERBOSE 分支（GPU feature status / renderer console
+      // 全量转发 / devtools 自动打开）——此前未接线，--verbose 下这些诊断从未生效过。
+      args.push("--enable-logging");
+      env.ARONA_GUI_VERBOSE = "1";
+      console.error(chalk.gray("[gui:verbose]"), "spawn", electronPath, args.concat(join(GUI_DIR, "main.cjs")).join(" "));
+    }
 
     this.proc = spawn(electronPath, args.concat(join(GUI_DIR, "main.cjs")), {
       env,

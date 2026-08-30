@@ -1,7 +1,8 @@
 {
   "name": "arona-agent",
-  "version": "1.1.6",
+  "version": "1.1.8",
   "description": "Terminal AI Agent with desktop pet Arona — eye-tracking pupils, voice cloning, Computer Use, TTS/STT, MCP.",
+  "keywords": ["voice-clone", "Blue Archive", "blue-archive", "ai-agent", "arona", "computer-use", "desktop-pet"],
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -15,7 +16,8 @@
     "assets/",
     "bin/",
     "requirements.txt",
-    "README_en.md"
+    "README_en.md",
+    "README.md"
   ],
   "scripts": {
     "start": "tsx src/index.ts",
