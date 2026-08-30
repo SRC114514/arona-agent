@@ -169,6 +169,81 @@ button { font: inherit; color: inherit; }
 .session-item .s-time { flex: none; font-size: 12.5px; color: var(--text-3); }
 .session-empty { color: var(--text-3); font-size: 12.5px; padding: 8px; white-space: nowrap; }
 
+/* ── 折叠展开过渡（可复用工具类，与 .glass 同级）────────
+   用法：外层 <div class="collapse-body [collapsed]"><div class="collapse-inner">内容</div></div>，
+   切换 collapsed 类即有 高度收展 + 透明度 过渡；内容高度无需预知（grid 0fr/1fr 技巧），
+   初次插入即带 collapsed 不触发动画（过渡只在类切换时发生）。 */
+.collapse-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows 260ms var(--ease), opacity 200ms var(--ease);
+}
+.collapse-body > .collapse-inner {
+  min-height: 0;
+  overflow: hidden;
+  visibility: visible;
+  transition: visibility 0s;
+}
+.collapse-body.collapsed { grid-template-rows: 0fr; opacity: 0; }
+/* 折叠动画播完再隐藏内容（Tab 不可达）；展开时立即恢复可见 */
+.collapse-body.collapsed > .collapse-inner { visibility: hidden; transition: visibility 0s 260ms; }
+
+/* ── 侧栏工作区分组（工作区嵌套会话）──────── */
+.ws-group { display: flex; flex-direction: column; gap: 2px; }
+.ws-body { flex: none; display: flex; flex-direction: column; gap: 2px; }
+.ws-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.ws-head:hover { background: var(--hover); color: var(--text); }
+.ws-head .ws-folder { display: inline-flex; flex: none; color: var(--text-3); }
+.ws-head .ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-head .ws-count {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-3);
+  background: var(--hover);
+  border-radius: 8px;
+  padding: 1px 7px;
+}
+.ws-head .ws-chev { display: inline-flex; flex: none; color: var(--text-3); transition: transform 180ms var(--ease); }
+.ws-group.collapsed .ws-chev { transform: rotate(-90deg); }
+.ws-group .session-item { padding-left: 31px; } /* 组内嵌套缩进 */
+.ws-more {
+  flex: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 31px;
+  border-radius: 9px;
+  width: 100%;
+}
+.ws-more:hover { background: var(--hover); color: var(--text-2); }
+
+/* 折叠窄栏：工作区组头只留文件夹图标 */
+body.sb-collapsed .ws-name,
+body.sb-collapsed .ws-count,
+body.sb-collapsed .ws-chev,
+body.sb-collapsed .ws-more { display: none; }
+body.sb-collapsed .ws-head { justify-content: center; padding: 0; }
+
 .sb-foot { flex: none; padding-top: 18px; margin-top: 12px; }
 
 /* ── 会话多选模式 ─────────────────────────── */
@@ -627,6 +702,29 @@ body:not(.has-msg) #composer-wrap {
 #composer-bar { display: flex; align-items: center; gap: 6px; }
 .cb-spacer { flex: 1; }
 
+/* ── 欢迎页工作区选择器（初始页输入框左下角，麦克风左侧；会话开始后隐藏）── */
+.ws-picker {
+  display: none;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  max-width: 240px;
+}
+body:not(.has-msg) .ws-picker { display: inline-flex; }
+.ws-picker:hover { background: var(--hover); color: var(--text); }
+.ws-picker svg { flex: none; }
+.ws-picker .ws-folder { display: inline-flex; color: var(--text-3); }
+.ws-picker .ws-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-picker .ws-chev { display: inline-flex; color: var(--text-3); transition: transform 200ms var(--ease); }
+.ws-picker.open .ws-chev svg { transform: rotate(180deg); }
+
 .icon-btn {
   border: none;
   background: none;
@@ -683,13 +781,56 @@ body:not(.has-msg) #slash-menu {
 .slash-item .desc { color: var(--text-3); font-size: 12px; }
 .slash-item.highlight { background: var(--hover); }
 
+/* ── 工作区下拉浮层（欢迎页 composer 上方向弹出）── */
+#ws-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 32px;
+  width: min(420px, calc(100% - 64px));
+  max-height: 380px;
+  overflow-y: auto;
+  border-radius: 14px;
+  z-index: 30;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+body:not(.has-msg) #ws-menu { left: 96px; }
+#ws-menu .ws-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+#ws-menu .ws-all:hover { background: var(--hover); }
+#ws-menu .ws-all.current { background: var(--accent-soft); color: var(--accent); }
+#ws-menu .ws-all.current .ws-folder,
+#ws-menu .ws-all.current .ws-count { color: var(--accent); }
+#ws-menu .ws-pick { color: var(--text-2); font-weight: 500; }
+#ws-menu .ws-folder { display: inline-flex; flex: none; color: var(--text-2); }
+#ws-menu .ws-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#ws-menu .ws-count { flex: none; font-size: 11.5px; font-weight: 500; color: var(--text-3); }
+#ws-menu .ws-empty { color: var(--text-3); font-size: 12.5px; padding: 10px; }
+
 /* ── macOS 液态玻璃 / 亚克力材质：渐变半透明白面板 + 模糊 + 高光描边；
    新浮层加 .glass 类即可复用（入场动画 glass-in 自带）── */
 .glass,
 #modal,
 #confirm-box,
 #slash-menu,
-#context-menu {
+#context-menu,
+#ws-menu {
   background: var(--glass-gradient);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
@@ -950,6 +1091,7 @@ body:not(.has-msg) #slash-menu {
   #sidebar { transition: none; }
   .icon-btn.recording { animation: none; }
   .status-line { animation: none; }
-  .glass, #modal, #confirm-box, #slash-menu, #context-menu { animation: none; transition: none; }
+  .glass, #modal, #confirm-box, #slash-menu, #context-menu, #ws-menu { animation: none; transition: none; }
   .glass-out { animation: none !important; }
+  .collapse-body { transition: none; }
 }

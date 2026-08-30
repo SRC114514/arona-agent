@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, rmSync, appendFileSync } from "fs";
-import { join } from "path";
+import { basename, join, resolve } from "path";
 import { MEMORY_FILE, SESSIONS_DIR } from "./config.ts";
+import { inferWorkspaceFromContent } from "./workspace.ts";
 import { t, getLang } from "./locale.ts";
 
 // ============================================================
@@ -161,6 +162,8 @@ export interface SessionInfo {
   timestamp: string;
   preview: string;
   model: string;
+  /** 所属工作区（创建会话时的启动目录绝对路径）；旧会话可能缺失（undefined → 展示层归入「未分组」）。 */
+  workspace?: string;
 }
 
 interface SessionHeader {
@@ -169,6 +172,8 @@ interface SessionHeader {
   timestamp: string;
   model: string;
   preview: string;
+  /** 所属工作区（启动目录绝对路径）。version 2 起写入；读取不校验版本，缺失视为「未分组」。 */
+  workspace?: string;
 }
 
 /** 从首条 user 消息提取会话预览。 */
@@ -189,7 +194,7 @@ function firstUserPreview(messages: any[]): string {
   return preview;
 }
 
-export function saveSession(messages: any[], model: string, silent = false): string | null {
+export function saveSession(messages: any[], model: string, silent = false, workspace?: string): string | null {
   if (!hasConversation) {
     if (!silent) console.log(t("无对话可保存。", "No conversation to save."));
     return null;
@@ -203,16 +208,21 @@ export function saveSession(messages: any[], model: string, silent = false): str
   const filename = `${timestamp}__${safePreview}.jsonl`;
   const filepath = join(SESSIONS_DIR, filename);
 
+  // 落盘前修剪残缺尾部（生成中存盘时可能含未配对 toolCall，防 resume 后服务端 400；
+  // 对完整历史幂等）。只影响文件内容，不改内存——回合可继续，完成后以完整版覆盖。
+  const persisted = trimPartialTail(messages);
+
   const header: SessionHeader = {
     type: "arona-session",
-    version: 1,
+    version: 2,
     timestamp: new Date().toISOString(),
     model,
     preview,
+    workspace,
   };
 
   const lines: string[] = [JSON.stringify(header)];
-  for (const msg of messages) {
+  for (const msg of persisted) {
     lines.push(JSON.stringify(msg));
   }
   writeFileSync(filepath, lines.join("\n"));
@@ -223,28 +233,32 @@ export function saveSession(messages: any[], model: string, silent = false): str
 /**
  * 将会话保存到指定路径（覆盖原文件）。
  * 用于 /resume 恢复的会话退出时保存回原文件，而非另存为新文件。
- * 保留原文件的 header（timestamp/preview），仅更新 model 字段。
+ * 保留原文件的 header（timestamp/preview/workspace），仅更新 model 字段；
+ * 原 header 缺 workspace（旧会话）且调用方传入时补写——resume 保存即归入当前工作区。
  */
-export function saveSessionToPath(filepath: string, messages: any[], model: string, silent = false): void {
+export function saveSessionToPath(filepath: string, messages: any[], model: string, silent = false, workspace?: string): void {
   let header: SessionHeader;
   try {
     const content = readFileSync(filepath, "utf-8");
     header = JSON.parse(content.split("\n")[0]) as SessionHeader;
     header.model = model; // 模型可能已切换，更新之
+    if (!header.workspace && workspace) header.workspace = workspace;
   } catch {
     // 原文件不存在或损坏，生成新 header（剥离桌宠手势注入块，见 firstUserPreview）
     const preview = firstUserPreview(messages);
     header = {
       type: "arona-session",
-      version: 1,
+      version: 2,
       timestamp: new Date().toISOString(),
       model,
       preview,
+      workspace,
     };
   }
 
   const lines: string[] = [JSON.stringify(header)];
-  for (const msg of messages) {
+  // 同 saveSession：落盘前修剪残缺尾部（幂等；只影响文件，不改内存）
+  for (const msg of trimPartialTail(messages)) {
     lines.push(JSON.stringify(msg));
   }
   writeFileSync(filepath, lines.join("\n"));
@@ -269,6 +283,7 @@ export function listSessions(): SessionInfo[] {
           timestamp: header.timestamp,
           preview: header.preview,
           model: header.model,
+          workspace: header.workspace,
         });
       }
     } catch {
@@ -306,8 +321,8 @@ export function renameSession(filepath: string, title: string): string | null {
     header.preview = preview;
     lines[0] = JSON.stringify(header);
 
-    // 沿用原文件名的时间戳前缀，替换预览 slug
-    const stamp = filepath.split("/").pop()?.split("__")[0] ?? new Date().toISOString().replace(/[:.]/g, "-");
+    // 沿用原文件名的时间戳前缀，替换预览 slug（basename：Windows 路径分隔符是 \，split("/") 会把整个路径当文件名）
+    const stamp = basename(filepath).split("__")[0] || new Date().toISOString().replace(/[:.]/g, "-");
     const safePreview = preview.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_").slice(0, 30);
     const newPath = join(SESSIONS_DIR, `${stamp}__${safePreview}.jsonl`);
 
@@ -332,8 +347,45 @@ export function renameSession(filepath: string, title: string): string | null {
   }
 }
 
-export function loadSession(filepath: string): any[] {
-  const content = readFileSync(filepath, "utf-8");
+/**
+ * 修剪尾部残缺回合（"未完成也存盘"场景专用）：LLM 生成中落盘时，尾部可能存在
+ * 未应答的 toolCall（没有配对的 toolResult，甚至参数只生成了半截）——直接写盘，
+ * resume 后提交服务端会 400。规则：
+ * - toolCall/toolResult 数量不配对 → 修剪回最后一条 user 消息（含）；
+ * - 数量配对但尾部停在 toolResult（模型总结还没生成）→ 同样修剪：resume 后的
+ *   新输入会与 toolResult 所在的 user 消息相邻，仍有 400 风险；
+ * - 以 assistant 文本收尾（哪怕是生成到一半的文本）→ 保留：API 合法状态，
+ *   重启恢复后能看到已生成的半成品，可让模型接着写。
+ * 只影响写盘内容，不改内存中的会话（后台回合继续跑，完成后以完整版覆盖存盘）。
+ */
+export function trimPartialTail(messages: any[]): any[] {
+  let lastUser = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") {
+      lastUser = i;
+      break;
+    }
+  }
+  if (lastUser < 0) return []; // 没有用户消息：历史不完整（不该发生），退到空
+  const tail = messages.slice(lastUser + 1);
+  let calls = 0;
+  let results = 0;
+  for (const m of tail) {
+    if (m.role === "assistant") {
+      for (const b of m.content ?? []) {
+        if (b.type === "toolCall") calls++;
+      }
+    } else if (m.role === "toolResult") {
+      results++;
+    }
+  }
+  const last = tail[tail.length - 1];
+  const endsOnToolResult = last?.role === "toolResult";
+  if (calls === results && !endsOnToolResult) return messages; // 合法收尾（含半截文本），原样保存
+  return messages.slice(0, lastUser + 1);
+}
+
+export function loadSession(filepath: string): any[] {  const content = readFileSync(filepath, "utf-8");
   const lines = content.split("\n").filter((l) => l.trim());
   const messages: any[] = [];
 
@@ -344,6 +396,47 @@ export function loadSession(filepath: string): any[] {
   }
 
   return messages;
+}
+
+/**
+ * 写入会话的所属工作区（就地改 header 首行，文件名不变）。
+ * force=false 时仅补写缺失的 workspace（旧会话回填）；force=true 用于「移动到工作区」。
+ */
+export function setSessionWorkspace(filepath: string, workspace: string, force = false): boolean {
+  try {
+    const content = readFileSync(filepath, "utf-8");
+    const nl = content.indexOf("\n");
+    const firstLine = nl >= 0 ? content.slice(0, nl) : content;
+    const header = JSON.parse(firstLine) as SessionHeader;
+    if (header.type !== "arona-session") return false;
+    if (header.workspace && !force) return false;
+    header.workspace = resolve(workspace);
+    const rest = nl >= 0 ? content.slice(nl) : "";
+    writeFileSync(filepath, JSON.stringify(header) + rest);
+    return true;
+  } catch (err) {
+    console.warn(`setSessionWorkspace: ${err instanceof Error ? err.message : err}`);
+    return false;
+  }
+}
+
+/**
+ * 一次性回填：为未记录工作区的旧会话按内容推断工作区（会话中出现频率最高的项目目录）。
+ * 推断不出（纯聊天、无绝对路径）保持未分组。返回回填数量。CLI/GUI 启动时各调用一次。
+ */
+export function backfillLegacyWorkspaces(): number {
+  let migrated = 0;
+  for (const s of listSessions()) {
+    if (s.workspace) continue;
+    try {
+      const content = readFileSync(s.path, "utf-8");
+      const inferred = inferWorkspaceFromContent(content);
+      if (inferred && setSessionWorkspace(s.path, inferred)) migrated++;
+    } catch {
+      // 单个文件损坏不影响其余回填
+    }
+  }
+  return migrated;
 }
 
 // ============================================================

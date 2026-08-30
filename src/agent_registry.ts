@@ -52,6 +52,36 @@ export function getAgentLabel(id: AgentId): string {
   }
 }
 
+/**
+ * 角色名的全部写法（中英文全名/常用短名），供输出侧剥离「名字：」前缀用。
+ * 模型偶发模仿历史消息的「角色名：」前缀，且可能用短名（如「星野：」）而非
+ * getAgentLabel 的全名，两种都要覆盖。与 locale 无关：中英文都列出。
+ */
+export function getAgentNameVariants(id: AgentId): string[] {
+  switch (id) {
+    case "arona":
+      return ["阿洛娜", "Arona"];
+    case "plana":
+      return ["普拉娜", "Plana"];
+    case "shiroko":
+      return ["砂狼白子", "白子", "Shiroko"];
+    case "hoshino":
+      return ["小鸟游星野", "星野", "Hoshino"];
+    case "hanako":
+      return ["浦和花子", "花子", "Hanako"];
+    case "koharu":
+      return ["下江小春", "小春", "Koharu"];
+    case "kei":
+      return ["天童凯伊", "凯伊", "Kei"];
+    case "aris":
+      return ["天童爱丽丝", "爱丽丝", "Aris"];
+    case "millennium":
+      return ["千禧年学员", "Millennium Student"];
+    case "justice":
+      return ["正义实现部成员", "Justice Task Force Member"];
+  }
+}
+
 /** 校验 agent id（含类型收窄） */
 export function isValidAgentId(id: string): id is AgentId {
   return (AGENT_IDS as readonly string[]).includes(id);

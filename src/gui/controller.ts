@@ -1,12 +1,14 @@
 // GuiController：Repl（src/repl.ts）的无 readline 版回合编排，GUI 模式专用。
 // 与 Repl 的对应关系（双改须同步）：parseInput / runRawTurn / runOneAgent / ensureSubSessions /
-// waitTurnSettled / extractNewAssistantText / setActiveAgent / resetSubSessions /
-// saveCurrentSessionIfNeeded / resumeSession（渲染差异：输出走 agent_event 协议而非 stdout）。
+// waitTurnSettled / extractNewAssistantText / setActiveAgent / resumeSession（渲染差异：输出走 agent_event 协议而非 stdout）。
+// 会话管理为"槽位"模型：LLM 生成中切换会话/工作区不中断回合——旧会话挂后台继续，
+// 结束按槽位存盘（含其定格的工作区），可随时从侧栏接回实时查看。
 import { execSync } from "child_process";
+import { homedir } from "os";
 import { readFileSync, existsSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
 import type { AgentSession, ModelRuntime, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-import { config } from "../config.ts";
+import { config, getStoredWorkspaces, rememberWorkspace } from "../config.ts";
 import * as memory from "../memory.ts";
 import * as voice from "../voice.ts";
 import { TtsStream } from "../tts_stream.ts";
@@ -26,24 +28,47 @@ import {
 import * as skills from "../skills.ts";
 import { SLASH_COMMANDS, resolveSlashCommand } from "../slash_registry.ts";
 import { setCodingRunSink, setCodingEventSink } from "../coding_process.ts";
+import { stripSpeakerPrefix, SpeakerPrefixStripper } from "../speaker_context.ts";
+import { currentWorkspace, setActiveWorkspace, guiDefaultWorkspace, workspaceLabel } from "../workspace.ts";
 import type { CodingRun } from "../memory.ts";
 import type { GuiEvent, GuiState } from "./protocol.ts";
 
-const PET_MAX_BUBBLE_LEN = 50; // 气泡字数上限（countTextUnits 口径）：≥50 的回复不上气泡
+const PET_MAX_BUBBLE_LEN = 50; // 气泡字数上限（countTextUnits 口径）：≥50 字的回复不上气泡
+const MAX_BACKGROUND_SLOTS = 6; // 后台会话上限（超出时释放最早的未在生成的会话）
+
+/**
+ * 会话槽位：每个 AgentSession 一份元数据。当前会话与"挂在后台继续生成"的会话统一管理——
+ * 切换会话不再复用/销毁同一个 session 对象，后台回合结束时按槽位存盘。
+ */
+interface SessionSlot {
+  session: AgentSession;
+  path: string | null;       // 已落盘文件路径（null = 尚未存盘）
+  workspace: string;         // 会话归属工作区（创建时定格；后台回合存盘用它，避免被切换后的 currentWorkspace 误标）
+  deleted: boolean;          // 用户已删除该会话文件：不再回写
+  hasConversation: boolean;  // 该会话是否发生过有效对话（原全局 hasConversation 的按会话版）
+  processing: boolean;       // 回合进行中（可能在后台）
+  abortRequested: boolean;   // 用户点了停止
+  pendingRuns: CodingRun[];  // 首次落盘前缓冲的子代理执行记录
+  undo: UndoManager;         // 撤销快照按会话隔离（不同工作区/并发回合互不串扰）
+  subs: Map<SubAgentId, AgentSession>; // 群聊子 Agent 会话按主会话隔离（并发回合各自的子会话消息不互踩）
+}
 
 export class GuiController {
   private session: AgentSession;
   private modelRuntime: ModelRuntime;
   private loader: DefaultResourceLoader;
-  private isProcessing = false;
-  private aborted = false;
   private turnEnded = false;
   private recording = false;
   private sttAbort: AbortController | null = null;
   private sttGraceful: AbortController | null = null;
-  // 当前会话文件被用户删除：置位后本轮对话不再回写文件（避免删除后被自动保存复活）
-  private currentSessionDeleted = false;
 
+  private slots = new Map<AgentSession, SessionSlot>();
+  // 进行中的回合栈（栈顶 = 最近开始的回合；编码子代理过程按它路由落盘）
+  private turnStack: SessionSlot[] = [];
+  private activeSession: AgentSession;
+  private activeAgentId: AgentId;
+  private bubbleHideTimer: NodeJS.Timeout | null = null;
+  private rendererUnsub: (() => void) | null = null;
   private ttsStream = new TtsStream(
     (agentId) => voice.isTtsEnabledFor(agentId),
     () => {
@@ -55,19 +80,37 @@ export class GuiController {
     },
   );
 
-  private subSessions = new Map<SubAgentId, AgentSession>();
-  private activeSession: AgentSession;
-  private activeAgentId: AgentId;
-  private bubbleHideTimer: NodeJS.Timeout | null = null;
-  private rendererUnsub: (() => void) | null = null;
-  private currentSessionPath: string | null = null;
-  private undoManager: UndoManager;
-  // 尚未落盘的子代理执行记录（会话文件建立后一次性写入 sidecar）
-  private pendingCodingRuns: CodingRun[];
-
   // 回合文本累积（与 renderer.ts 同构：只保留最后一个 assistant message 的文本）
   private curMsgText = "";
   private lastText = "";
+  // 流式剥离「名字：」前缀（模型偶发模仿历史消息写出；GUI 侧已单独标注说话人，会显示两遍）
+  private prefixStripper: SpeakerPrefixStripper | null = null;
+
+  /** 取会话槽位（无则按当前工作区创建）。 */
+  private slotOf(session: AgentSession): SessionSlot {
+    let slot = this.slots.get(session);
+    if (!slot) {
+      slot = {
+        session,
+        path: null,
+        workspace: currentWorkspace(),
+        deleted: false,
+        hasConversation: false,
+        processing: false,
+        abortRequested: false,
+        pendingRuns: [],
+        undo: new UndoManager(currentWorkspace()),
+        subs: new Map<SubAgentId, AgentSession>(),
+      };
+      slot.undo.load();
+      this.slots.set(session, slot);
+    }
+    return slot;
+  }
+
+  private get activeSlot(): SessionSlot {
+    return this.slotOf(this.activeSession);
+  }
 
   constructor(
     session: AgentSession,
@@ -75,7 +118,7 @@ export class GuiController {
     loader: DefaultResourceLoader,
     private emit: (ev: GuiEvent) => void,
     private onExit: () => void,
-    private onNewSession: () => Promise<{
+    private onCreateSession: () => Promise<{
       session: AgentSession;
       modelRuntime: ModelRuntime;
       loader: DefaultResourceLoader;
@@ -87,22 +130,22 @@ export class GuiController {
     this.activeSession = session;
     this.activeAgentId = getMainAgent();
 
-    this.undoManager = new UndoManager(process.cwd());
-    this.undoManager.load();
-
-    // 编码子代理过程留痕：会话文件已存在 → 直接写 sidecar；
-    // 尚未落盘（新会话首回合）→ 缓冲，saveCurrentSessionIfNeeded 建文件后回填。
-    this.pendingCodingRuns = [];
+    // 编码子代理过程留痕：按栈顶回合的会话路由（该会话文件已存在 → 直接写 sidecar；
+    // 尚未落盘（新会话首回合）→ 缓冲，回合结束存盘后回填）。
     setCodingRunSink((run) => {
-      if (this.currentSessionDeleted) return;
-      if (this.currentSessionPath) {
-        memory.appendCodingRun(this.currentSessionPath, run);
+      const slot = this.turnStack[this.turnStack.length - 1] ?? this.activeSlot;
+      if (slot.deleted) return;
+      if (slot.path) {
+        memory.appendCodingRun(slot.path, run);
       } else {
-        this.pendingCodingRuns.push(run);
+        slot.pendingRuns.push(run);
       }
     });
-    // 编码子代理事件实时转发前端（agentId 区分角色，前端以对应角色名义渲染）
+    // 编码子代理事件实时转发前端（agentId 区分角色，前端以对应角色名义渲染）；
+    // 栈顶回合不是当前会话（后台回合）时不投影，避免后台过程串进前台画面。
     setCodingEventSink((agentId, event) => {
+      const top = this.turnStack[this.turnStack.length - 1];
+      if (top && top.session !== this.activeSession) return;
       this.emit({ type: "agent_event", agentId, event: event as Record<string, unknown> });
     });
 
@@ -122,21 +165,65 @@ export class GuiController {
       ttsEnabled: voice.isTtsEnabled(),
       sttEnabled: voice.isSttEnabled(),
       noVoice: config.noVoice,
-      processing: this.isProcessing,
+      processing: this.activeSlot.processing,
       recording: this.recording,
-      currentSessionPath: this.currentSessionPath,
+      currentSessionPath: this.activeSlot.path,
     };
   }
 
-  /** 推送侧栏会话列表（附当前会话路径供高亮）。 */
+  /** 推送侧栏会话列表（附当前会话路径供高亮 + 当前工作区与已知工作区）。 */
   pushSessions(): void {
+    const listed = memory.listSessions();
+    // 已知工作区 = settings 选择历史 ∪ 会话 header 推导 ∪ 当前活动工作区（去重保序）
+    const known: string[] = [];
+    const push = (ws: string | null | undefined) => {
+      if (ws && !known.includes(ws)) known.push(ws);
+    };
+    for (const ws of getStoredWorkspaces()) push(ws);
+    for (const s of listed) push(s.workspace);
+    push(currentWorkspace()); // 启动时已无条件设定（上次选择或家目录），不在列表中丢失
     this.emit({
       type: "sessions",
-      currentPath: this.currentSessionPath,
-      sessions: memory.listSessions().map((s) => ({
-        path: s.path, preview: s.preview, timestamp: s.timestamp, model: s.model,
+      currentPath: this.activeSlot.path,
+      currentWorkspace: currentWorkspace(),
+      homeDir: homedir(),
+      knownWorkspaces: known,
+      sessions: listed.map((s) => ({
+        path: s.path, preview: s.preview, timestamp: s.timestamp, model: s.model, workspace: s.workspace,
       })),
     });
+  }
+
+  /**
+   * 切换活动工作区（GUI 欢迎页选择器）：当前会话存盘/转后台 → 切换 → 在新工作区建会话（SDK cwd 跟随）。
+   * 生成中也可切换：进行中的回合按旧会话槽位继续，结束按其定格的工作区存盘。
+   */
+  async setWorkspace(path: string): Promise<void> {
+    const target = resolve(path);
+    if (target === currentWorkspace()) return;
+    if (!existsSync(target)) {
+      this.notice("error", t(`文件夹不存在：${target}`, `Folder not found: ${target}`));
+      return;
+    }
+    await this.detachActive(); // 存盘/转后台须在切换前：存盘补写的 workspace 用旧值才正确
+    setActiveWorkspace(target);
+    rememberWorkspace(target);
+    await this.createAndAttach();
+    this.notice("success", t(
+      `工作区已切换：${workspaceLabel(target)}`,
+      `Workspace switched: ${workspaceLabel(target)}`,
+    ));
+    this.emit({ type: "ready", state: this.buildState() });
+  }
+
+  /** 把会话移动到指定工作区（右键菜单），返回是否成功。 */
+  moveSessionByPath(path: string, workspace: string): void {
+    const ok = memory.setSessionWorkspace(path, workspace, true);
+    if (!ok) {
+      this.notice("error", t("移动失败。", "Move failed."));
+      return;
+    }
+    this.pushSessions();
   }
 
   private notice(level: "info" | "warn" | "error" | "success", text: string): void {
@@ -166,46 +253,83 @@ export class GuiController {
 
   private subscribeTo(session: AgentSession): () => void {
     return session.subscribe((event: any) => {
+      // 前缀剥离把整个 delta 扣留时置位：本条事件不向下转发（无可上屏内容）
+      let dropEvent = false;
       // GUI 渲染流：thinking/tool 按显示开关过滤；折叠规则由前端实现（尾部 3 行）
       switch (event.type) {
         case "message_start":
           this.curMsgText = "";
+          this.prefixStripper = new SpeakerPrefixStripper(this.activeAgentId);
           break;
         case "message_update": {
           const ae = event.assistantMessageEvent;
           if (ae?.type === "text_delta") {
-            this.curMsgText += ae.delta;
+            // 转发前剥离前缀：就地改写 delta，走末尾统一转发（前端上屏与 TTS/气泡累积都干净）
+            const stripped = this.prefixStripper?.push(ae.delta) ?? ae.delta;
+            if (!stripped) {
+              dropEvent = true; // 整段被扣留（前缀未判完）
+            } else {
+              this.curMsgText += stripped;
+              ae.delta = stripped;
+            }
           }
           break;
         }
-        case "message_end":
+        case "message_end": {
+          // 放行剥离器仍扣留的内容（无前缀的短回复可能整段被扣到 message 结束）
+          const held = this.prefixStripper?.flush() ?? "";
+          if (held) {
+            this.curMsgText += held;
+            this.emit({
+              type: "agent_event",
+              agentId: this.activeAgentId,
+              event: {
+                type: "message_update",
+                assistantMessageEvent: { type: "text_delta", delta: held },
+              } as Record<string, unknown>,
+            });
+          }
           this.lastText = this.curMsgText.trim();
           this.curMsgText = "";
           break;
+        }
       case "agent_end": {
-        // TTS 收尾 + 桌宠气泡：以角色最后一轮输出为准，仅 <50 字上气泡；≥50 字不显示气泡
-        if (this.lastText) {
-          this.ttsStream.endTurn(this.lastText);
-          if (pet.isRunning) {
-            const units = countTextUnits(this.lastText);
-            if (units > 0 && units < PET_MAX_BUBBLE_LEN) {
-              pet.sendText(this.activeAgentId, "final", this.lastText);
+        // TTS 收尾 + 桌宠气泡：仅前台会话的回合（后台会话用户看不到，静默继续避免抢音/抢气泡）
+        if (session === this.activeSession) {
+          if (this.lastText) {
+            this.ttsStream.endTurn(this.lastText);
+            if (pet.isRunning) {
+              const units = countTextUnits(this.lastText);
+              if (units > 0 && units < PET_MAX_BUBBLE_LEN) {
+                pet.sendText(this.activeAgentId, "final", this.lastText);
+              }
             }
           }
+          this.lastText = "";
         }
-        this.lastText = "";
         break;
       }
       }
+      if (dropEvent) return;
       // 协议转发（思考块与工具详情始终显示，前端自行分流渲染）
       this.emit({ type: "agent_event", agentId: this.activeAgentId, event: event as Record<string, unknown> });
     });
   }
 
-  /** 切 renderer 订阅到指定角色 session（与 Repl.setActiveAgent 一致）。 */
+  /** 该会话是否是前台主会话的群聊子会话。 */
+  private isFrontSub(session: AgentSession): boolean {
+    for (const sub of this.activeSlot.subs.values()) {
+      if (sub === session) return true;
+    }
+    return false;
+  }
+
+  /** 切 renderer 订阅到指定角色 session（与 Repl.setActiveAgent 一致）。
+   *  仅前台会话（及其群聊子会话）的回合接管渲染；后台会话的回合静默继续，
+   *  结束后由 finally 存盘，不抢订阅。 */
   private setActiveAgent(agentId: AgentId, session: AgentSession): void {
+    if (session !== this.activeSession && !this.isFrontSub(session)) return;
     this.activeAgentId = agentId;
-    this.activeSession = session;
     this.curMsgText = "";
     this.lastText = "";
     this.rendererUnsub?.();
@@ -334,13 +458,13 @@ export class GuiController {
         return;
 
       case "undo": {
-        const r = await this.undoManager.undo();
+        const r = await this.activeSlot.undo.undo();
         this.notice(r.ok ? "success" : "warn", r.message);
         return;
       }
 
       case "redo": {
-        const r = await this.undoManager.redo();
+        const r = await this.activeSlot.undo.redo();
         this.notice(r.ok ? "success" : "warn", r.message);
         return;
       }
@@ -470,10 +594,9 @@ export class GuiController {
     setMainAgent(main as MainAgentId);
     setSubAgents(validSubs);
     pet.restartWithSelection(main as AgentId, validSubs);
-    if (subsChanged) this.resetSubSessions();
     if (mainChanged) {
       this.ttsStream.restartVoice();
-      this.saveCurrentSessionIfNeeded();
+      // 保存/转后台由 newSession 的 detachActive 统一处理
       await this.newSession();
       this.notice("success", t(
         `主 Agent 已切换为 ${getAgentLabel(main as MainAgentId)}。`,
@@ -486,112 +609,179 @@ export class GuiController {
   }
 
   // ============================================================
-  // 会话
+  // 会话（槽位模型：当前会话与后台会话统一管理）
   // ============================================================
 
+  /** 新会话：当前会话若在生成则转后台继续，否则存盘释放；然后建新会话。 */
   private async newSession(): Promise<void> {
-    this.saveCurrentSessionIfNeeded(); // 切换前静默落盘当前会话
-    const result = await this.onNewSession();
+    await this.detachActive();
+    await this.createAndAttach();
+  }
+
+  /** 创建新 AgentSession（cwd 跟随当前活动工作区）并接管前台。 */
+  private async createAndAttach(): Promise<void> {
+    const result = await this.onCreateSession();
     this.session = result.session;
     this.modelRuntime = result.modelRuntime;
     this.loader = result.loader;
-    this.activeSession = this.session;
+    this.attach(result.session);
+  }
+
+  /** 接管某会话为前台：绑定渲染订阅并下发回放数据（重新接上后台会话时含其当前消息）。 */
+  private attach(session: AgentSession, replay?: { runs: CodingRun[]; messages: unknown[] }): void {
+    this.activeSession = session;
     this.activeAgentId = getMainAgent();
-    this.currentSessionPath = null;
-    this.currentSessionDeleted = false;
-    this.pendingCodingRuns = []; // 新会话：丢弃旧会话未落盘的子代理记录
-    this.resetSubSessions();
+    this.curMsgText = "";
+    this.lastText = "";
+    this.prefixStripper = null;
     this.rendererUnsub?.();
-    this.rendererUnsub = this.subscribeTo(this.session);
-    this.emit({ type: "history", messages: [] });
+    this.rendererUnsub = this.subscribeTo(session);
+    if (replay) {
+      this.emit({ type: "coding_runs", runs: replay.runs });
+      this.emit({ type: "history", messages: replay.messages });
+    } else {
+      const slot = this.slotOf(session);
+      // 重新接上（可能是后台生成中的会话）：下发已有消息，之后实时事件继续流向前台
+      this.emit({ type: "coding_runs", runs: slot.path ? memory.loadCodingRuns(slot.path) : [] });
+      this.emit({ type: "history", messages: (session.agent.state.messages ?? []) as unknown[] });
+    }
+    this.emit({ type: "ready", state: this.buildState() });
     this.pushSessions();
   }
 
-  /** 删除会话文件；若删的是当前会话，丢弃其后续自动保存。 */
+  /**
+   * 脱离当前前台会话：
+   * - 回合进行中 → 先按当前内容落盘（修剪残缺尾部，侧栏立即可见、随时可点回），
+   *   再挂后台：断开渲染订阅，回合继续，结束时以完整上下文覆盖存盘；
+   * - 空闲 → 立即存盘并释放（含其子会话）。
+   */
+  private detachActive(): void {
+    const old = this.activeSession;
+    const slot = this.slotOf(old);
+    if (slot.processing) {
+      this.saveSlot(slot, old); // 立即落盘（修剪版）：侧栏马上出现该会话，点击可接回实时画面
+      this.rendererUnsub?.();
+      this.rendererUnsub = null;
+      this.pruneBackgroundSlots(old);
+    } else {
+      this.saveSlot(slot, old);
+      this.disposeSession(old);
+    }
+  }
+
+  /** 后台会话超上限时释放最早的未在生成的会话（渲染订阅已断开，直接释放即可）。 */
+  private pruneBackgroundSlots(keep: AgentSession): void {
+    const bg = [...this.slots.values()].filter((s) => s.session !== keep);
+    if (bg.length <= MAX_BACKGROUND_SLOTS) return;
+    for (const slot of bg) {
+      if (this.slots.size <= MAX_BACKGROUND_SLOTS + 1) break; // +1 为前台会话
+      if (!slot.processing) this.disposeSession(slot.session);
+    }
+  }
+
+  private disposeSession(session: AgentSession): void {
+    const slot = this.slots.get(session);
+    if (slot) {
+      for (const sub of slot.subs.values()) {
+        try {
+          sub.dispose();
+        } catch {
+          // 回收失败不影响主流程
+        }
+      }
+    }
+    try {
+      session.dispose();
+    } catch {
+      // 回收失败不影响主流程
+    }
+    this.slots.delete(session);
+  }
+
+  /**
+   * 按槽位存盘。silent=true（默认）用于自动保存；前台会话首次落盘时弹「已保存」提示。
+   * - slot.path 非 null：覆盖原文件（workspace 保留 header 原值，缺失时补写槽位定格的工作区）
+   * - 为 null：仅有有效对话时另存为新文件（归属槽位定格的工作区，后台回合不被切换误标）
+   * 生成中的会话由 memory 写盘函数统一修剪残缺尾部（防 resume 400），不影响内存与后台回合。
+   */
+  private saveSlot(slot: SessionSlot, session: AgentSession, silent = true): void {
+    if (slot.deleted) return; // 用户已删除该会话，不再回写
+    const messages = session.agent.state.messages as any[];
+    const model = session.model?.id || "unknown";
+    if (slot.path) {
+      memory.saveSessionToPath(slot.path, messages, model, silent, slot.workspace);
+    } else if (slot.hasConversation) {
+      slot.path = memory.saveSession(messages, model, silent, slot.workspace);
+      if (slot.path && !silent && session === this.activeSession) {
+        this.notice("success", t(`会话已保存`, "Session saved"));
+      }
+    }
+    // 首次落盘后，回填期间缓冲的子代理执行记录
+    if (slot.path && slot.pendingRuns.length) {
+      for (const run of slot.pendingRuns) {
+        memory.appendCodingRun(slot.path, run);
+      }
+      slot.pendingRuns = [];
+    }
+  }
+
+  /** 恢复会话：后台已有该会话（可能仍在生成）直接接回；否则新建会话加载历史。 */
+  async resumeSession(path: string): Promise<void> {
+    if (this.activeSlot.path === path) return;
+    for (const slot of this.slots.values()) {
+      if (slot.session !== this.activeSession && slot.path === path) {
+        this.detachActive();
+        this.attach(slot.session); // 接回：生成中则继续实时渲染
+        return;
+      }
+    }
+    this.detachActive();
+    try {
+      const messages = memory.loadSession(path);
+      const { session } = await this.onCreateSession();
+      session.agent.state.messages = messages;
+      this.session = session;
+      const slot = this.slotOf(session);
+      slot.path = path;
+      this.attach(session, { runs: memory.loadCodingRuns(path), messages });
+    } catch (err) {
+      this.notice("error", `Failed to load session: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /** 删除会话文件；命中所有槽位（含后台生成中的）标记删除，后续不再回写。 */
   deleteSessionByPath(path: string): void {
     memory.deleteSession(path);
-    if (this.currentSessionPath === path) {
-      this.currentSessionPath = null;
-      this.currentSessionDeleted = true;
+    for (const slot of this.slots.values()) {
+      if (slot.path === path) {
+        slot.deleted = true;
+        slot.path = null;
+      }
     }
     this.pushSessions();
   }
 
-  /** 重命名会话（更新 preview 与文件名），返回是否成功。 */
+  /** 重命名会话（更新 preview 与文件名），返回是否成功；槽位里的路径同步跟随。 */
   renameSessionByPath(path: string, title: string): boolean {
     const newPath = memory.renameSession(path, title);
     if (!newPath) {
       this.notice("error", t("重命名失败。", "Rename failed."));
       return false;
     }
-    if (this.currentSessionPath === path) this.currentSessionPath = newPath;
+    for (const slot of this.slots.values()) {
+      if (slot.path === path) slot.path = newPath;
+    }
     this.pushSessions();
     return true;
   }
 
-  resumeSession(path: string): void {
-    this.saveCurrentSessionIfNeeded();
-    try {
-      const messages = memory.loadSession(path);
-      this.session.agent.state.messages = messages;
-      this.resetSubSessions();
-      memory.resetConversationFlag();
-      this.currentSessionPath = path;
-      this.currentSessionDeleted = false;
-      // 先下发子代理过程（前端按 toolCallId 建关联），再下发历史触发回放渲染
-      this.emit({ type: "coding_runs", runs: memory.loadCodingRuns(path) });
-      this.emit({ type: "history", messages });
-      this.pushSessions();
-    } catch (err) {
-      this.notice("error", `Failed to load session: ${err instanceof Error ? err.message : err}`);
-    }
-  }
-
-  /**
-   * 保存当前会话。silent=true（默认）用于自动保存，不产生任何提示；
-   * 退出时 silent=false，GUI 弹「已保存」提示。
-   * - currentSessionPath 非 null：覆盖原文件
-   * - 为 null：仅有有效对话时另存为新文件并记录路径
-   */
-  private saveCurrentSessionIfNeeded(silent = true): void {
-    if (this.currentSessionDeleted) return; // 用户已删除该会话，不再回写
-    const messages = this.session.messages;
-    const model = this.session.model?.id || "unknown";
-    if (this.currentSessionPath) {
-      memory.saveSessionToPath(this.currentSessionPath, messages, model, silent);
-    } else if (memory.getHasConversation()) {
-      this.currentSessionPath = memory.saveSession(messages, model, silent);
-      if (this.currentSessionPath && !silent) {
-        this.notice("success", t(`会话已保存`, "Session saved"));
-      }
-    }
-    // 首次落盘后，回填期间缓冲的子代理执行记录
-    if (this.currentSessionPath && this.pendingCodingRuns.length) {
-      for (const run of this.pendingCodingRuns) {
-        memory.appendCodingRun(this.currentSessionPath, run);
-      }
-      this.pendingCodingRuns = [];
-    }
-  }
-
-  private resetSubSessions(): void {
-    for (const subSession of this.subSessions.values()) {
-      try {
-        subSession.dispose();
-      } catch {
-        // 回收失败不影响主流程
-      }
-    }
-    this.subSessions.clear();
-  }
-
-  private async ensureSubSessions(): Promise<void> {
-    const enabled = getSubAgents();
-    for (const id of enabled) {
-      if (this.subSessions.has(id)) continue;
+  private async ensureSubSessions(main: AgentSession): Promise<void> {
+    const slot = this.slotOf(main);
+    for (const id of getSubAgents()) {
+      if (slot.subs.has(id)) continue;
       try {
         const { session } = await initSubAgent(id, this.modelRuntime);
-        this.subSessions.set(id, session);
+        slot.subs.set(id, session);
       } catch (err) {
         this.notice("error", t(
           `初始化子 Agent ${getAgentLabel(id)} 失败：${err instanceof Error ? err.message : err}，已跳过该角色。`,
@@ -655,17 +845,20 @@ export class GuiController {
   }
 
   private async runOneAgent(
+    mainSession: AgentSession,
     session: AgentSession,
     agentId: AgentId,
     input: string,
     isSub: boolean,
   ): Promise<string> {
     this.setActiveAgent(agentId, session);
-    this.ttsStream.setVoice(agentId);
+    if (session === this.activeSession || this.isFrontSub(session)) {
+      this.ttsStream.setVoice(agentId);
+    }
 
     if (isSub) {
-      // 子 Agent：复制主 session 全量群聊日志作为上下文（浅拷贝，元素引用共享）
-      session.agent.state.messages = [...(this.session.agent.state.messages as any[])];
+      // 子 Agent：复制所属主 session 全量群聊日志作为上下文（浅拷贝，元素引用共享）
+      session.agent.state.messages = [...(mainSession.agent.state.messages as any[])];
     }
 
     const stateMessages = session.agent.state.messages as any[];
@@ -673,8 +866,8 @@ export class GuiController {
 
     const promptText = isSub
       ? t(
-          `（你是${getAgentLabel(agentId)}。现在轮到你发言——保持你自己的身份和语气，不要扮演或模仿其他角色。请简短发言。）`,
-          `(You are ${getAgentLabel(agentId)}. It's your turn — stay in your own character and voice; do not play or mimic another character. Speak briefly.)`,
+          `（你是${getAgentLabel(agentId)}。现在轮到你发言——保持你自己的身份和语气，不要扮演或模仿其他角色。直接说台词，不要以「${getAgentLabel(agentId)}：」这类名字前缀开头。请简短发言。）`,
+          `(You are ${getAgentLabel(agentId)}. It's your turn — stay in your own character and voice; do not play or mimic another character. Speak your line directly, without starting with a name prefix like "${getAgentLabel(agentId)}:". Speak briefly.)`,
         )
       : input;
 
@@ -685,6 +878,17 @@ export class GuiController {
       return "";
     }
 
+    // 输出侧兜底：模型偶发模仿历史消息把「星野：」这类前缀写进台词，统一剥掉
+    // （与 Repl.runOneAgent 同步；否则下轮 speaker 扩展会叠出双重前缀）
+    for (const m of stateMessages.slice(startLen)) {
+      if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+      for (const b of m.content) {
+        if (b.type === "text" && typeof b.text === "string" && b.text) {
+          b.text = stripSpeakerPrefix(b.text, agentId);
+        }
+      }
+    }
+
     const text = this.extractNewAssistantText(stateMessages, startLen);
     if (!text) return "";
 
@@ -693,7 +897,7 @@ export class GuiController {
         if (m.role === "assistant") m.speaker = agentId;
       }
     } else {
-      (this.session.agent.state.messages as any[]).push({
+      (mainSession.agent.state.messages as any[]).push({
         role: "assistant",
         speaker: agentId,
         content: [{ type: "text", text }],
@@ -703,55 +907,62 @@ export class GuiController {
   }
 
   async runRawTurn(input: string): Promise<void> {
+    // 回合上下文整体局部化到槽位：回合进行中用户可切换会话/工作区，
+    // 本回合在后台继续，结束时按槽位存盘（不再读写"当前会话"的易变状态）
+    const turnSession = this.activeSession;
+    const turnSlot = this.slotOf(turnSession);
+    turnSlot.hasConversation = true;
+    turnSlot.abortRequested = false;
+    turnSlot.processing = true;
+    this.turnStack.push(turnSlot);
     memory.markConversation();
-    this.isProcessing = true;
-    this.turnEnded = false;
     this.ttsStream.cancel();
     this.hidePetBubble();
-    await this.undoManager.beforeTurn();
+    this.emit({ type: "ready", state: this.buildState() });
+    await turnSlot.undo.beforeTurn();
 
     try {
-      await this.ensureSubSessions();
+      await this.ensureSubSessions(turnSession);
 
       // 记忆增量检测：MEMORY.md 运行时变更 → 追加到下一轮主 Agent 的 user 消息末尾
       const memoryDelta = memory.getMemoryDelta();
       const mainInput = memoryDelta ? `${input}\n\n${memoryDelta}` : input;
 
-      await this.runOneAgent(this.session, getMainAgent(), mainInput, false);
-      if (this.aborted) return;
+      await this.runOneAgent(turnSession, turnSession, getMainAgent(), mainInput, false);
+      if (turnSlot.abortRequested) return;
       await this.waitTurnSettled(getMainAgent());
-      if (this.aborted) return;
+      if (turnSlot.abortRequested) return;
 
+      const subs = turnSlot.subs;
       for (const subId of getSubAgents()) {
-        const subSession = this.subSessions.get(subId);
+        const subSession = subs.get(subId);
         if (!subSession) continue;
-        await this.runOneAgent(subSession, subId, input, true);
-        if (this.aborted) return;
+        await this.runOneAgent(turnSession, subSession, subId, input, true);
+        if (turnSlot.abortRequested) return;
         await this.waitTurnSettled(subId);
-        if (this.aborted) return;
+        if (turnSlot.abortRequested) return;
       }
 
-      this.setActiveAgent(getMainAgent(), this.session);
+      this.setActiveAgent(getMainAgent(), turnSession);
     } catch (err) {
       this.notice("error", t("错误：", "Error: ") + (err instanceof Error ? err.message : err));
     } finally {
       try {
-        await this.undoManager.afterTurn();
+        await turnSlot.undo.afterTurn();
       } catch (err) {
         this.notice("warn", t(`撤销快照记录失败：${err instanceof Error ? err.message : err}`, `Failed to record undo snapshot: ${err instanceof Error ? err.message : err}`));
       }
-      this.isProcessing = false;
+      turnSlot.processing = false;
       this.turnEnded = true;
-      // 每回合结束自动保存（静默：有效对话才落盘；resume 会话覆盖原文件），并刷新侧栏让新会话可见
-      this.saveCurrentSessionIfNeeded();
+      this.turnStack = this.turnStack.filter((s) => s !== turnSlot);
+      // 每回合结束自动存盘（静默；resume 会话覆盖原文件）——前台后台一视同仁，并刷新侧栏
+      this.saveSlot(turnSlot, turnSession);
       this.pushSessions();
-      if (!this.ttsStream.isPending) {
-        pet.reset();
-        this.scheduleBubbleHide();
-      }
-      if (this.aborted) {
-        this.aborted = false;
-        return;
+      if (turnSession === this.activeSession) {
+        if (!this.ttsStream.isPending) {
+          pet.reset();
+          this.scheduleBubbleHide();
+        }
       }
       this.emit({ type: "ready", state: this.buildState() });
     }
@@ -762,10 +973,11 @@ export class GuiController {
   // ============================================================
 
   abort(): void {
-    if (!this.isProcessing) return;
+    const slot = this.activeSlot;
+    if (!slot.processing) return;
     this.activeSession.abort().catch(() => {});
-    this.isProcessing = false;
-    this.aborted = true;
+    slot.abortRequested = true;
+    slot.processing = false; // UI 立即恢复；runRawTurn 的 finally 兜底收尾
     this.ttsStream.cancel();
     this.hidePetBubble();
     this.notice("info", "[aborted]");
@@ -779,7 +991,7 @@ export class GuiController {
       this.notice("info", t("STT 已关闭（用 /stt 打开）。", "STT is off (use /stt to enable)."));
       return;
     }
-    if (this.isProcessing) {
+    if (this.activeSlot.processing) {
       // 任务中录音：先中断当前任务（对齐 CLI triggerStt 行为）
       this.abort();
     }
@@ -805,7 +1017,15 @@ export class GuiController {
   }
 
   async doExit(): Promise<void> {
-    this.saveCurrentSessionIfNeeded(false); // 退出保留保存提示
+    // 所有会话槽位落盘（前台保留「已保存」提示；后台/生成中的会话按各自工作区静默保存）
+    const active = this.activeSlot;
+    const activeHadPath = active.path !== null;
+    for (const slot of this.slots.values()) {
+      this.saveSlot(slot, slot.session, slot !== active);
+    }
+    if (!activeHadPath && active.path && active.hasConversation) {
+      this.notice("success", t(`会话已保存`, "Session saved"));
+    }
     this.ttsStream.shutdown();
     stopGptSovitsLocalServer();
     stopComputerUse();
@@ -815,12 +1035,18 @@ export class GuiController {
       // 清理失败不影响退出
     }
     stopPet();
-    this.session.dispose();
-    for (const subSession of this.subSessions.values()) {
+    for (const slot of this.slots.values()) {
       try {
-        subSession.dispose();
+        slot.session.dispose();
       } catch {
-        // 子 session 清理失败不影响退出
+        // 清理失败不影响退出
+      }
+      for (const subSession of slot.subs.values()) {
+        try {
+          subSession.dispose();
+        } catch {
+          // 子 session 清理失败不影响退出
+        }
       }
     }
     this.emit({ type: "exiting" });

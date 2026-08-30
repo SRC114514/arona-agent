@@ -3,6 +3,8 @@
 // 支持多角色同屏：ARONA_AGENT = 主 Agent，ARONA_SUB_AGENTS = 逗号分隔的子 Agent 列表；
 // 每个角色一个 BrowserWindow，共享一个全屏特效窗。
 const { app, BrowserWindow, ipcMain, screen } = require("electron");
+const crypto = require("crypto");
+const http = require("http");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -36,7 +38,7 @@ const POS_FILE = path.join(os.homedir(), ".arona", "pet.json");
 const WIN_W = 480; // 窗口 = Spine 角色渲染区本体；480 使宽骨架角色（kei 长发/aris 拖地发）满高显示不裁切。
                    // 透明区拦点击的副作用由「动态穿透」兜底：初始 setIgnoreMouseEvents(true,{forward})，
                    // renderer 按光标处 alpha 经 pet:clickable 切换（见 pet:clickable IPC）
-const WIN_H = 674;
+const WIN_H = 780;
 const SUB_OFFSET_X = 500; // 子窗口默认横向错开（略大于 WIN_W）
 const SUB_OFFSET_Y = 40;
 
@@ -431,7 +433,7 @@ ipcMain.handle("pet:get-agent-config", (e) => {
   return { id: agentId, isMain: agentId === MAIN_AGENT_ID, ...AGENTS[agentId] };
 });
 
-// ---- stdin 协议 ----
+// ---- stdin 协议（非 Windows 平台的备用通道）----
 let buffer = "";
 
 function sendToAgent(agentId, channel, payload) {
@@ -515,6 +517,43 @@ process.stdin.on("end", () => {
   // 其他平台：stdin EOF 可靠表示父进程退出，跟随退出防孤儿进程。
   vlog("stdin END", process.platform === "win32" ? "(ignored on win32)" : "(quit)");
   if (process.platform !== "win32") app.quit();
+});
+
+// ---- 本地 HTTP 通道（backend → pet 主方向）----
+// Windows 下 Electron GUI 子系统子进程的 stdin 数据不可达（GUI 白屏坑③同族问题，
+// 症状隐蔽：桌宠静态显示正常，但 set_emotion/tts_level/spawn_agent/quit 全部失效）。
+// 正常路径 = 127.0.0.1 随机端口 + 随机 token 的 HTTP 服务，端口/token 随 hello 行告知
+// backend（防本机其他进程伪造）；HTTP 起不来（httpPort=0）时 backend 退回上方 stdin 通道。
+const HTTP_TOKEN = crypto.randomBytes(16).toString("hex");
+let helloSent = false;
+function sendHello(httpPort) {
+  if (helloSent) return;
+  helloSent = true;
+  send({ type: "hello", httpPort: httpPort || 0, token: httpPort ? HTTP_TOKEN : "" });
+}
+const petHttpServer = http.createServer((req, res) => {
+  if (req.method !== "POST" || req.headers["x-arona-token"] !== HTTP_TOKEN) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    res.writeHead(204);
+    res.end();
+    try {
+      handleMessage(JSON.parse(body));
+    } catch {
+      // 非 JSON，忽略
+    }
+  });
+});
+petHttpServer.on("error", () => {
+  sendHello(0); // HTTP 起不来也要发 hello（不带端口，backend 退回 stdin 写入）
+});
+petHttpServer.listen(0, "127.0.0.1", () => {
+  sendHello(petHttpServer.address().port);
 });
 
 app.whenReady().then(() => {

@@ -166,8 +166,10 @@ const HOSHINO = {
   // 重新生成顺序：skel_to_json → meshify_region → gen_sway（任何前一步都会覆盖后一步产物）
   skelFile: "hoshino_spr.json",
   atlasFile: "hoshino_spr.atlas.txt",
-  // bounds 1161×2074（高 84.8%）→ 1.1 使身高接近 Arona
-  extraScale: 1.1,
+  // bounds 1161×2074：480×780 窗口下比例偏窄、高度先顶格 → 1.0 恰好满窗高。
+  // （1.1 是按旧 320 宽窗口调的：当时宽度先顶格、放大只裁两侧；现窗口加宽后纵向
+  //   也被放大 → 脚底/头顶溢出裁切，且调多高都按比例溢出，加高窗口无效）
+  extraScale: 1,
   anims: {
     idle: "Idle_01",
     blink: "Eye_Close_01",
@@ -250,8 +252,11 @@ const KOHARU = {
   // .json = skel_to_json 导出 + gen_sway 衣摆形变；重新生成顺序：skel_to_json → gen_sway
   skelFile: "koharu_spr.json",
   atlasFile: "koharu_spr.atlas.txt",
-  // bounds 1395×2069：高≈Arona，但宽(含光环球)超宽 → 取宽为最小边，身高只占 70% → extraScale 放大到 1.3
-  extraScale: 1.3,
+  // bounds 1395×2069：宽(含光环球)超宽，480×780 下宽度先顶格，1.0 身高仅 ~91%。
+  // 纵向不裁的上限 extra = 780/(2069×480/1395) ≈ 1.095，取 1.08 留 idle 摆动余量
+  // （身高 ≈98% 满窗；光环球两侧各裁 ~19px，与旧版 1.3 按比例裁两侧一致）。
+  // （1.3 是按旧 320 宽窗口调的，现窗口加宽后纵向溢出裁切脚底/头顶）
+  extraScale: 1.08,
   anims: {
     idle: "Idle_01",
     blink: "Eye_Close_01",

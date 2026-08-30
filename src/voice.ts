@@ -2,6 +2,7 @@ import { runPython } from "./utils/python.ts";
 import { config, updateSettings, verbose } from "./config.ts";
 import { getMainAgent, type AgentId } from "./agent_registry.ts";
 import { getTtsProvider } from "./tts_provider.ts";
+import { t } from "./locale.ts";
 
 let ttsEnabled = config.noVoice ? false : config.ttsEnabled;
 let sttEnabled = config.noVoice ? false : config.sttEnabled;
@@ -75,7 +76,7 @@ export function stripMarkdown(text: string): string {
  */
 export async function listen(signal?: AbortSignal, gracefulSignal?: AbortSignal): Promise<string> {
   if (!config.sttApiKey) {
-    console.warn("STT: QWEN_STT_API_KEY not configured");
+    console.warn(t("STT: 未配置 QWEN_STT_API_KEY", "STT: QWEN_STT_API_KEY not configured"));
     return "";
   }
 
@@ -91,7 +92,7 @@ export async function listen(signal?: AbortSignal, gracefulSignal?: AbortSignal)
   } catch (err) {
     // 用户主动取消（GUI 麦克风再点一次停止录音）：静默返回空串
     if (signal?.aborted) return "";
-    console.warn(`STT error: ${err instanceof Error ? err.message : err}`);
+    console.warn(t(`STT 错误：${err instanceof Error ? err.message : err}`, `STT error: ${err instanceof Error ? err.message : err}`));
     return "";
   }
 }

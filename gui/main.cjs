@@ -1,7 +1,10 @@
 // ARONA GUI Electron 主进程：单窗口，与 Node 后端父进程经 stdin/stdout JSON lines 通信
 // （协议行前缀 ###GUI### 过滤 Electron 日志；与桌宠桥同模式）。
-const { app, BrowserWindow, Menu, ipcMain, nativeImage } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, nativeImage, dialog } = require("electron");
+const crypto = require("crypto");
 const fs = require("fs");
+const http = require("http");
+const os = require("os");
 const path = require("path");
 
 // Windows：GUI 是纯 HTML/CSS（无 WebGL），默认硬件加速下页面加载/脚本均正常但不 paint（白屏，
@@ -16,6 +19,7 @@ if (process.platform === "win32" && process.env.ARONA_GUI_GPU !== "1") {
 app.setPath("userData", path.join(app.getPath("appData"), "arona-agent-gui"));
 
 const APP_TITLE = "Arona Agent";
+const DEMO_CAPTURE_PATH = path.join(os.tmpdir(), "arona_gui_demo.png");
 const ICON_PATH = path.join(__dirname, "renderer", "assets", "icon.png");
 
 const PREFIX = "###GUI###";
@@ -37,33 +41,44 @@ const pending = [];
 
 function forward(msg) {
   if (win && !win.isDestroyed() && rendererReady) {
+    if (VERBOSE) console.error("[gui:verbose] forward", msg.type);
     win.webContents.send("gui-event", msg);
   } else {
+    if (VERBOSE) console.error("[gui:verbose] buffer", msg.type, "(rendererReady=" + rendererReady + ")");
     pending.push(msg);
   }
 }
 
 function flushPending() {
   if (!win || win.isDestroyed()) return;
+  if (VERBOSE && pending.length) console.error("[gui:verbose] flush " + pending.length + " buffered events");
   while (pending.length) {
     win.webContents.send("gui-event", pending.shift());
   }
 }
 
-// ARONA_GUI_SMOKE=1：loadFile + flush 后探测 DOM（页面可见性 / preload / 渲染层脚本），
-// 结果打 SMOKE_RESULT 行后退出——冒烟验证 mode 事件不丢（无需人工看窗口）。
-// 另起 SMOKE_UI 探测（8s 后，等 startMain 就绪）：欢迎页 LOGO / 浅色背景 / 斜杠菜单过滤 / 工具行样式。
-function smokeProbe(skipQuit) {
+// ARONA_GUI_SMOKE=1：loadFile 后周期探测 DOM（每 2s，最长 30s）——页面可见性 / preload / 渲染层脚本，
+// 结果打 SMOKE_RESULT 行；一旦有页面揭示（或超时）打 SMOKE_UI 详情后退出。
+// 周期重试的原因：后端 startMain（initAgent 等）可能远超 8s，单次探测会把"启动慢"误判成"事件未送达"。
+function smokeProbe() {
   const js = '(function(){var p=document.querySelectorAll(".page:not(.hidden)");'
     + 'return JSON.stringify({visible:p.length?p[0].id:null,'
     + 'api:!!(window.guiAPI&&window.guiAPI.send&&window.guiAPI.on),'
     + 'setup:!!(window.SetupUI&&window.SetupUI.handle)});})()';
-  setTimeout(() => {
+  const started = Date.now();
+  const timer = setInterval(() => {
+    if (!win || win.isDestroyed()) { clearInterval(timer); return; }
     win.webContents.executeJavaScript(js)
       // stderr 会被 backend 转发到终端（stdout 被 ###GUI### 协议解析占用）
-      .then((r) => { console.error("SMOKE_RESULT " + r); if (!skipQuit) app.quit(); })
-      .catch((e) => { console.error("SMOKE_ERROR " + e); if (!skipQuit) app.quit(); });
-  }, 300);
+      .then((r) => {
+        console.error("SMOKE_RESULT " + r);
+        if (JSON.parse(r).visible || Date.now() - started >= 30000) {
+          clearInterval(timer);
+          smokeProbeUI();
+        }
+      })
+      .catch((e) => { console.error("SMOKE_ERROR " + e); clearInterval(timer); smokeProbeUI(); });
+  }, 2000);
 }
 
 function smokeProbeUI() {
@@ -99,7 +114,7 @@ function smokeProbeUI() {
 }
 
 // ARONA_GUI_DEMO=1：不调用 LLM，向前端注入一段脚本化 agent_event 序列（思考 / 工具行 /
-// 编码子代理实时过程 / 总结文本），预览渲染效果；结束时 capturePage 截图到 /tmp/arona_gui_demo.png。
+// 编码子代理实时过程 / 总结文本），预览渲染效果；结束时 capturePage 截图到系统临时目录（os.tmpdir()，跨平台）。
 function demoScenario() {
   const send = (m) => { if (win && !win.isDestroyed()) win.webContents.send("gui-event", m); };
   const ev = (agentId, type, extra = {}) => send({ type: "agent_event", agentId, event: { type, ...extra } });
@@ -154,8 +169,8 @@ function demoScenario() {
         ).catch(() => {});
         await sleep(300);
         const imgTop = await win.webContents.capturePage();
-        fs.writeFileSync("/tmp/arona_gui_demo.png", imgTop.toPNG());
-        console.error("DEMO_CAPTURE /tmp/arona_gui_demo.png");
+        fs.writeFileSync(DEMO_CAPTURE_PATH, imgTop.toPNG());
+        console.error("DEMO_CAPTURE " + DEMO_CAPTURE_PATH);
         return;
       } catch (e) {
         console.error("DEMO_SESSION_ERROR " + e);
@@ -221,8 +236,8 @@ function demoScenario() {
     await sleep(600);
     try {
       const img = await win.webContents.capturePage();
-      fs.writeFileSync("/tmp/arona_gui_demo.png", img.toPNG());
-      console.error("DEMO_CAPTURE /tmp/arona_gui_demo.png");
+      fs.writeFileSync(DEMO_CAPTURE_PATH, img.toPNG());
+      console.error("DEMO_CAPTURE " + DEMO_CAPTURE_PATH);
     } catch (e) {
       console.error("DEMO_CAPTURE_ERROR " + e);
     }
@@ -251,8 +266,9 @@ function createWindow() {
   // 先挂监听再 loadFile：避免加载完成事件在挂监听前触发导致 rendererReady 永不置位
   win.webContents.once("did-finish-load", () => {
     rendererReady = true;
+    if (VERBOSE) console.error("[gui:verbose] did-finish-load, pending=" + pending.length);
     flushPending();
-    if (process.env.ARONA_GUI_SMOKE === "1") { smokeProbe(true); smokeProbeUI(); }
+    if (process.env.ARONA_GUI_SMOKE === "1") smokeProbe();
     if (process.env.ARONA_GUI_DEMO === "1") setTimeout(demoScenario, 2000);
   });
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
@@ -275,10 +291,32 @@ function createWindow() {
 
 // renderer → backend
 ipcMain.on("gui-send", (_event, msg) => {
+  // 工作区目录选择：Electron 原生对话框只能由本进程弹（contextIsolation，渲染层无 Node），
+  // 结果回给渲染层（ws_folder_picked），由渲染层决定驱动后端 set_workspace 还是 move_session
+  if (msg && msg.type === "pick_workspace_folder") {
+    pickWorkspaceFolder();
+    return;
+  }
   send(msg);
 });
 
-// backend → renderer（行缓冲解析）
+async function pickWorkspaceFolder() {
+  try {
+    const result = await dialog.showOpenDialog(win, {
+      title: "选择工作区文件夹",
+      properties: ["openDirectory"],
+    });
+    const picked = result.canceled ? null : (result.filePaths || [])[0];
+    if (picked && win && !win.isDestroyed()) {
+      win.webContents.send("gui-event", { type: "ws_folder_picked", path: picked });
+    }
+  } catch (e) {
+    console.error("[gui] pick folder failed:", e);
+  }
+}
+
+// backend → renderer（行缓冲解析；Windows 下此路不通——GUI 子系统 Electron 的 stdin 数据不可达，
+// 见下方 HTTP 通道。保留作非 Windows 平台的备用通道）
 let buffer = "";
 process.stdin.on("data", (data) => {
   buffer += data.toString();
@@ -293,6 +331,42 @@ process.stdin.on("data", (data) => {
       // 非 JSON，忽略
     }
   }
+});
+
+// 本地 HTTP 通道（backend → GUI 主方向）：Windows 下 Electron 子进程 stdin 完全不可达（hello 握手
+// 证明进程与 stdout 均正常、数据仍不到达），事件改走 127.0.0.1 随机端口 + 随机 token（随 hello 行
+// 告知 backend，防本机其他进程伪造）。stdout（GUI → backend）方向不受影响，继续走 ###GUI### 行。
+const HTTP_TOKEN = crypto.randomBytes(16).toString("hex");
+let helloSent = false;
+function sendHello(httpPort) {
+  if (helloSent) return;
+  helloSent = true;
+  send({ type: "hello", httpPort: httpPort || 0, token: httpPort ? HTTP_TOKEN : "" });
+}
+const httpServer = http.createServer((req, res) => {
+  if (req.method !== "POST" || req.headers["x-arona-token"] !== HTTP_TOKEN) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    res.writeHead(204);
+    res.end();
+    try {
+      forward(JSON.parse(body));
+    } catch {
+      // 非 JSON，忽略
+    }
+  });
+});
+httpServer.on("error", (e) => {
+  console.error("[gui] http server error:", e.message, "→ 退回 stdin 通道");
+  sendHello(0); // HTTP 起不来也要发 hello（不带端口，backend 退回 stdin 写入）
+});
+httpServer.listen(0, "127.0.0.1", () => {
+  sendHello(httpServer.address().port);
 });
 
 // 窗口全关：先发 exit 请求让后端走完整清理，再退出（延迟让协议行先 flush）

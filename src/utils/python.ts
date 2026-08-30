@@ -41,11 +41,16 @@ export async function runPython(
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
-    // 优雅停止（如 GUI 麦克风再点一次=提前结束录音并识别已说内容）：只发信号，
-    // 由脚本自行收尾输出，Promise 等待正常 resolve
-    const gracefulName = process.platform === "win32" ? "SIGINT" : "SIGUSR1";
+    // 优雅停止（如 GUI 麦克风再点一次=提前结束录音并识别已说内容）：
+    // - POSIX：SIGUSR1 信号（脚本自行收尾输出，Promise 等待正常 resolve）
+    // - Windows：进程信号不可捕获（proc.kill 全部等效硬杀），改写 stdin "stop" 行，
+    //   由脚本（stt.py）的 stdin 监视线程置位停止标志。因此 stdinData 为空时保持
+    //   stdin 打开不 end——脚本自行退出，不依赖 EOF。
     const onGraceful = () => {
-      try { proc.kill(gracefulName); } catch {}
+      try {
+        if (process.platform === "win32") proc.stdin.write("stop\n");
+        else proc.kill("SIGUSR1");
+      } catch {}
     };
     gracefulSignal?.addEventListener("abort", onGraceful, { once: true });
 
@@ -96,9 +101,9 @@ export async function runPython(
     if (stdinData !== undefined) {
       proc.stdin.write(stdinData);
       proc.stdin.end();
-    } else {
-      proc.stdin.end();
     }
+    // 无 stdinData：stdin 保持打开。脚本不读 stdin、自行退出；过早 end 会堵死
+    // Windows 优雅停止的 "stop" 行通道（且已 end 的管道写入必抛错）。
   });
 }
 

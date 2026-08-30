@@ -115,7 +115,7 @@ function waitLoad() {
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 320;
-  const h = canvas.clientHeight || 674;
+  const h = canvas.clientHeight || 780;
   canvas.width = Math.round(w * dpr);
   canvas.height = Math.round(h * dpr);
   gl.viewport(0, 0, canvas.width, canvas.height);
@@ -128,7 +128,7 @@ function fitCamera() {
   skeleton.getBounds(offset, size, []);
   const pad = 8;
   const cw = canvas.clientWidth || 320;
-  const ch = canvas.clientHeight || 674;
+  const ch = canvas.clientHeight || 780;
   const scale = Math.min(cw / (size.x + pad * 2), ch / (size.y + pad * 2));
   renderer.camera.setViewport(cw / scale, ch / scale);
   renderer.camera.position.set(offset.x + size.x / 2, offset.y + size.y / 2, 0);
@@ -139,7 +139,7 @@ function fitCamera() {
 // 窗口 CSS px → 骨架世界坐标（逆相机变换）
 function windowToSkeleton(x, y) {
   const cw = canvas.clientWidth || 320;
-  const ch = canvas.clientHeight || 674;
+  const ch = canvas.clientHeight || 780;
   const p = new spine.webgl.Vector3(x, y, 0);
   renderer.camera.screenToWorld(p, cw, ch);
   return { x: p.x, y: p.y };

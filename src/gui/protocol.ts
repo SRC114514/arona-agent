@@ -15,8 +15,10 @@ export type GuiEvent =
   | { type: "agent_event"; agentId: string; event: Record<string, unknown> }
   // 命令/操作反馈文本
   | { type: "notice"; level: "info" | "warn" | "error" | "success"; text: string }
-  // 会话列表（侧栏数据源；currentPath=当前恢复会话，用于高亮）
-  | { type: "sessions"; currentPath: string | null; sessions: Array<{ path: string; preview: string; timestamp: string; model: string }> }
+  // 会话列表（侧栏数据源；currentPath=当前恢复会话，用于高亮；currentWorkspace=当前活动工作区；
+  // homeDir=用户家目录（前端把家目录工作区显示为「用户目录」）；knownWorkspaces=已知工作区
+  // （settings 选择历史 ∪ 会话推导，去重）；workspace=会话所属工作区，旧会话可能缺失，展示层归入「未分组」）
+  | { type: "sessions"; currentPath: string | null; currentWorkspace: string; homeDir: string; knownWorkspaces: string[]; sessions: Array<{ path: string; preview: string; timestamp: string; model: string; workspace?: string }> }
   // 技能列表（/skill 弹窗数据）
   | { type: "skills"; skills: Array<{ name: string; description: string }> }
   // STT 结果（空串=未识别到语音）与录音状态
@@ -64,6 +66,8 @@ export interface GuiState {
 // gui → backend
 // ============================================================
 export type GuiRequest =
+  // GUI 进程握手（gui/main.cjs 起好 HTTP 通道后回报；httpPort=0 表示 HTTP 不可用，backend 退回 stdin）
+  | { type: "hello"; httpPort: number; token: string }
   // 用户消息（@file/!shell 由 backend 展开）
   | { type: "input"; text: string }
   // 斜杠命令（name 不含 "/"）
@@ -83,6 +87,11 @@ export type GuiRequest =
   // 侧栏会话管理（右键菜单）
   | { type: "delete_session"; path: string }
   | { type: "rename_session"; path: string; title: string }
+  // 工作区：切换活动工作区（重建 Agent 会话）/ 把会话移动到某工作区
+  // （pick_workspace_folder 由 gui/main.cjs 拦截弹原生目录对话框，经渲染层回传 set_workspace）
+  | { type: "set_workspace"; path: string }
+  | { type: "move_session"; path: string; workspace: string }
+  | { type: "pick_workspace_folder" }
   // 调用技能
   | { type: "invoke_skill"; name: string }
   // 切换角色

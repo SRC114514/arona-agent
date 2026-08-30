@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import { t } from "./locale.ts";
-import { getAgentLabel, getMainAgent } from "./agent_registry.ts";
+import { getAgentLabel, getMainAgent, type AgentId } from "./agent_registry.ts";
+import { SpeakerPrefixStripper } from "./speaker_context.ts";
 import { countTextUnits } from "./text_split.ts";
 
 // 思考块与工具详情始终显示（开关已移除）
@@ -69,6 +70,10 @@ export function createRenderer(
   let inThinking = false;
   let inText = false;
   let textPrefixWritten = false;
+  // 流式剥离「名字：」前缀：模型偶发把「星野：」这类前缀写进台词（模仿历史消息），
+  // 而说话人前缀已由本 renderer 标注，模型再写就重复。按当前发言角色剥离（null=不剥）。
+  let prefixAgentId: AgentId | null = null;
+  let prefixStripper: SpeakerPrefixStripper | null = null;
 
   // ── 流式思考折叠重绘 ──────────────────────────────────────────
   let thinkingBuffer = "";          // 完整思考内容缓冲区
@@ -161,6 +166,11 @@ export function createRenderer(
     setSpeakerLabel(label: string | undefined) {
       speakerLabel = label;
     },
+    /** 设置当前发言角色（用于流式剥离模型偶发写出的「名字：」前缀） */
+    setPrefixAgent(id: AgentId | null) {
+      prefixAgentId = id;
+      prefixStripper = null;
+    },
     // 切 session（setActiveAgent）时显式复位回合状态：消除跨会话 curMsgText/lastText 残留，
     // 防止被新 session 的 agent_end 误读上一角色文本。
     resetTurn() {
@@ -171,6 +181,7 @@ export function createRenderer(
       inThinking = false;
       inText = false;
       textPrefixWritten = false;
+      prefixStripper = null;
     },
     subscribe: (session: any) => {
       return session.subscribe((event: any) => {
@@ -182,6 +193,7 @@ export function createRenderer(
             curMsgText = "";
             thinkingBuffer = "";
             drawnThinkingLines = 0;
+            prefixStripper = prefixAgentId ? new SpeakerPrefixStripper(prefixAgentId) : null;
             break;
 
           case "message_update": {
@@ -198,9 +210,11 @@ export function createRenderer(
                   textPrefixWritten = true;
                 }
               }
-              process.stdout.write(ae.delta);
+              const delta = prefixStripper ? prefixStripper.push(ae.delta) : ae.delta;
+              if (!delta) break;
+              process.stdout.write(delta);
               // 文本只累积到当前 message，TTS 与气泡都在 agent_end 一次性收尾（只读最后一段）
-              curMsgText += ae.delta;
+              curMsgText += delta;
             } else if (ae.type === "thinking_delta") {
               if (showThinking) {
                 if (!inThinking) {
@@ -220,6 +234,16 @@ export function createRenderer(
           case "message_end": {
             if (inThinking && showThinking) {
               finalizeThinking();
+            }
+            // 放行剥离器仍扣留的内容（无前缀的短回复可能整段被扣留到 message 结束）
+            const held = prefixStripper?.flush() ?? "";
+            if (held) {
+              if (!inText && speakerLabel && !textPrefixWritten) {
+                process.stdout.write(style.speaker(speakerLabel + "："));
+                textPrefixWritten = true;
+              }
+              process.stdout.write(held);
+              curMsgText += held;
             }
             if (inText) {
               process.stdout.write("\n");

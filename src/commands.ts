@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { execSync } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { writeFileSync } from "fs";
 import { join } from "path";
 import type { AgentSession, DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
@@ -13,6 +13,7 @@ import { MAIN_AGENT_IDS, SUB_AGENT_IDS, getMainAgent, getSubAgents, getAgentLabe
 import { pet } from "./pet.ts";
 import type { UndoManager } from "./undo.ts";
 import { t } from "./locale.ts";
+import { currentWorkspace, groupByWorkspace } from "./workspace.ts";
 
 export interface CommandContext {
   session: AgentSession;
@@ -245,7 +246,9 @@ function truncateStyled(text: string, maxW: number, style: (s: string) => string
 /**
  * Interactive session picker. Uses raw-mode stdin to capture up/down arrows.
  * Pressing Enter or Escape selects (Enter = current, Escape = cancel).
- * Sessions are listed newest first; up arrow moves toward newer, down arrow toward older.
+ * Sessions are grouped by workspace (current workspace first, then by most
+ * recent use, ungrouped legacy sessions last); group headers are skipped by
+ * the cursor. Up arrow moves toward newer, down arrow toward older.
  */
 async function handleResume(ctx: CommandContext) {
   const sessions = memory.listSessions();
@@ -265,7 +268,23 @@ async function handleResume(ctx: CommandContext) {
   process.stdin.resume();
   process.stdin.setEncoding("utf8");
 
-  let cursor = 0; // index of currently highlighted session
+  // 工作区分组 → 扁平行序列（标题行不可选中，↑/↓ 跳过）
+  const current = currentWorkspace();
+  const groups = groupByWorkspace(sessions);
+  type Row = { kind: "header"; text: string } | { kind: "session"; session: memory.SessionInfo };
+  const rows: Row[] = [];
+  for (const g of groups) {
+    rows.push({
+      kind: "header",
+      text: g.workspace === current
+        ? t(`当前工作区 · ${g.label}`, `Current workspace · ${g.label}`)
+        : g.label,
+    });
+    for (const s of g.sessions) rows.push({ kind: "session", session: s });
+  }
+  const selectableIdx = rows.flatMap((r, i) => (r.kind === "session" ? [i] : []));
+
+  let sel = 0; // 当前高亮会话在 selectableIdx 中的下标
   let drawnScreenLines = 0; // 已画出的屏幕行数（按终端宽度折行后），用于精确上移
   const cols = process.stdout.columns ?? 80;
 
@@ -281,13 +300,19 @@ async function handleResume(ctx: CommandContext) {
     const maxW = cols - 1;
     const out: string[] = [];
     out.push(chalk.bold.cyan(t("已保存的会话（↑/↓ 选择，回车确认，Esc 取消）：", "Saved sessions (↑/↓ select, Enter confirm, Esc cancel):")));
-    sessions.forEach((s, i) => {
-      const date = new Date(s.timestamp).toLocaleString();
-      const marker = i === cursor ? "▶ " : "  ";
-      const text = `${marker}${i + 1}. ${s.preview}  (${date} · ${s.model})`;
-      const styled = i === cursor
-        ? truncateStyled(text, maxW, (t) => chalk.bold.cyan(t))
-        : truncateStyled(text, maxW, (t) => t);
+    let sessionNo = 0;
+    rows.forEach((row, i) => {
+      if (row.kind === "header") {
+        out.push(truncateStyled(`  ${row.text}`, maxW, (x) => chalk.bold.yellow(x)));
+        return;
+      }
+      const active = selectableIdx[sel] === i;
+      const date = new Date(row.session.timestamp).toLocaleString();
+      const marker = active ? "▶ " : "  ";
+      const text = `${marker}${++sessionNo}. ${row.session.preview}  (${date} · ${row.session.model})`;
+      const styled = active
+        ? truncateStyled(text, maxW, (x) => chalk.bold.cyan(x))
+        : truncateStyled(text, maxW, (x) => x);
       out.push(styled);
     });
     out.push(chalk.cyan(t("  (按回车恢复当前选中项)", "  (press Enter to resume the highlighted item)")));
@@ -307,18 +332,20 @@ async function handleResume(ctx: CommandContext) {
     // Arrow keys come as escape sequences: ESC [ A/B
     if (key === "\x1b[A") {
       // Up arrow: move toward newer (lower index)
-      cursor = Math.max(0, cursor - 1);
+      sel = Math.max(0, sel - 1);
       render();
     } else if (key === "\x1b[B") {
       // Down arrow: move toward older
-      cursor = Math.min(sessions.length - 1, cursor + 1);
+      sel = Math.min(selectableIdx.length - 1, sel + 1);
       render();
     } else if (key === "\r" || key === "\n") {
       // Enter: confirm selection
       cleanup();
-      const sel = sessions[cursor];
-      ctx.resumeSession(sel.path);
-      console.log(chalk.green(t(`已恢复：${sel.preview}`, `Resumed: ${sel.preview}`)));
+      const row = rows[selectableIdx[sel]];
+      if (row.kind === "session") {
+        ctx.resumeSession(row.session.path);
+        console.log(chalk.green(t(`已恢复：${row.session.preview}`, `Resumed: ${row.session.preview}`)));
+      }
       resolveFn();
     } else if (key === "\x1b" || key === "\x1b\x1b") {
       // Escape: cancel
@@ -380,11 +407,23 @@ function handleExport(ctx: CommandContext) {
   const exportPath = join(process.cwd(), `arona-export-${Date.now()}.md`);
   writeFileSync(exportPath, markdown);
   console.log(chalk.green(t(`已导出到 ${exportPath}`, `Exported to ${exportPath}`)));
+  openFileCrossPlatform(exportPath);
+}
 
+/** 用系统默认程序打开文件（导出后自动弹出）。无对应命令/失败时静默忽略（文件已导出成功）。 */
+function openFileCrossPlatform(filePath: string): void {
   try {
-    execSync(`open "${exportPath}"`, { stdio: "ignore" });
+    if (process.platform === "darwin") {
+      execFileSync("open", [filePath], { stdio: "ignore" });
+    } else if (process.platform === "win32") {
+      // start 经 cmd 解析；首个 "" 是窗口标题占位（start 会把第一个带引号参数当标题）
+      const child = spawn("cmd", ["/c", "start", "", filePath], { stdio: "ignore", detached: true });
+      child.unref();
+    } else {
+      execFileSync("xdg-open", [filePath], { stdio: "ignore" });
+    }
   } catch {
-    // Not macOS or open not available
+    // 平台无对应打开命令（常见于无桌面的 Linux）：忽略
   }
 }
 

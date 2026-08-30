@@ -18,6 +18,7 @@ sentence_end=true 为最终结果，聚合后输出到 stdout。
 import json
 import os
 import sys
+import threading
 import uuid
 import asyncio
 import signal
@@ -31,14 +32,32 @@ MAX_RECORDING_SECONDS = 15
 SILENCE_THRESHOLD = 500      # RMS 阈值
 SILENCE_DURATION_MS = 1500   # 静音超过此时长则结束
 
-# 优雅停止标志：SIGUSR1/SIGINT（GUI 麦克风再点一次）置位后，录音循环提前跳出，
-# 走正常 finish-task 流程把已说内容识别出来（区别于 SIGTERM 直接终止=丢弃）。
+# 优雅停止标志：SIGUSR1/SIGINT（POSIX）或 stdin "stop" 行（Windows，见 main）置位后，
+# 录音循环提前跳出，走正常 finish-task 流程把已说内容识别出来（区别于 SIGTERM 直接终止=丢弃）。
 _stop_recording = False
 
 
 def _request_stop(*_args):
     global _stop_recording
     _stop_recording = True
+
+
+def _watch_stdin_stop():
+    """监听 stdin 的 "stop" 行置位停止标志。
+
+    Windows 上进程信号不可捕获（Node proc.kill 全部等效硬杀），Node 侧优雅停止改发
+    stdin "stop" 行。EOF 不触发停止——Node 侧可能在识别结束前就关闭了 stdin 管道。
+    """
+    try:
+        while True:
+            line = sys.stdin.readline()
+            if not line:
+                return
+            if line.strip().lower() == "stop":
+                _request_stop()
+                return
+    except Exception:
+        return
 
 
 def build_uri(workspace_id):
@@ -242,7 +261,8 @@ def main():
         print(t("STT: 未设置 QWEN_STT_API_KEY", "STT: QWEN_STT_API_KEY not set"), file=sys.stderr)
         sys.exit(1)
 
-    # 优雅停止：提前结束录音但仍识别已上传内容（Windows 无 SIGUSR1，仅注册存在的信号）
+    # 优雅停止：提前结束录音但仍识别已上传内容。
+    # POSIX：SIGUSR1/SIGINT 信号；Windows：信号不可捕获，Node 侧发 stdin "stop" 行（监视线程）。
     for sig_name in ("SIGUSR1", "SIGINT"):
         sig = getattr(signal, sig_name, None)
         if sig is not None:
@@ -250,6 +270,7 @@ def main():
                 signal.signal(sig, _request_stop)
             except (ValueError, OSError):
                 pass
+    threading.Thread(target=_watch_stdin_stop, daemon=True).start()
 
     text = asyncio.run(stt_recognize(api_key, workspace_id, model, audio_format, sample_rate))
     print(text)

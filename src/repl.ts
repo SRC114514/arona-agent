@@ -23,6 +23,8 @@ import { t } from "./locale.ts";
 import { spawnCompat } from "./utils/spawn.ts";
 import { initSubAgent } from "./agent.ts";
 import { getMainAgent, getSubAgents, getAgentLabel, type AgentId, type SubAgentId } from "./agent_registry.ts";
+import { stripSpeakerPrefix } from "./speaker_context.ts";
+import { currentWorkspace } from "./workspace.ts";
 
 // STT 长按阈值：按下录音热键持续 ≥ 该毫秒数并在释放时才触发录音；提前松开视为误触
 const STT_HOLD_MS = 2000;
@@ -107,7 +109,7 @@ export class Repl {
     this.activeSession = session;
     this.activeAgentId = getMainAgent();
 
-    this.undoManager = new UndoManager(process.cwd());
+    this.undoManager = new UndoManager(currentWorkspace());
     this.undoManager.load();
 
     this.rl = readline.createInterface({
@@ -131,6 +133,7 @@ export class Repl {
       },
       getAgentLabel(getMainAgent()),
     );
+    this.renderer.setPrefixAgent(getMainAgent());
     this.rendererUnsub = this.renderer.subscribe(this.session);
 
     this.setupSignals();
@@ -226,6 +229,7 @@ export class Repl {
         this.resetSubSessions();
         this.rendererUnsub?.();
         this.renderer.setSpeakerLabel(getAgentLabel(getMainAgent()));
+        this.renderer.setPrefixAgent(getMainAgent());
         this.rendererUnsub = this.renderer.subscribe(this.session);
       },
       runAgentTurn: (text: string) => this.runRawTurn(text),
@@ -437,11 +441,12 @@ export class Repl {
     const messages = this.session.messages;
     const model = this.session.model?.id || "unknown";
     if (this.currentSessionPath) {
-      // resume 的会话：必保存（覆盖原文件），即使没有新增对话也保留原内容
-      memory.saveSessionToPath(this.currentSessionPath, messages, model, silent);
+      // resume 的会话：必保存（覆盖原文件），即使没有新增对话也保留原内容；
+      // 旧会话缺 workspace 时经此补写归入当前工作区
+      memory.saveSessionToPath(this.currentSessionPath, messages, model, silent, currentWorkspace());
     } else if (memory.getHasConversation()) {
       // 新会话：仅有有效对话时才保存；记录路径，后续回合覆盖同一文件
-      this.currentSessionPath = memory.saveSession(messages, model, silent);
+      this.currentSessionPath = memory.saveSession(messages, model, silent, currentWorkspace());
     }
   }
 
@@ -674,6 +679,7 @@ export class Repl {
     this.activeAgentId = agentId;
     this.activeSession = session;
     this.renderer.setSpeakerLabel(getAgentLabel(agentId));
+    this.renderer.setPrefixAgent(agentId);
     // 显式复位回合状态，杜绝跨 session 残留 curMsgText/lastText 被误读
     this.renderer.resetTurn();
     this.rendererUnsub?.();
@@ -802,8 +808,8 @@ export class Repl {
     // 子 Agent 的触发消息：固定短句（上下文在复制来的全量日志里，这里只负责"叫醒"它发言）
     const promptText = isSub
       ? t(
-          `（你是${getAgentLabel(agentId)}。现在轮到你发言——保持你自己的身份和语气，不要扮演或模仿其他角色。请简短发言。）`,
-          `(You are ${getAgentLabel(agentId)}. It's your turn — stay in your own character and voice; do not play or mimic another character. Speak briefly.)`,
+          `（你是${getAgentLabel(agentId)}。现在轮到你发言——保持你自己的身份和语气，不要扮演或模仿其他角色。直接说台词，不要以「${getAgentLabel(agentId)}：」这类名字前缀开头。请简短发言。）`,
+          `(You are ${getAgentLabel(agentId)}. It's your turn — stay in your own character and voice; do not play or mimic another character. Speak your line directly, without starting with a name prefix like "${getAgentLabel(agentId)}:". Speak briefly.)`,
         )
       : input;
 
@@ -812,6 +818,18 @@ export class Repl {
     } catch (err) {
       console.error(chalk.red(t("\n错误：", "\nError: ") + (err instanceof Error ? err.message : err)));
       return "";
+    }
+
+    // 输出侧兜底：模型偶发模仿历史消息把「星野：」这类前缀写进台词，统一剥掉。
+    // 就地改写文本块 → 提取文本 / TTS / 回填主 session / 会话存档全部干净，
+    // 且下轮 speaker 扩展不会再叠出「小鸟游星野：星野：…」双重前缀。
+    for (const m of stateMessages.slice(startLen)) {
+      if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+      for (const b of m.content) {
+        if (b.type === "text" && typeof b.text === "string" && b.text) {
+          b.text = stripSpeakerPrefix(b.text, agentId);
+        }
+      }
     }
 
     const text = this.extractNewAssistantText(stateMessages, startLen);

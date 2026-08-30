@@ -2,6 +2,7 @@
 // 启动条件：裸 `arona`（默认入口，src/index.ts 分流到本文件；--cli / settings.json CLIEnabled: true 时走命令行）。
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { join } from "path";
+import { existsSync } from "fs";
 import chalk from "chalk";
 import { PROJECT_ROOT, settingsExist, reloadConfig, config, verbose } from "../config.ts";
 import { t, refreshLanguage } from "../locale.ts";
@@ -21,13 +22,46 @@ class GuiBridge {
   private controller: GuiController | null = null;
   private startingMain = false;
   private exited = false;
+  // Windows 下 spawn 后立刻写 stdin 会丢数据，且实测 GUI 子系统 Electron 的 stdin **完全不可达**
+  //（hello 握手证明进程与 stdout 均正常，数据仍不到达）——GUI 进程起 127.0.0.1 随机端口 + 随机 token
+  // 的 HTTP 服务，端口/token 随 hello 行告知；hello 前入队，收到后按序经 HTTP 下发。
+  // httpPort=0（HTTP 起失败）时退回 stdin 写入（非 Windows 平台 stdin 本来就通）。
+  private helloReceived = false;
+  private queuedEvents: GuiEvent[] = [];
+  private guiHttpPort = 0;
+  private guiHttpToken = "";
+  private httpChain: Promise<void> = Promise.resolve(); // 串行链保序（HTTP 异步，并发会乱序）
 
   emit(ev: GuiEvent): void {
+    if (verbose) console.error(chalk.gray("[gui:verbose]"), "emit", ev.type, this.helloReceived ? "" : "(queued)");
+    if (!this.helloReceived) {
+      this.queuedEvents.push(ev);
+      return;
+    }
     if (!this.proc || this.proc.killed) return;
+    if (this.guiHttpPort) {
+      this.httpChain = this.httpChain.then(() => this.postEvent(ev));
+      return;
+    }
     try {
       this.proc.stdin.write(formatGuiLine(ev));
     } catch {
       // stdin 已关闭，忽略
+    }
+  }
+
+  /** 经本地 HTTP 通道下发事件（gui/main.cjs 的 127.0.0.1 随机端口服务，token 鉴权） */
+  private async postEvent(ev: GuiEvent): Promise<void> {
+    try {
+      await fetch(`http://127.0.0.1:${this.guiHttpPort}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-arona-token": this.guiHttpToken },
+        body: JSON.stringify(ev),
+      });
+    } catch (err) {
+      if (verbose) {
+        console.error(chalk.gray("[gui:verbose]"), "http emit failed:", err instanceof Error ? err.message : err);
+      }
     }
   }
 
@@ -54,6 +88,16 @@ class GuiBridge {
       env,
       stdio: ["pipe", "pipe", "pipe"],
     });
+
+    // 握手超时告警：hello 不来 = GUI 进程的 stdin/stdout 协议链路不通（页面白屏只是其结果）
+    setTimeout(() => {
+      if (!this.helloReceived && !this.exited && this.proc) {
+        console.error(chalk.red(t(
+          "GUI：15s 未收到 GUI 进程握手（hello），###GUI### stdin 协议链路不通，界面将保持白屏。",
+          "GUI: no handshake (hello) from the GUI process within 15s; the ###GUI### stdin protocol is broken and the window will stay blank.",
+        )));
+      }
+    }, 15000);
 
     this.proc.stdout.on("data", (data) => {
       this.buffer += data.toString();
@@ -116,6 +160,20 @@ class GuiBridge {
         syncSkillsFromAgentsDir();
       }
 
+      // 旧会话工作区一次性回填（按内容推断；已在启动初期完成，会话列表/侧栏分组才准确）
+      const { backfillLegacyWorkspaces } = await import("../memory.ts");
+      const migrated = backfillLegacyWorkspaces();
+      if (migrated > 0) {
+        console.error(chalk.gray(`[ws] 已将 ${migrated} 个历史会话按内容归入工作区`));
+      }
+
+      // 恢复/设定活动工作区（须在 initAgent 前，SDK cwd 跟随）。GUI 的进程启动目录
+      // 对用户无意义，不作为工作区：有上次选择用之，否则默认家目录。
+      const { getLastWorkspace } = await import("../config.ts");
+      const { setActiveWorkspace, guiDefaultWorkspace } = await import("../workspace.ts");
+      const last = getLastWorkspace();
+      setActiveWorkspace(last && existsSync(last) ? last : guiDefaultWorkspace());
+
       let current = await initAgent();
       await startPet();
       preloadGptSovitsLocal();
@@ -129,12 +187,11 @@ class GuiBridge {
           this.exited = true;
           process.exit(0);
         },
+        // 只负责创建新会话（cwd 跟随当前活动工作区）；旧会话的生命周期由 controller
+        // 槽位管理：生成中挂后台继续、空闲存盘释放，这里不得 dispose。
         async () => {
-          current.session.dispose();
-          const { resetConversationFlag } = await import("../memory.ts");
-          resetConversationFlag();
-          current = await initAgent();
-          return current;
+          const { initAgent } = await import("../agent.ts");
+          return await initAgent();
         },
       );
 
@@ -166,6 +223,20 @@ class GuiBridge {
 
   private async handleRequest(req: GuiRequest): Promise<void> {
     switch (req.type) {
+      case "hello": {
+        // GUI 进程握手：解锁排队中的事件（emit mode/setup_info 在 spawn 后立即调用，Windows 下彼时
+        // stdin 写入会丢失）。端口/token 就位后，后续事件经本地 HTTP 通道下发。
+        this.helloReceived = true;
+        this.guiHttpPort = Number(req.httpPort) || 0;
+        this.guiHttpToken = String(req.token || "");
+        const queued = this.queuedEvents;
+        this.queuedEvents = [];
+        if (verbose && queued.length) {
+          console.error(chalk.gray("[gui:verbose]"), "hello received (httpPort=" + this.guiHttpPort + "), flushing", queued.length, "queued events");
+        }
+        for (const ev of queued) this.emit(ev);
+        break;
+      }
       case "setup_submit": {
         const ok = await runGuiSetup(req.form as unknown as GuiSetupForm, (ev) => this.emit(ev));
         if (ok) await this.startMain();
@@ -212,6 +283,13 @@ class GuiBridge {
       case "rename_session":
         this.controller?.renameSessionByPath(req.path, req.title);
         break;
+      case "set_workspace":
+        await this.controller?.setWorkspace(req.path);
+        break;
+      case "move_session":
+        this.controller?.moveSessionByPath(req.path, req.workspace);
+        break;
+      // pick_workspace_folder 在 gui/main.cjs 进程内拦截弹原生目录框，不经此处
       case "invoke_skill":
         await this.controller?.handleCommand(`/skill ${req.name}`);
         break;

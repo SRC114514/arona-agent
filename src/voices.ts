@@ -31,7 +31,7 @@ export interface GptSovitsVoiceConfig {
   promptText?: string;
 }
 
-/** 每个角色的音色源文件路径（声音复刻上传的音频） */
+/** 每个角色的音色源文件路径（声音复刻上传的音频）。编码子Agent（millennium/justice）无语音素材，置空串。 */
 export const VOICE_AUDIO: Record<AgentId, string> = {
   arona: join(PROJECT_ROOT, "assets", "blue-archive", "arona", "voice.mp3"),
   plana: join(PROJECT_ROOT, "assets", "blue-archive", "plana", "voice.mp3"),
@@ -41,6 +41,8 @@ export const VOICE_AUDIO: Record<AgentId, string> = {
   koharu: join(PROJECT_ROOT, "assets", "blue-archive", "koharu", "voice.mp3"),
   kei: join(PROJECT_ROOT, "assets", "blue-archive", "kei", "voice.mp3"),
   aris: join(PROJECT_ROOT, "assets", "blue-archive", "aris", "voice.mp3"),
+  millennium: "",
+  justice: "",
 };
 
 /**
@@ -57,6 +59,8 @@ export const VOICE_SOVITS_AUDIO: Record<AgentId, string> = {
   koharu: join(PROJECT_ROOT, "assets", "blue-archive", "koharu", "voice_sovits.mp3"),
   kei: join(PROJECT_ROOT, "assets", "blue-archive", "kei", "voice_sovits.mp3"),
   aris: join(PROJECT_ROOT, "assets", "blue-archive", "aris", "voice_sovits.mp3"),
+  millennium: "",
+  justice: "",
 };
 
 function loadVoices(): Record<string, unknown> {
