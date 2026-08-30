@@ -64,6 +64,28 @@ arona doctor
 
 ---
 
+## One-click Packaging (Self-contained Distribution)
+
+Bundles portable Python 3.13 ([python-build-standalone](https://github.com/astral-sh/python-build-standalone)), official Node 22, the full node_modules (including the Electron dist) and the app code into a single zip. **Windows-first**: by default it cross-builds a Windows x64 package on your current machine (all dependencies come as prebuilt wheels — no Windows machine needed). The target machine needs nothing installed — just unzip and run:
+
+```bash
+npm run package                      # cross-build Windows x64 package (default)
+npm run package -- --target native   # native package for the current platform
+```
+
+The artifact lands at `dist/arona-agent-<version>-<platform>-<arch>.zip`. After unzipping, run:
+
+- `arona.bat` (Windows — launches the GUI by default when given no arguments)
+- `arona.sh` / double-click `启动 ARONA.command` (native macOS / Linux package)
+
+All child-process calls (Python scripts, tsx/Electron, etc.) inside the package resolve to the bundled runtimes, taking priority over the `pythonPath` in `settings.json`; the launchers self-check the bundled Node/Python before starting.
+
+Useful flags: `--node-mirror <url>`, `--pbs-mirror <url|github>`, `--electron-mirror <url>`, `--gh-proxy <prefix>`, `--out-dir <dir>`, `--skip-zip`. See `node scripts/package.mjs --help`.
+
+> The packager auto-slims the artifact: strips stdlib test/IDLE/tkinter, dependency test suites, and native binaries not used by the target platform.
+
+---
+
 ## Configuration
 
 All configuration lives in the JSON file `~/.arona/settings.json`, mostly generated interactively by `arona setup`. Some advanced parameters must be entered manually.

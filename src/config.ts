@@ -12,6 +12,17 @@ export const PROJECT_ROOT = resolve(import.meta.dirname, "..");
 export const PYTHON_DIR = join(PROJECT_ROOT, "python");
 export const PET_DIR = join(PROJECT_ROOT, "pet");
 
+/**
+ * 捆绑 Python（一键打包产物 runtime/python/，python-build-standalone 便携版）。
+ * 存在则所有 Python 调用优先指向它——zip 内自包含，不依赖目标机器装的 Python；
+ * 开发环境没有 runtime/ 目录，恒为 null，行为不变。
+ */
+export const BUNDLED_PYTHON: string | null = (() => {
+  const root = join(PROJECT_ROOT, "runtime", "python");
+  const candidate = process.platform === "win32" ? join(root, "python.exe") : join(root, "bin", "python3");
+  return existsSync(candidate) ? candidate : null;
+})();
+
 // Ensure directories exist
 function ensureDir(path: string) {
   if (!existsSync(path)) mkdirSync(path, { recursive: true });
@@ -272,7 +283,8 @@ function loadConfig(): AronaConfig {
     cuaApiKey: s.cuaApiKey || "",
     tavilyApiKey: s.tavilyApiKey || "",
 
-    pythonPath: s.pythonPath || (process.platform === "win32" ? "python" : "python3"),
+    // 打包产物：捆绑 Python 优先于 settings.json（zip 自包含是硬约束）
+    pythonPath: BUNDLED_PYTHON || s.pythonPath || (process.platform === "win32" ? "python" : "python3"),
     mcpServers: s.mcpServers || {},
     // 显式 false 才关闭（不填/true 保持原有补全行为）
     autoLoadSkills: s.autoLoadSkills !== false,

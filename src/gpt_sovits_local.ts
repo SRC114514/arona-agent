@@ -707,8 +707,10 @@ function resolveRequirements(): { file: string; source: string } {
 /**
  * 安装 GPT-SoVITS 依赖：`<python> -m pip install -r <requirements>`。
  * 清单来源：固定项目内置硬编码清单（官方 requirements + torchcodec），不读 api_v2.py 目录。
+ * pip 走清华源（与 setup.ts 主依赖安装一致），torch 等 wheel 国内下载更快。
  * 透传 pip 输出到终端，用户可实时看到进度。
  */
+const PIP_TSINGHUA = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple";
 export async function installGptSovitsDeps(
   _apiScriptPath: string,
   pythonPath: string,
@@ -720,7 +722,7 @@ export async function installGptSovitsDeps(
     `  [gpt-sovits] requirements source: ${source}`,
   ));
   return new Promise((resolve) => {
-    const proc = spawnCompat(pythonPath, ["-m", "pip", "install", "-r", file], {
+    const proc = spawnCompat(pythonPath, ["-m", "pip", "install", "-r", file, "-i", PIP_TSINGHUA], {
       env: stripProxyEnv({
         ...process.env,
         PYTHONUTF8: "1",
@@ -742,8 +744,8 @@ export async function installGptSovitsDeps(
         resolve({
           ok: false,
           message: t(
-            `依赖安装失败（pip 退出码 ${code}）。请检查网络/环境后重试，或手动执行：${pythonPath} -m pip install -r ${file}`,
-            `Dependency install failed (pip exit ${code}). Check network/env and retry, or run manually: ${pythonPath} -m pip install -r ${file}`,
+            `依赖安装失败（pip 退出码 ${code}）。请检查网络/环境后重试，或手动执行：${pythonPath} -m pip install -r ${file} -i ${PIP_TSINGHUA}`,
+            `Dependency install failed (pip exit ${code}). Check network/env and retry, or run manually: ${pythonPath} -m pip install -r ${file} -i ${PIP_TSINGHUA}`,
           ),
           source,
         });

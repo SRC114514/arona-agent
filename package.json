@@ -19,7 +19,8 @@
   ],
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "package": "node scripts/package.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.1",

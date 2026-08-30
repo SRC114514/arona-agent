@@ -67,6 +67,28 @@ arona doctor
 
 ---
 
+## 一键打包（自包含分发包）
+
+把便携版 Python 3.13（[python-build-standalone](https://github.com/astral-sh/python-build-standalone)）、官方 Node 22、全量 node_modules（含 Electron dist）和应用代码打成一个 zip。**Windows 优先**：默认在本机交叉打出 Windows x64 包（依赖全走预编译 wheel，不需要 Windows 机器）；目标机器解压即可运行，无需安装任何环境：
+
+```bash
+npm run package                      # 交叉打 Windows x64 包（默认）
+npm run package -- --target native   # 打当前平台的原生包
+```
+
+产物在 `dist/arona-agent-<版本>-<平台>-<架构>.zip`。解压后运行包根目录的：
+
+- `arona.bat`（Windows，无参数默认启动 GUI 图形界面）
+- `arona.sh` / 双击 `启动 ARONA.command`（macOS / Linux 原生包）
+
+包内所有子进程调用（Python 脚本、tsx/Electron 等）自动指向 zip 自带的运行时，优先于 `settings.json` 里的 `pythonPath`；启动脚本会先自检包内 Node/Python 再拉起程序。
+
+常用参数：`--node-mirror <url>`（Node 镜像，默认华为云）、`--pbs-mirror <url|github>`（python-build-standalone 镜像，默认 npmmirror）、`--electron-mirror <url>`（Electron 镜像，默认华为云）、`--gh-proxy <prefix>`、`--out-dir <dir>`、`--skip-zip`。详见 `node scripts/package.mjs --help`。
+
+> 打包时会自动精简：移除 stdlib 的 test/IDLE/tkinter、依赖包的测试目录、目标平台用不到的原生二进制。
+
+---
+
 ## 配置
 
 全部配置写在 JSON 文件 `~/.arona/settings.json`，大部分由 `arona setup` 交互式生成，少数高级参数需自行填充。
