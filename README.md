@@ -38,8 +38,8 @@ npm u -g arona-agent
 # 禁用TTS+STT并启动
 arona --no-voice
 
-# 以图形界面启动
-arona --gui
+# 以命令行启动
+arona --cli
 
 # 补全/重新克隆某角色音色
 arona voice add [<角色名>]   # 不带角色名则进入 TUI 选择未补全的角色
@@ -96,7 +96,7 @@ arona doctor
 | `tavilyApiKey` | Tavily API Key | — |
 | `pythonPath` | Python 路径 | `python3` |
 | `autoLoadSkills` | 启动时自动从 `~/.agents` 补全缺失的Skill | `true` |
-| `GUIEnabled` | 裸 `arona` 启动时进入图形界面 | `false` |
+| `CLIEnabled` | 裸 `arona` 启动时进入命令行 | `false` |
 | `mcpServers` | MCP 服务器 JSON | `{}` |
 
 模型名前缀自动检测：若 `model` 不含 `/`，按模型名前缀或 `apiBaseUrl` 域名自动补 `provider/`。

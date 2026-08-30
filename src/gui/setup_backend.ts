@@ -259,8 +259,8 @@ export async function runGuiSetup(form: GuiSetupForm, emit: Emit): Promise<boole
       mcpServers: existing.mcpServers || {},
       autoLoadSkills: existing.autoLoadSkills ?? true,
     };
-    // 保留用户手写 GUIEnabled
-    if (typeof existing.GUIEnabled === "boolean") settings.GUIEnabled = existing.GUIEnabled;
+    // 保留用户手写 CLIEnabled
+    if (typeof existing.CLIEnabled === "boolean") settings.CLIEnabled = existing.CLIEnabled;
 
     writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + "\n");
     emit({ type: "setup_log", step: "save", line: t(`✓ 配置已保存到 ${SETTINGS_FILE}`, `✓ Configuration saved to ${SETTINGS_FILE}`) });

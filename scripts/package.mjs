@@ -495,11 +495,7 @@ function assembleStaging(opts, tp) {
   return staging;
 }
 
-// ---------- 启动脚本（无参数默认启动 GUI；启动前自检包内运行时） ----------
-
-const GUI_DEFAULT_SH = `
-if [ "$#" -eq 0 ]; then set -- --gui; fi
-`;
+// ---------- 启动脚本（无参数默认启动 GUI，由 src/index.ts 分流；启动前自检包内运行时） ----------
 
 const AROMA_SH = `#!/bin/bash
 # ARONA 自包含启动脚本（npm run package 生成）：只用包内 Node/Python，启动前自检
@@ -513,7 +509,6 @@ PY_BIN="$DIR/runtime/python/bin/python3"
 NODE_VER="$("$NODE_BIN" --version 2>/dev/null)" || { echo "✗ 包内 Node 无法运行（架构不匹配？）" >&2; exit 1; }
 PY_VER="$("$PY_BIN" --version 2>/dev/null)" || { echo "✗ 包内 Python 无法运行（架构不匹配？）" >&2; exit 1; }
 echo "ARONA 自包含运行时：$NODE_VER / $PY_VER" >&2
-${GUI_DEFAULT_SH}
 exec "$NODE_BIN" "$DIR/bin/arona.mjs" "$@"
 `;
 
@@ -537,11 +532,8 @@ if errorlevel 1 ( echo ✗ 包内 Node 无法运行 1>&2 & exit /b 1 )
 if errorlevel 1 ( echo ✗ 包内 Python 无法运行 1>&2 & exit /b 1 )
 for /f "delims=" %%v in ('"%DIR%runtime\\node\\node.exe" --version') do echo ARONA 自包含运行时：%%v 1>&2
 
-rem 无参数时默认启动 GUI
-set "ARONA_ARGS=%*"
-if "%~1"=="" set "ARONA_ARGS=--gui"
-
-"%DIR%runtime\\node\\node.exe" "%DIR%bin\\arona.mjs" %ARONA_ARGS%
+rem 无参数时默认启动 GUI（由 src/index.ts 分流）
+"%DIR%runtime\\node\\node.exe" "%DIR%bin\\arona.mjs" %*
 `;
 
 const AROMA_COMMAND = `#!/bin/bash

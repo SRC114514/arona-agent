@@ -19,8 +19,9 @@ function runSetupWizard(): Promise<number> {
   const tsxBin = process.platform === "win32"
     ? join(PROJECT_ROOT, "node_modules", ".bin", "tsx.cmd")
     : join(PROJECT_ROOT, "node_modules", ".bin", "tsx");
+  const wizardArgs = process.argv.slice(2).filter((a) => a !== "--cli");
   return new Promise((resolve) => {
-    const child = spawn(tsxBin, [join(PROJECT_ROOT, "src", "setup.ts"), ...process.argv.slice(2)], {
+    const child = spawn(tsxBin, [join(PROJECT_ROOT, "src", "setup.ts"), ...wizardArgs], {
       cwd: process.cwd(),
       stdio: "inherit",
       shell: process.platform === "win32",
@@ -30,7 +31,8 @@ function runSetupWizard(): Promise<number> {
   });
 }
 
-async function main() {
+/** 命令行模式（默认 GUI；--cli / settings.json CLIEnabled: true / --resume= 时进入本函数）。 */
+async function runCli() {
   // 首次运行引导：无 settings.json 时直接进入 setup 向导，配置完成后继续 REPL
   if (!settingsExist()) {
     console.log(chalk.yellow(t("未找到配置文件，正在进入初始化向导…", "Config file not found. Starting the setup wizard…")));
@@ -46,13 +48,6 @@ async function main() {
     // setup 在子进程内写配置：就地刷新 config 单例与 UI 语言后继续
     reloadConfig();
     refreshLanguage();
-  }
-
-  // GUI 模式（settings.json GUIEnabled: true；--gui 由 bin/arona.mjs 直接路由到 src/gui/index.ts）
-  if (config.guiEnabled) {
-    const { runGui } = await import("./gui/index.ts");
-    await runGui();
-    return;
   }
 
   if (!config.apiKey) {
@@ -116,6 +111,17 @@ async function main() {
   );
 
   await repl.start();
+}
+
+async function main() {
+  // 默认启动 GUI；--cli / settings.json CLIEnabled: true 时进入命令行。
+  // --resume= 恢复会话历史仅在终端 REPL 里展示，也一并路由到 CLI 以保持原行为。
+  if (process.argv.includes("--cli") || config.cliEnabled || process.argv.some((a) => a.startsWith("--resume="))) {
+    await runCli();
+    return;
+  }
+  const { runGui } = await import("./gui/index.ts");
+  await runGui();
 }
 
 main().catch((err) => {

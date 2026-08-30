@@ -98,8 +98,8 @@ interface AronaConfig {
   mcpServers: Record<string, McpServerConfig>;
   // 启动时是否从 ~/.agents/skills 补全缺失 Skill（默认 true）
   autoLoadSkills: boolean;
-  // GUI 模式开关（settings.json GUIEnabled === true）
-  guiEnabled: boolean;
+  // CLI 模式开关（settings.json CLIEnabled === true；默认启动 GUI）
+  cliEnabled: boolean;
 }
 
 interface Settings {
@@ -138,8 +138,8 @@ interface Settings {
   mcpServers?: Record<string, McpServerConfig>;
   // 启动时是否从 ~/.agents/skills 补全缺失 Skill（默认 true）
   autoLoadSkills?: boolean;
-  // GUI 模式开关（用户手写字段；true 时裸 `arona` 启动进 GUI）
-  GUIEnabled?: boolean;
+  // CLI 模式开关（用户手写字段；true 时裸 `arona` 启动进命令行，默认 GUI）
+  CLIEnabled?: boolean;
 }
 
 /**
@@ -299,8 +299,8 @@ function loadConfig(): AronaConfig {
     // 显式 false 才关闭（不填/true 保持原有补全行为）
     autoLoadSkills: s.autoLoadSkills !== false,
 
-    // GUI 模式：settings.json GUIEnabled === true 时裸 `arona` 启动进 GUI
-    guiEnabled: s.GUIEnabled === true,
+    // CLI 模式：settings.json CLIEnabled === true 时裸 `arona` 启动进命令行（默认 GUI）
+    cliEnabled: s.CLIEnabled === true,
   };
 }
 

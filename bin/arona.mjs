@@ -26,9 +26,9 @@ if (bundledEntries.length) {
 const isSetup = args[0] === 'setup';
 const isVoice = args[0] === 'voice';
 const isDoctor = args[0] === 'doctor';
-const isGui = args.includes('--gui');
-const target = isSetup ? 'src/setup.ts' : isVoice ? 'src/voice_cli.ts' : isDoctor ? 'src/doctor.ts' : isGui ? 'src/gui/index.ts' : 'src/index.ts';
-const passArgs = (isSetup || isVoice || isDoctor) ? args.slice(1) : isGui ? args.filter((a) => a !== '--gui') : args;
+// 裸 `arona` 默认进 GUI：src/index.ts 依据 --cli / settings.json CLIEnabled 自行分流
+const target = isSetup ? 'src/setup.ts' : isVoice ? 'src/voice_cli.ts' : isDoctor ? 'src/doctor.ts' : 'src/index.ts';
+const passArgs = (isSetup || isVoice || isDoctor) ? args.slice(1) : args;
 
 // tsx 以库形式随包内置：直接用当前 node 运行其 CLI，避免依赖 node_modules/.bin
 // （Windows 包里没有 .cmd shim，且跨平台无需 PATH 里能找到 node）。

@@ -1,5 +1,5 @@
 // GUI 模式入口：Node 后端父进程 + Electron 窗口子进程（###GUI### 行协议，与桌宠桥同模式）。
-// 启动条件（满足其一）：arona --gui（bin/arona.mjs 路由到本文件）/ settings.json GUIEnabled: true（src/index.ts 分支）。
+// 启动条件：裸 `arona`（默认入口，src/index.ts 分流到本文件；--cli / settings.json CLIEnabled: true 时走命令行）。
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { join } from "path";
 import chalk from "chalk";
